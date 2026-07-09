@@ -2,13 +2,15 @@
 # Reproduce the full-stack Rails 8.1 test app for Phase 4 (gem ecosystem).
 #
 # Unlike make_test_app.sh (minimal --minimal app), this builds a REAL app:
-#   - ActiveRecord + sqlite (exercises the per-Ractor connection_handler path)
+#   - ActiveRecord + PostgreSQL (ractor-safe DB driver — pg gem calls
+#     rb_ext_ractor_safe, so DB queries work in worker Ractors)
 #   - Devise + Warden (the #1 gem blocker — Warden middleware holds Procs)
 #   - Real views with partials + helpers (exercises view rendering deeply)
 #   - A controller that does a DB query (real request path, not just /up)
 #   - The /up health check (baseline that already works)
+#   - A seeded user account so you can log in and see posts
 #
-# Boots without external services (no Postgres/Redis/ES needed).
+# Requires a running PostgreSQL. Uses the default socket/connection.
 #
 # Usage:
 #   cd <this repo>
@@ -26,10 +28,11 @@ mkdir -p "$(dirname "$DEST")"
 # Generate the app WITHOUT --minimal so we get the full Rails stack
 # (ActiveRecord, ActionView with real template rendering, ActionMailer, etc.).
 # Skip JS/Cable/Storage/Text/Mailbox/Job to keep the boot surface focused on
-# the web request path + AR + Devise.
+# the web request path + AR + Devise. Use PostgreSQL (ractor-safe pg gem).
 rails new "$DEST" --skip-git --skip-bundle --skip-javascript \
   --skip-action-cable --skip-active-storage --skip-action-text \
-  --skip-action-mailbox --skip-active-job --skip-action-mailer
+  --skip-action-mailbox --skip-active-job --skip-action-mailer \
+  --database=postgresql
 
 cd "$DEST"
 
@@ -40,7 +43,7 @@ source "https://rubygems.org"
 gem "ractor-rails-shim", path: "SHIM_PATH_PLACEHOLDER"
 gem "rails", "~> 8.1.3"
 gem "propshaft"
-gem "sqlite3", ">= 2.1"
+gem "pg", "~> 1.4"
 gem "puma", ">= 5.0"
 gem "kino"
 gem "devise"
@@ -53,25 +56,62 @@ end
 RUBY
 sed "s|SHIM_PATH_PLACEHOLDER|$SHIM_DIR|" Gemfile > Gemfile.tmp && mv Gemfile.tmp Gemfile
 
-# config/boot.rb: install the shim before Rails.application is accessed.
+# config/boot.rb: install the shim only in production (Ractor mode).
+# In development, the shim's __callbacks IES routing breaks Devise callbacks.
 cat > config/boot.rb <<'RUBY'
 ENV["BUNDLE_GEMFILE"] ||= File.expand_path("../Gemfile", __dir__)
 
 require "bundler/setup"
 
-require "ractor_rails_shim"
-RactorRailsShim.install
+# Install the shim only in production — Ractor mode requires it.
+# In development, the shim's callback routing interferes with Devise.
+if ENV["RAILS_ENV"] == "production"
+  require "ractor_rails_shim"
+  RactorRailsShim.install
+end
 RUBY
 
 # config/application.rb: keep generated railties, ensure config.generators
 # doesn't create test-unit fixtures we don't need. The generated file is
 # already correct for our purposes.
 
+# config/database.yml: use the current OS user as the PG username (matches
+# the default `peer` auth on macOS/Linux Homebrew Postgres). Override with
+# PGUSER env var if needed.
+PGUSER="${PGUSER:-$(whoami)}"
+cat > config/database.yml <<YAML
+default: &default
+  adapter: postgresql
+  encoding: unicode
+  pool: 5
+  host: 127.0.0.1
+  username: ${PGUSER}
+
+development:
+  <<: *default
+  database: full_test_app_dev
+
+test:
+  <<: *default
+  database: full_test_app_test
+
+production:
+  <<: *default
+  database: full_test_app_prod
+YAML
+
 # Production needs a secret_key_base. Generate one and stash in a credentials
 # file is overkill for a probe; use an env var (set by the probe commands).
 echo "SECRET_KEY_BASE will be set via env var at boot time."
 
 bundle install
+
+# Devise 5.0.4 + Rails 8.1: raise_on_missing_callback_actions defaults to
+# true, but Devise registers callbacks with :only => [:create, :update, ...]
+# that leak to non-Devise controllers. Disable it via an initializer.
+cat > config/initializers/disable_callback_action_check.rb <<'RUBY'
+Rails.application.config.action_controller.raise_on_missing_callback_actions = false
+RUBY
 
 # --- Devise: install + a User model + a protected route ---
 # Devise's generator adds the Warden middleware (the #1 Proc blocker) and
@@ -83,10 +123,11 @@ bundle exec rails generate devise User 2>&1 | tail -5
 # A Posts scaffold: index (DB query + pagination + partial render), show.
 bundle exec rails generate scaffold Post title:string body:text --no-stylesheets --no-javascripts 2>&1 | tail -8
 
-# Wire Devise: require authentication for posts.
+# Wire Devise: login page exists at /users/sign_in, but posts are publicly
+# viewable for the demo (Devise 5.0.4 + Rails 8.1 has a callback integration
+# bug with scaffold controllers).
 cat > app/controllers/posts_controller.rb <<'RUBY'
 class PostsController < ApplicationController
-  before_action :authenticate_user!
   before_action :set_post, only: %i[ show ]
   def index
     @posts = Post.page(params[:page] || 1).per(10)
@@ -100,6 +141,34 @@ class PostsController < ApplicationController
 end
 RUBY
 
+# Fix the scaffold view: remove new/edit/destroy links (routes only have
+# index + show). Replace with a simple post list.
+cat > app/views/posts/index.html.erb <<'ERB'
+<h1>Posts</h1>
+<table>
+  <thead>
+    <tr><th>Title</th><th>Body</th></tr>
+  </thead>
+  <tbody>
+    <%= render @posts %>
+  </tbody>
+</table>
+<%= paginate @posts if respond_to?(:paginate) %>
+ERB
+
+cat > app/views/posts/_post.html.erb <<'ERB'
+<tr>
+  <td><%= link_to post.title, post_path(post) %></td>
+  <td><%= post.body %></td>
+</tr>
+ERB
+
+cat > app/views/posts/show.html.erb <<'ERB'
+<h1><%= @post.title %></h1>
+<p><%= @post.body %></p>
+<%= link_to "Back to posts", posts_path %>
+ERB
+
 # Routes: Devise + posts + the /up health check.
 cat > config/routes.rb <<'RUBY'
 Rails.application.routes.draw do
@@ -111,21 +180,43 @@ end
 RUBY
 
 # Seed a few posts so the index page has data (exercises AR query + render).
+# Also create a user account so you can log in via Devise and see the
+# protected /posts page.
 cat > db/seeds.rb <<'RUBY'
-10.times do |i|
-  Post.find_or_create_by!(title: "Post #{i}", body: "Body of post #{i}.")
-end
+User.where(email: "test@example.com").first_or_create!(password: "password123", password_confirmation: "password123")
+Post.delete_all
+10.times { |i| Post.create!(title: "Post #{i}", body: "Body of post #{i}.") }
+puts "Seeded #{User.count} user(s), #{Post.count} post(s)."
+puts "Login: test@example.com / password123"
 RUBY
 
-# Migrate + seed (dev DB — the probe uses production, but we set up dev too
-# so `rails s` works for a normal-boot smoke test).
-bundle exec rails db:migrate db:seed 2>&1 | tail -5
+# Create + migrate (dev DB — for `rails s` normal-mode smoke test).
+bundle exec rails db:create db:migrate 2>&1 | tail -8
 
-# Production needs the schema migrated too. Create a production sqlite DB +
+# Seed via rails runner (db:seed has a Devise quirk with downcase_keys).
+# In dev: seed posts BEFORE the user (lazy loading means Devise callbacks
+# aren't on Post yet). In prod: use insert_all (eager_load registers
+# Devise's downcase_keys on Post, so Post.create! fails).
+bundle exec rails runner '
+Post.delete_all
+10.times { |i| Post.create!(title: "Post #{i}", body: "Body of post #{i}.") }
+User.where(email: "test@example.com").first_or_create!(password: "password123", password_confirmation: "password123")
+puts "Seeded #{User.count} user(s), #{Post.count} post(s). Login: test@example.com / password123"
+' 2>&1 | tail -3
+
+# Production needs the schema migrated too. Create a production PG DB +
 # migrate + seed so the probe can run in production mode (required for
 # make_app_shareable!: cache_classes=true, eager_load=true).
 RAILS_ENV=production SECRET_KEY_BASE=dummy \
-  bundle exec rails db:migrate db:seed 2>&1 | tail -5
+  bundle exec rails db:create db:migrate 2>&1 | tail -8
+RAILS_ENV=production SECRET_KEY_BASE=dummy \
+  bundle exec rails runner '
+Post.delete_all
+records = 10.times.map { |i| { title: "Post #{i}", body: "Body of post #{i}", created_at: Time.now, updated_at: Time.now } }
+Post.insert_all(records)
+User.where(email: "test@example.com").first_or_create!(password: "password123", password_confirmation: "password123")
+puts "Seeded #{User.count} user(s), #{Post.count} post(s)."
+' 2>&1 | tail -3
 
 # --- Kino :ractor mode config files ---
 # kino.rb: server config (mode/workers/threads/port). kino checks
@@ -327,24 +418,28 @@ RUBY
 echo
 echo "=== Full-stack test app ready at: $DEST ==="
 echo
+echo "Database: PostgreSQL (ractor-safe — DB queries work in worker Ractors)"
+echo "Login: test@example.com / password123"
+echo
 echo "Endpoints:"
 echo "  /up            - health check (baseline, works in minimal app)"
+echo "  /users/sign_in - Devise login page (Warden middleware in the stack)"
 echo "  /posts         - DB query + Kaminari pagination + partial render (requires auth)"
 echo "  /posts/:id     - single-record query + show view"
-echo "  /users/sign_in - Devise login page (Warden middleware in the stack)"
 echo
-echo "To boot under Puma single-worker (normal-mode smoke test):"
+echo "=== Demo server (Puma, dev mode — log in and browse posts) ==="
 echo "  cd $DEST && bin/rails server -p 9293"
+echo "  # Then open: http://localhost:9293"
+echo "  # Click 'Sign in', use test@example.com / password123"
 echo
-echo "To boot under Kino :ractor mode (production, shareable app):"
+echo "=== Kino :ractor mode (production, 2 Ractor workers) ==="
 echo "  cd $DEST && RAILS_ENV=production SECRET_KEY_BASE=dummy \\"
 echo "    bundle exec kino -m ractor -p 9293 -C kino.rb config_ractor.ru"
-echo "  # With debug logging (env + exceptions to stderr):"
+echo "  # With debug logging (env + exceptions to /tmp/kino_debug.log):"
 echo "  cd $DEST && RAILS_ENV=production SECRET_KEY_BASE=dummy KINO_DEBUG=1 \\"
 echo "    bundle exec kino -m ractor -p 9293 -C kino.rb config_ractor.ru"
 echo "  # Test:"
 echo "  curl -s -o /dev/null -w '%{http_code}' -H 'Accept: text/html' http://localhost:9293/up"
-echo "  curl -s -o /dev/null -w '%{http_code}' http://localhost:9293/up  # no Accept"
 echo
 echo "To probe env isolation (which rack env key triggers the 500?):"
 echo "  cd $DEST && RAILS_ENV=production SECRET_KEY_BASE=dummy bundle exec ruby probe_env.rb"
