@@ -52,15 +52,15 @@ Then install early in boot, before `Rails.application` is first accessed:
 ```ruby
 # config/boot.rb
 require "bundler/setup"
-require "ractor-rails-shim"
-Ractor::RailsShim.install
+require "ractor_rails_shim"
+RactorRailsShim.install
 ```
 
 Or from a Rails console / runner for a quick check:
 
 ```ruby
-require "ractor/rails_shim"
-Ractor::RailsShim.install
+require "ractor_rails_shim"
+RactorRailsShim.install
 ```
 
 ## Audit your app
@@ -89,10 +89,12 @@ ractor-rails-shim check: 23 class-ivar blocker(s) found
   ...
 
 hints:
-  - require "ractor/rails_shim" and call Ractor::RailsShim.install before
+  - require "ractor_rails_shim" and call RactorRailsShim.install before
     Rails.application is first accessed (early in config/boot.rb)
-  - for shareable state (frozen config, route tables) use Ractor.make_shareable
-    + a constant, NOT the shim — that shares one copy by reference
+  - class-var (@@foo) blockers from mattr_accessor/cattr_accessor are rerouted
+    by the shim automatically once installed
+  - raw class-ivar (@foo) blockers are NOT fixed by the shim; patch the gem
+    or use Ractor.make_shareable + a constant for shareable state
   - for per-Ractor mutable state use Ractor.store_if_absent(key) { default }
 ```
 
