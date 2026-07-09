@@ -1634,6 +1634,14 @@ module RactorRailsShim
       "ActionController::Rendering::RENDER_FORMATS_IN_PRIORITY",
       "ActionController::Base::PROTECTED_IVARS",
       "AbstractController::Rendering::DEFAULT_PROTECTED_INSTANCE_VARIABLES",
+      # Devise
+      "Devise::ParameterSanitizer::DEFAULT_PERMITTED_ATTRIBUTES",
+      "Devise::Mapping::DEFAULTS",
+      "Devise::DEVS",
+      "Devise::URLS",
+      "Devise::STRATEGIES",
+      "Devise::CONTROLLERS",
+      "Devise::MODULES",
       # ActionDispatch / others are added lazily as they're found; add yours
       # via RactorRailsShim.shareable_constants << "YourGem::CONST"
     ]
@@ -2381,6 +2389,19 @@ module RactorRailsShim
         def initialize(method_name); @method_name = method_name; end
         def call(request); request.__send__(@method_name); end
       end
+      class DeviseMappingCallable
+        def initialize(mapping); @mapping = mapping; end
+        def call(request)
+          request.env["devise.mapping"] = @mapping
+          true
+        end
+      end
+      class StrategyServe
+        def call(app, req); app.serve(req); end
+      end
+      class StrategyCall
+        def call(app, req); app.call(req.env); end
+      end
       class NoOpLock
         def synchronize; yield; end
         def mon_synchronize; yield; end
@@ -2414,6 +2435,8 @@ module RactorRailsShim
     SSL_LOC = "/active_dispatch/middleware/ssl.rb".freeze
     FILES_LOC = "/rack/files.rb".freeze
     COOKIE_LOC = "/session/cookie_store.rb".freeze
+    DEVISE_SCOPE_LOC = "/devise/rails/routes.rb".freeze
+    MAPPER_LOC = "/action_dispatch/routing/mapper.rb".freeze
 
     def _precompute_lazy_ivars(app)
       app.env_config
@@ -2487,6 +2510,11 @@ module RactorRailsShim
           Callable.new(files_server, :get)
         elsif src.end_with?(COOKIE_LOC)
           RequestCallable.new(:cookies_same_site_protection)
+        elsif src.end_with?(DEVISE_SCOPE_LOC)
+          _devise_mapping_replacement(proc_obj, parent)
+        elsif src.end_with?(MAPPER_LOC) && ivar == :@strategy
+          line = proc_obj.source_location[1]
+          line == 32 ? StrategyServe.new : StrategyCall.new
         else
           NoOpProc.new
         end
@@ -2503,6 +2531,36 @@ module RactorRailsShim
       elsif parent.is_a?(Hash)
         key = parent.key(proc_obj)
         parent[key] = replacement if key
+      end
+    end
+
+    # Build a shareable replacement for a Devise scope constraint.
+    # The original Proc (devise/rails/routes.rb:363) does:
+    #   request.env["devise.mapping"] = Devise.mappings[scope]
+    #   true
+    # The scope is captured in the Proc's binding. We call the original
+    # Proc once in main with a mock request to capture the mapping, then
+    # make it shareable and wrap it in a DeviseMappingCallable.
+    def _devise_mapping_replacement(proc_obj, parent)
+      mock_env = { "devise.mapping" => nil }
+      mock_req = Struct.new(:env).new(mock_env)
+      begin
+        proc_obj.call(mock_req)
+      rescue
+      end
+      mapping = mock_env["devise.mapping"]
+      if mapping
+        begin
+          _replace_unshareable_procs!(mapping)
+          mapping = Ractor.make_shareable(mapping)
+        rescue
+          mapping = nil
+        end
+      end
+      if mapping
+        DeviseMappingCallable.new(mapping)
+      else
+        CallableConst.new(true)
       end
     end
 
