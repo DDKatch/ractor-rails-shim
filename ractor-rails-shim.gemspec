@@ -20,17 +20,25 @@ Gem::Specification.new do |spec|
     This is a stopgap: the goal is for Rails to do this upstream, at which
     point the shim becomes a no-op and can be removed.
   DESC
-  spec.homepage = "https://github.com/example/ractor-rails-shim"
+
+  # Canonical repo URL. Update this (and the metadata below) before
+  # publishing — rubygems.org displays these links on the gem page.
+  REPO_URL = "https://github.com/anomalyco/ractor-rails-shim"
+
+  spec.homepage = REPO_URL
   spec.license = "MIT"
   spec.required_ruby_version = ">= 4.0"
 
   spec.metadata = {
     "homepage_uri" => spec.homepage,
-    "source_code_uri" => "https://github.com/example/ractor-rails-shim"
+    "source_code_uri" => REPO_URL,
+    "changelog_uri" => "#{REPO_URL}/blob/main/CHANGELOG.md",
+    "bug_tracker_uri" => "#{REPO_URL}/issues",
+    "rubygems_mfa_required" => "true"
   }
 
   spec.files = Dir.chdir(__dir__) do
-    Dir["lib/**/*.rb", "exe/*", "README.md", "LICENSE.txt"]
+    Dir["lib/**/*.rb", "exe/*", "README.md", "LICENSE.txt", "CHANGELOG.md"]
   end
   spec.bindir = "exe"
   spec.executables = spec.files.grep(%r{\Aexe/}) { |f| File.basename(f) }

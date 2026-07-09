@@ -6,7 +6,7 @@
 /pkg/
 /spec/reports/
 /tmp/
-/racker-rails-shim-*.gem
+/ractor-rails-shim-*.gem
 *.gem
 Gemfile.lock
 .rspec_status

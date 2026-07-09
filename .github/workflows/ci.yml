@@ -1,0 +1,75 @@
+name: CI
+
+# CI for ractor-rails-shim. Two jobs:
+#   - unit:       runs the no-Rails unit specs (shim mechanism + version
+#                 detection + callable/lock infra). Fast, always runs.
+#   - integration: builds the minimal Rails 8.1 test app (via
+#                 script/make_test_app.sh), boots it, makes it shareable, and
+#                 dispatches GET /up in a worker Ractor — asserting HTTP 200.
+#                 This is the "real Rails app in CI" coverage the fake-module
+#                 specs can't provide.
+#
+# Ruby 4.0 is required (Ractor semantics + the shim targets 4.0.x). The shim
+# is tested against Rails 8.1.x; the matrix is a single entry today, with the
+# version-detection infrastructure (PATCH_VERSIONS) ready to add 7.x rows
+# once version-specific patches are written.
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  unit:
+    name: Unit specs (no Rails)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Ruby 4.0
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+          bundler-cache: true
+
+      - name: Run unit specs
+        run: bundle exec rake spec
+
+  integration:
+    name: Integration (minimal Rails 8.1 app, worker Ractor dispatch)
+    runs-on: ubuntu-latest
+    env:
+      RAILS_SHIM_TEST_APP: /tmp/rails-shim-test-app
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Ruby 4.0
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+
+      - name: Install Rails (for `rails new`)
+        run: gem install rails -v "~> 8.1.3" --no-document
+
+      - name: Build the test app
+        run: ./script/make_test_app.sh "$RAILS_SHIM_TEST_APP"
+
+      - name: Run integration spec (GET /up → 200 in a worker Ractor)
+        working-directory: ${{ env.RAILS_SHIM_TEST_APP }}
+        env:
+          RAILS_ENV: production
+          SECRET_KEY_BASE: dummy
+        run: |
+          bundle exec ruby -I${{ github.workspace }}/lib \
+            -I${{ github.workspace }}/spec \
+            -e 'require "minitest/autorun"; require "${{ github.workspace }}/spec/integration_spec.rb"'
+
+      - name: Run ractor-rails-check audit on the test app
+        working-directory: ${{ env.RAILS_SHIM_TEST_APP }}
+        env:
+          RAILS_ENV: production
+          SECRET_KEY_BASE: dummy
+        run: |
+          bundle exec ruby -I${{ github.workspace }}/lib \
+            -e 'require "ractor_rails_shim"; require "config/boot"; require "config/application"; Bundler.require(*Rails.groups); Rails.application.initialize!; RactorRailsShim::Check.report(print: true)'

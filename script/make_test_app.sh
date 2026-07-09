@@ -46,7 +46,7 @@ group :development, :test do
   gem "debug", platforms: %i[ mri windows ], require: "debug/prelude"
 end
 RUBY
-sed -i '' "s|SHIM_PATH_PLACEHOLDER|$SHIM_DIR|" Gemfile
+sed "s|SHIM_PATH_PLACEHOLDER|$SHIM_DIR|" Gemfile > Gemfile.tmp && mv Gemfile.tmp Gemfile
 
 # config/boot.rb: install the shim before Rails.application is accessed.
 cat > config/boot.rb <<'RUBY'

@@ -35,6 +35,7 @@ rescue LoadError
   # ActiveSupport not installed — the fallback below provides the same API.
 end
 require_relative "fallback_ies"
+require_relative "version_check"
 
 module RactorRailsShim
   # The keys under which each global is stored in IsolatedExecutionState.
@@ -80,6 +81,14 @@ module RactorRailsShim
   # ONLY safe to read from workers for shareable defaults. We guard the reader
   # to only consult it for defaults that are Ractor.shareable?.
   MATTR_DEFAULTS = {}
+  # class_attribute default values, keyed by IES key. Written at
+  # class_attribute-definition time (boot, in main). The class_attribute reader
+  # falls back to this in the MAIN ractor when the IES slot is empty (which it
+  # is on non-boot threads — IES is thread-local, and Puma's request threads
+  # have empty slots). NOT made shareable (values may be mutable Hashes/Arrays);
+  # only safe to read from the main ractor. Workers use SHAREABLE_FALLBACK
+  # (built at prepare_for_ractors! time) instead.
+  CLASS_ATTR_VALUES = {}
   # Shareable subset of MATTR_DEFAULTS: only defaults that are
   # Ractor.shareable? (so workers can read the constant safely). Written at
   # mattr-definition time (boot, in main, before workers spawn); frozen +
@@ -98,6 +107,20 @@ module RactorRailsShim
   # empty. Values that can't be made shareable are skipped (workers see nil
   # for those and must set their own).
   SHAREABLE_FALLBACK = Ractor.make_shareable({})
+
+  # Versions each patch was tested against. Populated by the install_*
+  # methods as they register themselves. A patch applies to a runtime Rails
+  # version only if the runtime segment matches one of its tested entries.
+  # This is the "load different patches for different Rails versions"
+  # infrastructure: to add 7.x support, write version-specific variants and
+  # tag them here. Defined on the module (not the singleton class) so it's
+  # readable from outside as RactorRailsShim::PATCH_VERSIONS.
+  PATCH_VERSIONS = {}
+
+  # Raised under :strict version policy when the runtime Rails/Ruby version
+  # isn't in the tested set. Defined on the module so it's catchable as
+  # RactorRailsShim::UnsupportedVersionError.
+  class UnsupportedVersionError < StandardError; end
 
   class << self
     # Accessor for the abstract-controller registry (written by abstract! in
@@ -131,27 +154,85 @@ module RactorRailsShim
     # Verify the runtime matches the versions the shim was developed against.
     # The shim's patches target specific Rails 8.1 class layouts and Ruby 4.0
     # Ractor semantics. On other versions, the patches may silently miss or
-    # break things — fail loudly instead. Warns (doesn't raise) on minor
-    # mismatches so pre-release/patch versions work; raises on major
-    # mismatches.
-    SUPPORTED_RUBY = "4.0"
+    # break things. Behavior on mismatch is governed by `version_policy`:
+    #
+    #   :warn   (default) print a warning to $stderr, proceed anyway
+    #   :strict raise RactorRailsShim::UnsupportedVersionError
+    #   :off    silent (for advanced users / experimentation)
+    #
+    # Ruby mismatch always warns (Ractor semantics are not stable across
+    # majors); Rails mismatch uses the policy. This is real version detection
+    # (Gem::Version-based), not a string-prefix compare, so pre-release and
+    # patch versions sort correctly.
+    SUPPORTED_RUBY = RactorRailsShim::Version::SUPPORTED_RUBY
     SUPPORTED_RAILS = "8.1"
+    # Versions each patch was tested against lives on the module as
+    # RactorRailsShim::PATCH_VERSIONS (see above) so it's readable from
+    # outside the singleton class.
+
+    # Policy for version mismatches. One of :warn (default), :strict, :off.
+    # Set before `install`:
+    #   RactorRailsShim.version_policy = :strict
+    attr_accessor :version_policy
 
     def _check_version_support
-      ruby_v = RUBY_VERSION
-      unless ruby_v.start_with?(SUPPORTED_RUBY)
-        warn "ractor-rails-shim: Ruby #{ruby_v} — shim developed against " \
-             "Ruby #{SUPPORTED_RUBY}. Ractor semantics may differ; the shim " \
-             "may break. Proceeding anyway."
+      @version_policy ||= :warn
+      unless RactorRailsShim::Version.supported_ruby?
+        msg = "ractor-rails-shim: Ruby #{RUBY_VERSION} — shim developed " \
+              "against Ruby #{SUPPORTED_RUBY}. Ractor semantics may differ; " \
+              "the shim may break. Proceeding anyway."
+        _version_mismatch(msg)
       end
-      if defined?(::Rails) && (rv = ::Rails::VERSION::STRING)
-        unless rv.start_with?(SUPPORTED_RAILS)
-          warn "ractor-rails-shim: Rails #{rv} — shim developed against " \
-               "Rails #{SUPPORTED_RAILS}. Class layouts (class_attribute, " \
-               "callbacks, PathRegistry, etc.) may differ; patches may miss " \
-               "blockers. Proceeding anyway."
+      if RactorRailsShim::Version.rails &&
+         !RactorRailsShim::Version.supported_rails?
+        rv = ::Rails::VERSION::STRING
+        msg = "ractor-rails-shim: Rails #{rv} — shim developed against " \
+              "Rails #{RactorRailsShim::Version::TESTED_RAILS.join(", ")}. " \
+              "Class layouts (class_attribute, callbacks, PathRegistry, etc.) " \
+              "may differ; patches may miss blockers. Proceeding anyway. " \
+              "Set RactorRailsShim.version_policy = :strict to make this " \
+              "fatal; :off to silence."
+        _version_mismatch(msg)
+      end
+    end
+
+    # Apply the configured policy to a mismatch message.
+    def _version_mismatch(message)
+      case version_policy
+      when :strict
+        raise UnsupportedVersionError, message
+      when :off
+        # silent
+      else
+        warn message
+      end
+    end
+
+    # Report which registered patches apply to the runtime Rails version
+    # (and which were skipped because they're untested on it). Useful for
+    # diagnostics and CI. Returns a Hash: { applied: [...], skipped: [...] }.
+    def applicable_patches
+      seg = RactorRailsShim::Version.rails_segment
+      applied = []
+      skipped = []
+      PATCH_VERSIONS.each do |name, tested|
+        if seg.nil? || tested.include?(seg)
+          applied << name
+        else
+          skipped << { name: name, tested: tested, runtime: seg }
         end
       end
+      { applied: applied, skipped: skipped }
+    end
+
+    # Record that a patch was developed/tested against the given Rails version
+    # segments. Called by each install_* method. This populates PATCH_VERSIONS
+    # so `applicable_patches` can report what applied to the runtime. To add
+    # support for a new version, add the segment here (after writing/testing
+    # the variant) — no other wiring needed.
+    def _register_patch(name, *tested_segments)
+      existing = PATCH_VERSIONS[name] || []
+      PATCH_VERSIONS[name] = (existing + tested_segments).uniq
     end
 
     def installed?
@@ -187,6 +268,9 @@ module RactorRailsShim
       _install_execution_context_patch
       _install_request_parameter_parsers_patch
       _install_rack_utils_patch
+      _install_log_subscriber_patch
+      _install_exception_wrapper_patch
+      _install_warden_hooks_patch
     end
 
     # Patch Rack::Request's class-level attr_accessors (forwarded_priority,
@@ -198,6 +282,7 @@ module RactorRailsShim
     def _install_rack_request_patch
       return if @rack_request_patched
       @rack_request_patched = true
+      _register_patch :rack_request, "8.1"
       return unless defined?(::Rack::Request)
       req = ::Rack::Request
       fp_key = :ractor_rails_shim_rack_forwarded_priority
@@ -245,6 +330,7 @@ module RactorRailsShim
     def _install_inflector_patch
       return if @inflector_patched
       @inflector_patched = true
+      _register_patch :inflector, "8.1"
       return unless defined?(::ActiveSupport::Inflector::Inflections)
       inf = ::ActiveSupport::Inflector::Inflections
       en_key = :ractor_rails_shim_inflections_en
@@ -301,6 +387,7 @@ module RactorRailsShim
     def _install_parameter_encoding_patch
       return if @param_encoding_patched
       @param_encoding_patched = true
+      _register_patch :parameter_encoding, "8.1"
       return unless defined?(::ActionController::ParameterEncoding)
       pe = ::ActionController::ParameterEncoding::ClassMethods
       pe.module_eval <<-RUBY, __FILE__, __LINE__ + 1
@@ -327,6 +414,7 @@ module RactorRailsShim
     def _install_path_registry_patch
       return if @path_registry_patched
       @path_registry_patched = true
+      _register_patch :path_registry, "8.1"
       return unless defined?(::ActionView::PathRegistry)
       pr = ::ActionView::PathRegistry
       vpc_key = :ractor_rails_shim_path_registry_view_paths_by_class
@@ -366,6 +454,7 @@ module RactorRailsShim
     def _install_abstract_controller_patch
       return if @abstract_controller_patched
       @abstract_controller_patched = true
+      _register_patch :abstract_controller, "8.1"
       return unless defined?(::AbstractController::Base)
       ac = ::AbstractController::Base
       key = :ractor_rails_shim_abstract_controller_path
@@ -524,6 +613,7 @@ module RactorRailsShim
     def _install_active_support_error_reporter_patch
       return if @error_reporter_patched
       @error_reporter_patched = true
+      _register_patch :error_reporter, "8.1"
       return unless defined?(::ActiveSupport)
       key = :ractor_rails_shim_active_support_error_reporter
       key_str = key.inspect
@@ -556,6 +646,7 @@ module RactorRailsShim
     def _install_lookup_context_patch
       return if @lookup_context_patched
       @lookup_context_patched = true
+      _register_patch :lookup_context, "8.1"
       return unless defined?(::ActionView::LookupContext)
       lc = ::ActionView::LookupContext
       key = :ractor_rails_shim_lookup_context_registered_details
@@ -715,6 +806,7 @@ module RactorRailsShim
     def _install_i18n_patch
       return if @i18n_patched
       @i18n_patched = true
+      _register_patch :i18n, "8.1"
       return unless defined?(::I18n::Config)
       cfg = ::I18n::Config
       dl_key = :ractor_rails_shim_i18n_default_locale
@@ -810,6 +902,7 @@ module RactorRailsShim
     def _install_template_handlers_patch
       return if @template_handlers_patched
       @template_handlers_patched = true
+      _register_patch :template_handlers, "8.1"
       return unless defined?(::ActionView::Template::Handlers)
       h = ::ActionView::Template::Handlers
       th_key = :ractor_rails_shim_av_template_handlers
@@ -877,6 +970,7 @@ module RactorRailsShim
     def _install_execution_context_patch
       return if @exec_context_patched
       @exec_context_patched = true
+      _register_patch :execution_context, "8.1"
       return unless defined?(::ActiveSupport::ExecutionContext)
       ec = ::ActiveSupport::ExecutionContext
       acb_key = :ractor_rails_shim_exec_context_after_change_callbacks
@@ -952,6 +1046,7 @@ module RactorRailsShim
     def _install_request_parameter_parsers_patch
       return if @request_param_parsers_patched
       @request_param_parsers_patched = true
+      _register_patch :request_parameter_parsers, "8.1"
       return unless defined?(::ActionDispatch::Request)
       req = ::ActionDispatch::Request
       pp_key = :ractor_rails_shim_request_parameter_parsers
@@ -980,6 +1075,7 @@ module RactorRailsShim
     def _install_rack_utils_patch
       return if @rack_utils_patched
       @rack_utils_patched = true
+      _register_patch :rack_utils, "8.1"
       return unless defined?(::Rack::Utils)
       u = ::Rack::Utils
       dqp_key = :ractor_rails_shim_rack_utils_default_query_parser
@@ -1028,6 +1124,108 @@ module RactorRailsShim
       CLASS_ATTRIBUTES << ["Rack::Utils", :multipart_file_limit, mfl_key, nil]
     end
 
+    # Patch Warden::Hooks lazy class-ivar accessors (@_on_request ||= [] etc).
+    # Warden middleware holds 6 lazy-init class ivars for callback arrays.
+    # make_app_shareable! freezes the middleware instance; the ||= lazy init
+    # tries to WRITE on the frozen instance → IsolationError in workers.
+    # The callbacks (Procs) were registered at boot and already ran in main;
+    # workers treat them as empty (correct for a read-only shared app).
+    def _install_warden_hooks_patch
+      return if @warden_patched
+      @warden_patched = true
+      _register_patch :warden_hooks, "8.1"
+      return unless defined?(::Warden::Hooks)
+      ::Warden::Hooks.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def _after_set_user
+          if Ractor.main? && instance_variable_defined?(:@_after_set_user)
+            @_after_set_user
+          else
+            []
+          end
+        end
+        def _before_failure
+          if Ractor.main? && instance_variable_defined?(:@_before_failure)
+            @_before_failure
+          else
+            []
+          end
+        end
+        def _after_failed_fetch
+          if Ractor.main? && instance_variable_defined?(:@_after_failed_fetch)
+            @_after_failed_fetch
+          else
+            []
+          end
+        end
+        def _before_logout
+          if Ractor.main? && instance_variable_defined?(:@_before_logout)
+            @_before_logout
+          else
+            []
+          end
+        end
+        def _on_request
+          if Ractor.main? && instance_variable_defined?(:@_on_request)
+            @_on_request
+          else
+            []
+          end
+        end
+      RUBY
+    end
+
+    # Patch ActionDispatch::ExceptionWrapper instance methods that read
+    # @@rescue_responses / @@rescue_templates class variables directly
+    # (bypassing the mattr_accessor reader the shim already reroutes through
+    # IES). Workers can't read class vars; route through the class method.
+    def _install_exception_wrapper_patch
+      return if @exception_wrapper_patched
+      @exception_wrapper_patched = true
+      _register_patch :exception_wrapper, "8.1"
+      return unless defined?(::ActionDispatch::ExceptionWrapper)
+      ::ActionDispatch::ExceptionWrapper.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def rescue_template
+          self.class.rescue_templates[@exception_class_name]
+        end
+        def status_code
+          ActionDispatch::Response.rack_status_code(self.class.rescue_responses[class_name])
+        end
+        def rescue_response?
+          self.class.rescue_responses.key?(exception.class.name)
+        end
+      RUBY
+    end
+
+    # Patch ActiveSupport::LogSubscriber.logger — a raw class ivar with lazy
+    # init (@logger ||= Rails.logger) that's WRITTEN at request teardown via
+    # flush_all!. Workers can't write class ivars → IsolationError. Route
+    # through IES; workers get Rails.logger (which the shim already routes
+    # through IES) so it resolves to the worker's own per-Ractor logger.
+    def _install_log_subscriber_patch
+      return if @log_subscriber_patched
+      @log_subscriber_patched = true
+      _register_patch :log_subscriber, "8.1"
+      return unless defined?(::ActiveSupport::LogSubscriber)
+      ls = ::ActiveSupport::LogSubscriber
+      key = :ractor_rails_shim_log_subscriber_logger
+      key_str = key.inspect
+      ls.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def logger
+          v = ActiveSupport::IsolatedExecutionState[#{key_str}]
+          return v unless v.nil?
+          if Ractor.main? && instance_variable_defined?(:@logger)
+            @logger
+          elsif defined?(::Rails) && ::Rails.respond_to?(:logger)
+            ::Rails.logger
+          end
+        end
+
+        def logger=(val)
+          ActiveSupport::IsolatedExecutionState[#{key_str}] = val
+        end
+      RUBY
+    end
+
     # The frozen, shareable fallback table for class_attribute / mattr_accessor
     # `prepare_for_ractors!` time from the main ractor's live values, then made
     # shareable. Returns a frozen Hash { ies_key => shareable_value }.
@@ -1064,6 +1262,9 @@ module RactorRailsShim
       _install_execution_context_patch
       _install_request_parameter_parsers_patch
       _install_rack_utils_patch
+      _install_log_subscriber_patch
+      _install_exception_wrapper_patch
+      _install_warden_hooks_patch
       # Pre-compute lazy ivars BEFORE freezing (they mutate the app).
       _precompute_lazy_ivars(app)
       # Neutralize the app's logger IO so Ractor.make_shareable doesn't freeze
@@ -1280,6 +1481,7 @@ module RactorRailsShim
     # Rails.env, Rails.cache, etc.) to route through IsolatedExecutionState.
     # Defers via a load hook if Rails isn't defined yet (the config/boot.rb case).
     def install_rails_module
+      _register_patch :rails_module, "8.1"
       if defined?(::Rails)
         patch_rails_module!(::Rails)
       else
@@ -1385,6 +1587,7 @@ module RactorRailsShim
       # constants don't exist. We re-run from patch_rails_module! (which
       # fires once Rails — and thus ActiveSupport — is defined). Guarded
       # by @shareable_constants_done so both paths are safe.
+      _register_patch :shareable_constants, "8.1"
       return unless defined?(::ActiveSupport)
 
       do_install_shareable_constants
@@ -1581,6 +1784,7 @@ module RactorRailsShim
     # route through IsolatedExecutionState. Uses prepend + module_eval with
     # strings to avoid cross-ractor binding issues.
     def install_mattr_accessor
+      _register_patch :mattr_accessor, "8.1"
       return if @mattr_patched
       @mattr_patched = true
 
@@ -1688,16 +1892,35 @@ module RactorRailsShim
               end
             RUBY
 
-            # Instance readers/writers route through the class methods.
+            # Instance readers/writers route through IES directly (NOT
+            # self.class.#{sym}). Rails' original uses @@sym (a class variable
+            # inherited by including classes); the shim routes through IES,
+            # so the instance reader must also use IES. Using self.class.sym
+            # would fail for mattr_accessor on Modules (e.g.
+            # ActionView::Helpers::FormHelper#form_with_generates_ids):
+            # self.class is the including class (ActionView::Base), which
+            # doesn't have the module's singleton method.
             # Only redefine if instance_accessor is on (matches Rails).
             if instance_reader && instance_accessor
               module_eval <<-RUBY, __FILE__, __LINE__ + 1
-                def #{sym}; self.class.#{sym}; end
+                def #{sym}
+                  v = ActiveSupport::IsolatedExecutionState[#{key_str}]
+                  return v unless v.nil?
+                  if Ractor.main?
+                    self.class.class_variable_defined?(#{cv_str}) ? self.class.class_variable_get(#{cv_str}) : nil
+                  else
+                    RactorRailsShim::SHAREABLE_FALLBACK[#{key_str}]
+                  end
+                end
               RUBY
             end
             if instance_writer && instance_accessor
               module_eval <<-RUBY, __FILE__, __LINE__ + 1
-                def #{sym}=(val); self.class.#{sym} = val; end
+                def #{sym}=(val)
+                  ActiveSupport::IsolatedExecutionState[#{key_str}] = val
+                  self.class.class_variable_set(#{cv_str}, val) if Ractor.main? && self.class.class_variable_defined?(#{cv_str})
+                  val
+                end
               RUBY
             end
           end
@@ -1731,6 +1954,7 @@ module RactorRailsShim
     # own app instance and the finisher sets executor/check/etc. during
     # initialize!, so the default is only read as a fallback.
     def install_class_attribute
+      _register_patch :class_attribute, "8.1"
       return if @class_attr_patched
       @class_attr_patched = true
       if defined?(::ActiveSupport::ClassAttribute)
@@ -1769,6 +1993,16 @@ module RactorRailsShim
           # main — workers start nil and set their own value via the writer.
           ActiveSupport::IsolatedExecutionState[key] = value if Ractor.main?
 
+          # Also store in CLASS_ATTR_VALUES so the reader can fall back to it
+          # in the MAIN ractor on non-boot threads. IES is thread-local: Puma's
+          # request threads have empty IES slots, so the reader returns nil
+          # without this fallback. This is the bug that breaks normal (non-
+          # Ractor) multi-threaded servers — the minimal --minimal app didn't
+          # hit it because /up doesn't trigger LogSubscriber.log_levels.
+          # CLASS_ATTR_VALUES is NOT shareable (values may be mutable); only
+          # safe to read from the main ractor.
+          RactorRailsShim::CLASS_ATTR_VALUES[key] = value
+
           # Register so _build_shareable_fallback! can capture + make shareable
           # at prepare_for_ractors! time. owner.name may be nil for anonymous
           # classes (e.g. spec fixtures); use a stable label in that case.
@@ -1799,11 +2033,14 @@ module RactorRailsShim
             def #{namespaced_name}
               v = ActiveSupport::IsolatedExecutionState[#{key_str}]
               return v unless v.nil?
-              RactorRailsShim::SHAREABLE_FALLBACK[#{key_str}]
+              fb = RactorRailsShim::SHAREABLE_FALLBACK[#{key_str}]
+              return fb unless fb.nil?
+              RactorRailsShim::CLASS_ATTR_VALUES[#{key_str}] if Ractor.main?
             end
 
             def #{namespaced_name}=(new_value)
               ActiveSupport::IsolatedExecutionState[#{key_str}] = new_value
+              RactorRailsShim::CLASS_ATTR_VALUES[#{key_str}] = new_value if Ractor.main?
               new_value
             end
           RUBY
@@ -1816,11 +2053,14 @@ module RactorRailsShim
               def #{name}
                 v = ActiveSupport::IsolatedExecutionState[#{key_str}]
                 return v unless v.nil?
-                RactorRailsShim::SHAREABLE_FALLBACK[#{key_str}]
+                fb = RactorRailsShim::SHAREABLE_FALLBACK[#{key_str}]
+                return fb unless fb.nil?
+                RactorRailsShim::CLASS_ATTR_VALUES[#{key_str}] if Ractor.main?
               end
 
               def #{name}=(new_value)
                 ActiveSupport::IsolatedExecutionState[#{key_str}] = new_value
+                RactorRailsShim::CLASS_ATTR_VALUES[#{key_str}] = new_value if Ractor.main?
                 new_value
               end
             RUBY
@@ -1851,6 +2091,7 @@ module RactorRailsShim
     def install_zeitwerk_registry
       return if @zeitwerk_patched
       @zeitwerk_patched = true
+      _register_patch :zeitwerk_registry, "8.1"
       if defined?(::Zeitwerk::Registry)
         patch_zeitwerk_registry!
       else
@@ -1965,6 +2206,7 @@ module RactorRailsShim
     def install_execution_wrapper
       return if @exec_wrapper_patched
       @exec_wrapper_patched = true
+      _register_patch :execution_wrapper, "8.1"
       if defined?(::ActiveSupport::ExecutionWrapper)
         patch_execution_wrapper!
       else

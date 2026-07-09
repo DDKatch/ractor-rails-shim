@@ -50,6 +50,32 @@ The shim uses the per-Ractor path by default. For shareable state, use `Ractor.m
 
 **Load order.** `install` may be called either before or after Rails is defined — the normal `config/boot.rb` path calls it before `require "rails"`. The `mattr_accessor` macro patch applies regardless; the Rails-module accessor patch (`Rails.application`, `Rails.env`, ...) defers via a `TracePoint(:class)` load hook that fires when `module Rails` opens.
 
+## Version compatibility
+
+The shim targets specific Rails class layouts (8.1.x) and Ruby Ractor semantics
+(4.0.x). At install it runs a real `Gem::Version`-based check (not a string
+compare) and applies a configurable policy on mismatch:
+
+```ruby
+RactorRailsShim.version_policy = :strict  # raise on untested versions
+RactorRailsShim.version_policy = :warn    # default: warn to $stderr, proceed
+RactorRailsShim.version_policy = :off     # silent (experimentation)
+```
+
+Under `:strict` a mismatch raises `RactorRailsShim::UnsupportedVersionError`.
+Each patch registers its tested Rails versions in `RactorRailsShim::PATCH_VERSIONS`;
+query what applied to your runtime with:
+
+```ruby
+RactorRailsShim.applicable_patches
+# => { applied: [:mattr_accessor, :rails_module, ...], skipped: [{name: ...}] }
+```
+
+Adding Rails 7.x support: the version-gated registry is the extension point —
+write version-specific patch variants, tag them in `PATCH_VERSIONS`, and the
+dispatcher applies only matching patches. (7.x is not yet supported; only 8.1
+is tested today.)
+
 ## Install
 
 Add to your Gemfile:
@@ -170,6 +196,47 @@ hints:
 - **Per-Ractor means N copies.** Each Ractor gets its own `Rails.application`, `Rails.cache`, etc. — same shape as forking N processes, but cheaper (no heap duplication). For large read-only state, use `Ractor.make_shareable` instead.
 - **The mattr_accessor rewrite is broad.** It reroutes *all* `mattr_accessor`-defined accessors through `IsolatedExecutionState`, including ones that were legitimately class-global. This may change semantics for code that sets a value in main Ractor expecting worker Ractors to see it. Audit with `--check` and use `shareable: true` for accessors that should be shared.
 - **Fragile across Rails versions.** This is a monkey-patch. Rails releases that touch `rails.rb` or `mattr_accessor` may break it. When upstream fixes it, delete the gem.
+
+## When to delete this gem
+
+This shim is a **stopgap**. Delete it (remove from the Gemfile) when Rails
+natively supports Ractor mode — i.e. when **all** of these land upstream:
+
+1. Class-level instance variables / class variables backing `mattr_accessor`
+   and `class_attribute` are migrated to `IsolatedExecutionState` (or
+   equivalent ractor-safe storage). Rails already does this for
+   `ActiveRecord::ConnectionHandling.connection_handler`, proving the pattern.
+2. The `Zeitwerk::Registry` class ivars route through ractor-safe storage.
+3. Unshareable constants (`EnvironmentInquirer::DEFAULT_ENVIRONMENTS`, etc.)
+   are made shareable (deep-frozen) at boot.
+4. The **7 self-capturing Procs** in the app graph (see `NEXT_STEPS.md`
+   Phase 3) are restructured to not capture `self` — e.g. the `Rack::Files`
+   head lambda, `ActionDispatch::SSL` exclude proc, `CookieStore` same-site
+   proc, the message-verifier secret generator, and the routes-reloader
+   blocks. These block `Ractor.make_shareable(Rails.application)` today.
+5. Initializer blocks (`Rails::Initializable::Initializer#block`) are
+   shareable (defined as methods, not closures) so per-Ractor boot works.
+
+Until then, the shim is required. A simple canary: with the gem removed,
+`Ractor.make_shareable(Rails.application)` fails (it raises on a Mutex or a
+"Proc's self is not shareable"). When that call succeeds unshimmed, the gem
+is obsolete. See `UPSTREAM_ISSUE.md` for the full blocker map and the
+proposed incremental upstream merge plan.
+
+## Publishing (maintainers)
+
+The gemspec is publish-ready (metadata, MFA required, CHANGELOG packaged).
+To release a new version:
+
+```sh
+# Bump lib/ractor_rails_shim/version.rb and add a CHANGELOG entry, then:
+gem build ractor-rails-shim.gemspec
+gem push ractor-rails-shim-<version>.gem
+```
+
+CI (`.github/workflows/ci.yml`) gates merges: unit specs (no Rails) + an
+integration job that builds the minimal Rails 8.1 app and dispatches `GET /up`
+in a worker Ractor. Don't publish from a red build.
 
 ## License
 
