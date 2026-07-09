@@ -10,8 +10,14 @@
 # Run: ruby spec/shim_spec.rb
 
 require "minitest/autorun"
+require "active_support/class_attribute" # for the class_attribute spec
+require "active_support/execution_wrapper" # ExecutionWrapper for the class_attribute spec
 require_relative "../lib/ractor_rails_shim/fallback_ies"
 require_relative "../lib/ractor_rails_shim/patches"
+
+# Install the class_attribute patch so the spec exercises it (the shim's
+# install defers via TracePoint if ActiveSupport isn't loaded; here it is).
+RactorRailsShim.send(:install_class_attribute)
 
 # Fake Rails-style module with class ivars — the exact pattern the shim targets.
 module FakeRails
@@ -182,5 +188,74 @@ class ShimSpec < Minitest::Spec
     port.receive
 
     assert_equal "main-value", ActiveSupport::IsolatedExecutionState[:ractor_shim_main_test]
+  end
+
+  it "make_constant_shareable deep-freezes an unshareable constant value" do
+    # Use a NAMED module (anonymous modules have name=nil, so the constant
+    # path can't be resolved by string).
+    mod = Module.new
+    Object.const_set(:ShimTestMod, mod)
+    mod.const_set(:LIST, ["a", "b"]) # mutable Array of mutable Strings
+    refute Ractor.shareable?(mod::LIST), "setup: LIST should be unshareable"
+
+    RactorRailsShim.send(:make_constant_shareable, "ShimTestMod::LIST")
+
+    assert Ractor.shareable?(mod::LIST), "LIST should be shareable after fix"
+    assert mod::LIST.frozen?, "LIST should be frozen"
+    assert mod::LIST.first.frozen?, "elements should be frozen (deep)"
+
+    # A worker Ractor can read the constant without IsolationError
+    port = Ractor::Port.new
+    r = Ractor.new(port) do |p|
+      begin
+        p.send([:ok, ShimTestMod::LIST])
+      rescue Ractor::IsolationError => e
+        p.send([:err, e.message[0, 50]])
+      end
+    end
+    result = port.receive
+    assert_equal :ok, result.first, "worker read failed: #{result.inspect}"
+    assert_equal ["a", "b"], result.last
+  ensure
+    Object.send(:remove_const, :ShimTestMod) if defined?(ShimTestMod)
+  end
+
+  it "class_attribute reader/writer are callable from a worker Ractor (no unshareable Proc)" do
+    # Define a class_attribute on a fake class — the shim's class_attribute
+    # patch prepends onto ActiveSupport::ClassAttribute, routing the
+    # __class_attr_<name> storage through IES so the methods are string-eval'd
+    # (no captured binding) and callable cross-Ractor.
+    skip "ActiveSupport::ClassAttribute not loaded" unless defined?(ActiveSupport::ClassAttribute)
+
+    # Use a NAMED constant so it can be referenced from a worker Ractor
+    # (anonymous classes capture the local `klass` and can't cross ractor
+    # boundaries).
+    klass = Class.new do
+      class_attribute :setting, default: "main-default"
+    end
+    Object.const_set(:ShimTestAttrClass, klass)
+
+    port = Ractor::Port.new
+    r = Ractor.new(port) do |p|
+      begin
+        v = ShimTestAttrClass.setting        # reader: nil in worker (own IES slot empty)
+        ShimTestAttrClass.setting = "worker" # writer: string-eval'd, works cross-Ractor
+        v2 = ShimTestAttrClass.setting
+        p.send([:ok, v.inspect, v2])
+      rescue RuntimeError => e
+        p.send([:runtime, e.message[0, 80]])
+      rescue Ractor::IsolationError => e
+        p.send([:isolation, e.message[0, 80]])
+      end
+    end
+    result = port.receive
+    assert_equal :ok, result.first, "class_attribute cross-ractor failed: #{result.inspect}"
+    # Worker reads nil (own slot), then sets and reads its own value.
+    assert_equal "nil", result[1]
+    assert_equal "worker", result[2]
+    # Main's value is unaffected (per-Ractor isolation)
+    assert_equal "main-default", klass.setting
+  ensure
+    Object.send(:remove_const, :ShimTestAttrClass) if defined?(ShimTestAttrClass)
   end
 end
