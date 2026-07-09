@@ -39,6 +39,8 @@ Two storage paths, depending on the state's shape:
 
 The shim uses the per-Ractor path by default. For shareable state, use `Ractor.make_shareable` directly — that's not this gem's job.
 
+**Load order.** `install` may be called either before or after Rails is defined — the normal `config/boot.rb` path calls it before `require "rails"`. The `mattr_accessor` macro patch applies regardless; the Rails-module accessor patch (`Rails.application`, `Rails.env`, ...) defers via a `TracePoint(:class)` load hook that fires when `module Rails` opens.
+
 ## Install
 
 Add to your Gemfile:
@@ -54,6 +56,41 @@ Then install early in boot, before `Rails.application` is first accessed:
 require "bundler/setup"
 require "ractor_rails_shim"
 RactorRailsShim.install
+```
+
+After Rails is fully booted (after `Rails.application.initialize!`) and **before
+spawning worker Ractors**, call `prepare_for_ractors!` to make the remaining
+unshareable constants (e.g. `Rails::Railtie::ABSTRACT_RAILTIES`, which loads
+after `module Rails` opens) shareable:
+
+```ruby
+# config/environment.rb, or wherever you boot your app before spawning workers
+Rails.application.initialize!
+RactorRailsShim.prepare_for_ractors!
+```
+
+To share the whole app across worker Ractors (the `:ractor` mode path), call
+`make_app_shareable!` — it replaces every self-capturing Proc in the app graph
+with a callable object, every Mutex/Monitor with a no-op lock, and every
+`Concurrent::Map` with a frozen Hash, then calls `Ractor.make_shareable`:
+
+```ruby
+Rails.application.initialize!
+app = RactorRailsShim.make_app_shareable!(Rails.application)
+# app is now frozen and Ractor.shareable? — pass it to worker Ractors:
+worker = Ractor.new(app) { |a| a.call(env) }
+```
+
+**Note:** `make_app_shareable!` is production-only (the app becomes read-only).
+Worker dispatch currently gets through the full middleware stack; the remaining
+blocker is framework class config (`ActionController::Base.config` etc.) being
+per-Ractor-empty in workers — see `NEXT_STEPS.md` Phase 3. To fix unshareable
+constants in your own app/gems, add them to the registry
+before `prepare_for_ractors!`:
+
+```ruby
+RactorRailsShim.shareable_constants << "MyGem::MUTABLE_LIST"
+RactorRailsShim.prepare_for_ractors!
 ```
 
 Or from a Rails console / runner for a quick check:
@@ -102,10 +139,13 @@ hints:
 
 - `Rails.application`, `Rails.app_class`, `Rails.cache`, `Rails.logger`, `Rails.env`, `Rails.backtrace_cleaner` — rerouted through `IsolatedExecutionState`.
 - `Module.mattr_accessor` / `cattr_accessor` — the macro is rewritten so all ~150 call sites in Rails inherit the fix without individual edits. Pass `shareable: true` to opt an accessor into the shareable-by-reference path instead.
+- `Class.class_attribute` (ActiveSupport) — the macro is rewritten so `executor`, `check`, and every other `class_attribute`-defined accessor routes through `IsolatedExecutionState` via string-eval'd methods (no captured binding). Without this, a worker Ractor calling `app.reloader.executor = ...` during boot raises "defined with an un-shareable Proc in a different Ractor".
+- `Zeitwerk::Registry` class ivars (`@loaders`, `@mutex`, `@autoloads`, etc.) — routed through `IsolatedExecutionState` so a worker Ractor can create autoloaders (each Ractor gets its own registry).
+- Unshareable constants (`Rails::Railtie::ABSTRACT_RAILTIES`, `ActiveSupport::EnvironmentInquirer::DEFAULT_ENVIRONMENTS`, etc.) — made shareable once at boot via `Ractor.make_shareable` + `const_set`. Add your own via `RactorRailsShim.shareable_constants << "MyGem::CONST"` then call `prepare_for_ractors!`.
 
 ## What this does NOT fix
 
-- **The boot-path lambda capture problem.** `Ractor.make_shareable(Rails.application)` still fails because of the routes-reloader lambda at `railties/lib/rails/application/finisher.rb:150` (it captures `self` = the app instance). Each worker Ractor would need to boot its own app instance via `Ractor.store_if_absent(:app) { Rails.application = App.new; ... }`. The shim enables this; it doesn't do it for you.
+- **Framework class config in worker Ractors (the current remaining blocker).** `make_app_shareable!` makes `Rails.application` shareable and worker dispatch traverses the full middleware stack, but fails when the request path reads framework class config (`ActionController::Base.config`, etc.) that the shim routes per-Ractor — the worker's slot is empty (nil). The fix: seed the framework class_attribute values into a shareable fallback at `prepare_for_ractors!` time. See `NEXT_STEPS.md` Phase 3.
 - **Gems.** Every gem your app depends on (Devise, Sidekiq, redis-rb, pg, etc.) has its own class ivars. The shim's `mattr_accessor` rewrite helps gems that use that macro, but gems using raw `@ivar ||= ...` need their own patches. The `--check` script surfaces these.
 - **App code** holding mutable state in closures (`cache = {}; ->(env){ cache[...] }`). The shim can't see into closures; `--check` finds class ivars only.
 
