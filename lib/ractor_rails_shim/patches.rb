@@ -1185,10 +1185,10 @@ module RactorRailsShim
       return unless defined?(::ActionDispatch::ExceptionWrapper)
       ::ActionDispatch::ExceptionWrapper.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def rescue_template
-          self.class.rescue_templates[@exception_class_name]
+          self.class.rescue_templates[exception_class_name]
         end
         def status_code
-          ActionDispatch::Response.rack_status_code(self.class.rescue_responses[class_name])
+          ActionDispatch::Response.rack_status_code(self.class.rescue_responses[exception_class_name])
         end
         def rescue_response?
           self.class.rescue_responses.key?(exception.class.name)
@@ -1563,6 +1563,7 @@ module RactorRailsShim
       # Mime
       "Mime::SET",
       "Mime::EXTENSION_LOOKUP",
+      "Mime::LOOKUP",
       "Mime::Type::TRAILING_STAR_REGEXP",
       "Mime::Type::PARAMETER_SEPARATOR_REGEXP",
       "Mime::Type::ACCEPT_HEADER_REGEXP",
