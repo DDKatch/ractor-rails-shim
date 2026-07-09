@@ -669,6 +669,41 @@ module RactorRailsShim
       RUBY
       CLASS_ATTRIBUTES << ["ActionView::LookupContext", :registered_details, key, []]
 
+      # Redefine default_#{name} methods. register_detail (line 25 of
+      # lookup_context.rb) defines these via Accessors.define_method(:"default_#{name}", &block)
+      # — a Proc from the main ractor. Calling them from a worker raises
+      # "defined with an un-shareable Proc in a different Ractor".
+      # Trigger: when Accept: */* is sent, request.formats returns [Mime::ALL],
+      # and LookupContext#formats= (the override at line 263) does
+      # `values.concat(default_formats) if values.delete "*/*"` — Mime::ALL
+      # compares == to "*/*", so delete removes it and default_formats is called.
+      # Fix: call each block once in main, make the result shareable, and
+      # redefine the method via string eval (no captured binding).
+      accessors = ::ActionView::LookupContext::Accessors
+      ::ActionView::LookupContext.registered_details.each do |name|
+        block = accessors::DEFAULT_PROCS[name]
+        next unless block
+        begin
+          value = block.call
+        rescue
+          next
+        end
+        begin
+          value = Ractor.make_shareable(value)
+        rescue
+          value = value.dup.freeze rescue value
+        end
+        const_name = "SHIM_DEFAULT_#{name.upcase}_VALUE"
+        verbose, $VERBOSE = $VERBOSE, nil
+        accessors.const_set(const_name, value)
+        $VERBOSE = verbose
+        accessors.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+          def default_#{name}
+            ::ActionView::LookupContext::Accessors::#{const_name}
+          end
+        RUBY
+      end
+
       # Patch ActionView::Rendering::ClassMethods#view_context_class to read
       # from a shareable registry (populated in main) instead of building via
       # Class.new{...} blocks (un-shareable Proc from a worker). The built
