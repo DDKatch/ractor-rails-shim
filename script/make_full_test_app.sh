@@ -127,6 +127,137 @@ bundle exec rails db:migrate db:seed 2>&1 | tail -5
 RAILS_ENV=production SECRET_KEY_BASE=dummy \
   bundle exec rails db:migrate db:seed 2>&1 | tail -5
 
+# --- Kino :ractor mode config files ---
+# kino.rb: server config (mode/workers/threads/port). kino checks
+# Ractor.shareable?(app) and never calls make_shareable behind the user's
+# back, so config_ractor.ru must call make_app_shareable! before `run app`.
+cat > kino.rb <<'RUBY'
+mode :ractor
+workers 2
+threads 1
+port 9293
+bind "127.0.0.1"
+log_requests true
+RUBY
+
+# config_ractor.ru: boots Rails, prepares + makes the app shareable, runs it.
+# Set KINO_DEBUG=1 to wrap the app with a debug middleware that logs the rack
+# env (keys, HTTP_ACCEPT, CONTENT_TYPE) and any exception (with root cause +
+# backtrace) to /tmp/kino_debug.log. Without KINO_DEBUG it's production-clean.
+# frozen_string_literal is REQUIRED: without it, string constants (like the
+# LOG path) are mutable and reading them from a worker Ractor raises
+# Ractor::IsolationError ("can not access non-shareable objects in constant").
+cat > config_ractor.ru <<'RUBY'
+# frozen_string_literal: true
+require_relative "config/environment"
+app = Rails.application
+
+if ENV["RAILS_ENV"] == "production" && defined?(RactorRailsShim)
+  RactorRailsShim.prepare_for_ractors!
+  app = RactorRailsShim.make_app_shareable!(Rails.application)
+end
+
+if ENV["KINO_DEBUG"]
+  # Class-based wrapper (not a lambda): def methods don't capture bindings,
+  # so the wrapper is shareable as long as @app is. A lambda's `self` is the
+  # main object (not shareable), so it would fail in :ractor mode.
+  class KinoDebugWrapper
+    LOG = "/tmp/kino_debug.log"
+    def initialize(app)
+      @app = app
+    end
+    def call(env)
+      File.write(LOG,
+        "[REQ] #{env['REQUEST_METHOD']} #{env['PATH_INFO']} " \
+        "ACCEPT=#{env['HTTP_ACCEPT'].inspect} " \
+        "CONTENT_TYPE=#{env['CONTENT_TYPE'].inspect} " \
+        "ENV_KEYS=#{env.keys.sort.inspect}\n", mode: "a")
+      status, headers, body = @app.call(env)
+      File.write(LOG, "[RES] #{status} #{headers['content-type'].inspect}\n", mode: "a")
+      [status, headers, body]
+    rescue => e
+      root = e
+      root = root.cause while root.respond_to?(:cause) && root.cause
+      File.write(LOG,
+        "[EXC] #{e.class}: #{e.message}\n  #{(e.backtrace || []).first(15).join("\n  ")}\n" \
+        "[ROOT] #{root.class}: #{root.message}\n  #{(root.backtrace || []).first(10).join("\n  ")}\n",
+        mode: "a")
+      raise
+    end
+  end
+  wrapper = KinoDebugWrapper.new(app)
+  app = Ractor.make_shareable(wrapper)
+  File.write(KinoDebugWrapper::LOG, "=== KINO_DEBUG session #{Time.now.iso8601} ===\n")
+end
+
+run app
+RUBY
+
+# probe_env.rb: standalone probe that boots the shareable app and dispatches
+# /up via a bare Ractor with progressively minimal envs, to isolate which
+# missing rack env key triggers a 500 (vs kino's full env). Useful when
+# debugging Accept-header-less request failures. Run:
+#   RAILS_ENV=production SECRET_KEY_BASE=dummy bundle exec ruby probe_env.rb
+cat > probe_env.rb <<'RUBY'
+require "stringio"
+ENV["RAILS_ENV"] ||= "production"
+ENV["SECRET_KEY_BASE"] ||= "dummy"
+require File.expand_path("config/boot")
+require File.expand_path("config/application")
+Bundler.require(*Rails.groups)
+Rails.application.initialize!
+RactorRailsShim.prepare_for_ractors!
+app = RactorRailsShim.make_app_shareable!(Rails.application)
+puts "app shareable? #{Ractor.shareable?(app)}"
+
+dispatch = lambda do |env|
+  r = Ractor.new(app, env) do |a, e|
+    re = e.dup
+    re["rack.input"] ||= StringIO.new("")
+    re["rack.errors"] ||= StringIO.new("")
+    re["rack.version"] ||= [3, 0]
+    begin
+      s, h, b = a.call(re)
+      body = +""
+      b.each { |c| body << c.to_s } rescue nil
+      b.close if b.respond_to?(:close) rescue nil
+      [s, h["content-type"], body[0, 200]]
+    rescue => ex
+      root = ex
+      root = root.cause while root.respond_to?(:cause) && root.cause
+      [:err, ex.class.name, ex.message[0, 300],
+       "ROOT: #{root.class}: #{root.message[0, 300]}",
+       (root.backtrace || []).first(8)]
+    end
+  end
+  r.value
+end
+
+base = {
+  "REQUEST_METHOD"  => "GET",
+  "PATH_INFO"       => "/up",
+  "SCRIPT_NAME"     => "",
+  "QUERY_STRING"    => "",
+  "SERVER_NAME"     => "localhost",
+  "SERVER_PORT"     => "9293",
+  "rack.url_scheme" => "http",
+}
+
+tests = [
+  ["1. + HTTP_HOST + Accept",     base.merge("HTTP_HOST" => "localhost", "HTTP_ACCEPT" => "text/html")],
+  ["2. + HTTP_HOST (no Accept)",  base.merge("HTTP_HOST" => "localhost")],
+  ["3. + Accept (no HTTP_HOST)",  base.merge("HTTP_ACCEPT" => "text/html")],
+  ["4. bare (no HTTP_*)",         base.dup],
+  ["5. + empty HTTP_ACCEPT",      base.merge("HTTP_HOST" => "localhost", "HTTP_ACCEPT" => "")],
+  ["6. + SERVER_PROTOCOL",        base.merge("HTTP_HOST" => "localhost", "SERVER_PROTOCOL" => "HTTP/1.1")],
+  ["7. + HTTP_VERSION",           base.merge("HTTP_HOST" => "localhost", "HTTP_VERSION" => "HTTP/1.1")],
+]
+
+tests.each do |label, env|
+  puts "#{label} => #{dispatch.call(Ractor.make_shareable(env)).inspect[0, 300]}"
+end
+RUBY
+
 echo
 echo "=== Full-stack test app ready at: $DEST ==="
 echo
@@ -138,6 +269,19 @@ echo "  /users/sign_in - Devise login page (Warden middleware in the stack)"
 echo
 echo "To boot under Puma single-worker (normal-mode smoke test):"
 echo "  cd $DEST && bin/rails server -p 9293"
+echo
+echo "To boot under Kino :ractor mode (production, shareable app):"
+echo "  cd $DEST && RAILS_ENV=production SECRET_KEY_BASE=dummy \\"
+echo "    bundle exec kino -m ractor -p 9293 -C kino.rb config_ractor.ru"
+echo "  # With debug logging (env + exceptions to stderr):"
+echo "  cd $DEST && RAILS_ENV=production SECRET_KEY_BASE=dummy KINO_DEBUG=1 \\"
+echo "    bundle exec kino -m ractor -p 9293 -C kino.rb config_ractor.ru"
+echo "  # Test:"
+echo "  curl -s -o /dev/null -w '%{http_code}' -H 'Accept: text/html' http://localhost:9293/up"
+echo "  curl -s -o /dev/null -w '%{http_code}' http://localhost:9293/up  # no Accept"
+echo
+echo "To probe env isolation (which rack env key triggers the 500?):"
+echo "  cd $DEST && RAILS_ENV=production SECRET_KEY_BASE=dummy bundle exec ruby probe_env.rb"
 echo
 echo "To run the shim audit (class-ivar blocker report):"
 echo "  cd $DEST && bundle exec ruby -I$SHIM_DIR/lib -e '\\"
