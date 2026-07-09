@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require "ractor/rails_shim/version"
+require_relative "version"
 
 module RactorRailsShim
     # Audit an app for Ractor blockers. Inspects loaded classes/modules for
@@ -10,11 +10,13 @@ module RactorRailsShim
     # Modeled on Kino's `kino --check` — tell the user *exactly* what blocks
     # their app, instead of leaving them to decode IsolationError at runtime.
     class Check
-      Finding = Data.define(:owner, :ivar, :value_class, :shareable, :source)
+      # kind: :ivar (class-level instance variable, @foo) or
+      #      :cvar (class variable, @@foo — mattr_accessor/cattr_accessor)
+      Finding = Data.define(:owner, :ivar, :value_class, :shareable, :source, :kind)
 
       class << self
-        # Scan all loaded classes/modules and report class ivars holding
-        # unshareable values. Returns an array of Finding.
+        # Scan all loaded classes/modules and report class ivars AND class
+        # variables holding unshareable values. Returns an array of Finding.
         def scan
           findings = []
           seen = {}
@@ -29,17 +31,15 @@ module RactorRailsShim
               begin
                 val = mod.instance_variable_get(ivar)
               rescue => e
-                # Some modules raise on ivar access (e.g. frozen); skip.
                 next
               end
 
               shareable = begin
                 Ractor.shareable?(val)
               rescue => e
-                false # can't determine -> treat as blocker
+                false
               end
-
-              next if shareable # shareable values are fine across ractors
+              next if shareable
 
               key = "#{mod.name}#{ivar}"
               next if seen[key]
@@ -51,12 +51,50 @@ module RactorRailsShim
                 ivar: ivar.to_s,
                 value_class: val.class.name || val.class.to_s,
                 shareable: shareable,
-                source: source
+                source: source,
+                kind: :ivar
               )
+            end
+
+            # Inspect class variables (@@foo) — these back mattr_accessor /
+            # cattr_accessor and are ALSO subject to Ractor::IsolationError
+            # from non-main Ractors (verified on Ruby 4.0.5).
+            begin
+              mod.class_variables.each do |cvar|
+                begin
+                  val = mod.class_variable_get(cvar)
+                rescue => e
+                  next
+                end
+
+                shareable = begin
+                  Ractor.shareable?(val)
+                rescue => e
+                  false
+                end
+                next if shareable
+
+                key = "#{mod.name}#{cvar}"
+                next if seen[key]
+                seen[key] = true
+
+                source = locate(mod, cvar)
+                findings << Finding.new(
+                  owner: mod.name,
+                  ivar: cvar.to_s,
+                  value_class: val.class.name || val.class.to_s,
+                  shareable: shareable,
+                  source: source,
+                  kind: :cvar
+                )
+              end
+            rescue => e
+              # Some modules raise on class_variables enumeration; skip.
+              next
             end
           end
 
-          findings.sort_by(&:owner)
+          findings.sort_by { |f| [f.owner, f.ivar] }
         end
 
         # Scan only Rails framework modules (Railties, ActiveRecord, etc.)
@@ -80,8 +118,11 @@ module RactorRailsShim
           app_findings = findings - rails_findings
 
           lines = []
-          lines << "ractor-rails-shim check: #{findings.size} class-ivar blocker(s) found"
-          lines << "  (class ivars holding unshareable values; reads/writes from a non-main Ractor"
+          cvar_count = findings.count { |f| f.kind == :cvar }
+          ivar_count = findings.count { |f| f.kind == :ivar }
+          lines << "ractor-rails-shim check: #{findings.size} blocker(s) found" \
+            " (#{ivar_count} class-ivar, #{cvar_count} class-var)"
+          lines << "  (unshareable values in @ivar and @@cvar; reads/writes from a non-main Ractor"
           lines << "   would raise Ractor::IsolationError)"
           lines << ""
 
@@ -92,23 +133,26 @@ module RactorRailsShim
             label = group == :rails ? "Rails framework" : "app + gems"
             lines << "=== #{label} (#{grp.size}) ==="
             grp.first(50).each do |f|
-              lines << "  #{f.owner}#{f.ivar} = #{f.value_class}"
+              tag = f.kind == :cvar ? " (mattr/cattr — shim targets)" : ""
+              lines << "  #{f.owner}#{f.ivar} = #{f.value_class}#{tag}"
               lines << "    #{f.source}" if f.source
             end
             if grp.size > 50
-              lines << "  ... and #{grp.size - 50} more (run with limit: to see all)"
+              lines << "  ... and #{grp.size - 50} more (use Check.scan to see all)"
             end
             lines << ""
           end
 
           if findings.empty?
-            lines << "no class-ivar blockers found — app may be Ractor-compatible"
+            lines << "no blockers found — app may be Ractor-compatible"
           else
             lines << "hints:"
-            lines << "  - require \"ractor/rails_shim\" and call Ractor::RailsShim.install before"
+            lines << "  - require \"ractor_rails_shim\" and call RactorRailsShim.install before"
             lines << "    Rails.application is first accessed (early in config/boot.rb)"
-            lines << "  - for shareable state (frozen config, route tables) use Ractor.make_shareable"
-            lines << "    + a constant, NOT the shim — that shares one copy by reference"
+            lines << "  - class-var (@@foo) blockers from mattr_accessor/cattr_accessor are"
+            lines << "    rerouted by the shim automatically once installed"
+            lines << "  - raw class-ivar (@foo) blockers are NOT fixed by the shim; patch the"
+            lines << "    gem or use Ractor.make_shareable + a constant for shareable state"
             lines << "  - for per-Ractor mutable state use Ractor.store_if_absent(key) { default }"
           end
 
