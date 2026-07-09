@@ -75,12 +75,7 @@ bundle install
 echo
 echo "=== Test app ready at: $DEST ==="
 echo
-echo "To reproduce the Phase 3 breakthrough (make_shareable SUCCEEDS):"
-echo "  cd $DEST"
-echo "  RAILS_ENV=production SECRET_KEY_BASE=dummy \\"
-echo "    bundle exec ruby $SHIM_DIR/phase3_probe_e.rb"
-echo
-echo "To reproduce the remaining blocker (worker dispatch hits config nil):"
+echo "To serve GET /up in a worker Ractor (returns HTTP 200):"
 echo "  cd $DEST"
 echo "  RAILS_ENV=production SECRET_KEY_BASE=dummy \\"
 echo "    bundle exec ruby -e '\\"
@@ -89,8 +84,13 @@ echo "    require File.expand_path(\"config/application\"); \\"
 echo "    Bundler.require(*Rails.groups); Rails.application.initialize!; \\"
 echo "    app = RactorRailsShim.make_app_shareable!(Rails.application); \\"
 echo "    env = Ractor.make_shareable({\"REQUEST_METHOD\"=>\"GET\",\"PATH_INFO\"=>\"/up\",\"SCRIPT_NAME\"=>\"\",\"QUERY_STRING\"=>\"\",\"SERVER_NAME\"=>\"localhost\",\"SERVER_PORT\"=>\"9293\",\"HTTP_HOST\"=>\"localhost\",\"rack.url_scheme\"=>\"http\"}); \\"
-echo "    r = Ractor.new(app,env){|a,e| re=e.to_h.merge(\"rack.input\"=>StringIO.new(\"\"),\"rack.errors\"=>StringIO.new(\"\"),\"rack.version\"=>[3,0]); begin; s,h,b=a.call(re); [s,h.keys,b.each.to_a.join.bytesize]; rescue=>ex; [:err,ex.class.name,ex.message[0,120],ex.backtrace.first(3).join(\" | \")]; end }; \\"
+echo "    r = Ractor.new(app,env){|a,e| re=e.to_h.merge(\"rack.input\"=>StringIO.new(\"\"),\"rack.errors\"=>StringIO.new(\"\"),\"rack.version\"=>[3,0]); begin; s,h,b=a.call(re); [s,h[\"content-type\"],b.each.to_a.join]; rescue=>ex; [:err,ex.class.name,ex.message[0,120]]; end }; \\"
 echo "    puts r.value.inspect'"
 echo
-echo "To run the shim's specs:"
-echo "  cd $SHIM_DIR && bundle exec ruby spec/shim_spec.rb"
+echo "To run the shim's unit specs (no Rails needed):"
+echo "  cd $SHIM_DIR && bundle exec rake spec"
+echo
+echo "To run the integration spec (needs the test app + its bundle):"
+echo "  cd $DEST"
+echo "  bundle exec ruby -I$SHIM_DIR/lib -I$SHIM_DIR/spec \\"
+echo "    -e'require \"minitest/autorun\"; require \"$SHIM_DIR/spec/integration_spec.rb\"'"

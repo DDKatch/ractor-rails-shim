@@ -4,6 +4,15 @@ A monkey-patch shim that reroutes Rails' class-level instance variable accessors
 
 **Status:** proof-of-concept / stopgap. The goal is for Rails to do this upstream, at which point this gem becomes a no-op and can be removed.
 
+**Current milestone:** on a minimal Rails 8.1 app (Ruby 4.0.5), a worker
+Ractor dispatches `GET /up` → **HTTP 200** via `RactorRailsShim.make_app_shareable!`.
+The shim builds a shareable fallback table for framework class config
+(`class_attribute` / `mattr_accessor` values) and patches the raw class-ivar
+accessors Rails reads per-request (`ExecutionWrapper.active_key`,
+`Notifications.notifier`, `Inflections`, `PathRegistry`, `I18n`,
+`AbstractController` lazy ivars, `Rack::Request`/`Utils`, `ExecutionContext`,
+etc.). See `NEXT_STEPS.md` for the full blocker map.
+
 ## Why
 
 Rails stores global state in class-level instance variables:
@@ -82,11 +91,15 @@ worker = Ractor.new(app) { |a| a.call(env) }
 ```
 
 **Note:** `make_app_shareable!` is production-only (the app becomes read-only).
-Worker dispatch currently gets through the full middleware stack; the remaining
-blocker is framework class config (`ActionController::Base.config` etc.) being
-per-Ractor-empty in workers — see `NEXT_STEPS.md` Phase 3. To fix unshareable
-constants in your own app/gems, add them to the registry
-before `prepare_for_ractors!`:
+It also **detaches the logger IO from the app graph**: `app.config.logger`
+(the broadcast target holding the real `$stdout`/`$stderr` IO) is swapped for a
+frozen no-op `BroadcastLogger` so `Ractor.make_shareable(app)` doesn't freeze
+the process's real IOs, and the main ractor's `Rails.logger` (the per-Ractor
+module accessor, not in the app graph) is re-pointed at a fresh live
+`BroadcastLogger` → `$stderr` so main keeps logging. Worker ractors build their
+own per-Ractor `Rails.logger` (a `BroadcastLogger` → `$stderr`). To fix
+unshareable constants in your own app/gems, add them to the registry before
+`prepare_for_ractors!`:
 
 ```ruby
 RactorRailsShim.shareable_constants << "MyGem::MUTABLE_LIST"
@@ -142,12 +155,15 @@ hints:
 - `Class.class_attribute` (ActiveSupport) — the macro is rewritten so `executor`, `check`, and every other `class_attribute`-defined accessor routes through `IsolatedExecutionState` via string-eval'd methods (no captured binding). Without this, a worker Ractor calling `app.reloader.executor = ...` during boot raises "defined with an un-shareable Proc in a different Ractor".
 - `Zeitwerk::Registry` class ivars (`@loaders`, `@mutex`, `@autoloads`, etc.) — routed through `IsolatedExecutionState` so a worker Ractor can create autoloaders (each Ractor gets its own registry).
 - Unshareable constants (`Rails::Railtie::ABSTRACT_RAILTIES`, `ActiveSupport::EnvironmentInquirer::DEFAULT_ENVIRONMENTS`, etc.) — made shareable once at boot via `Ractor.make_shareable` + `const_set`. Add your own via `RactorRailsShim.shareable_constants << "MyGem::CONST"` then call `prepare_for_ractors!`.
+- **Framework class config fallback** (`SHAREABLE_FALLBACK`) — at `make_app_shareable!` time the main ractor's live `class_attribute` / `mattr_accessor` values are captured, made shareable (callable-replacement for any Procs), and exposed as a read-only fallback. Worker readers return it when their per-Ractor IES slot is empty — this is what fixes `ActionController::Base.config` being nil in workers.
+- **Raw class-ivar/cvar accessors Rails reads per-request** (the long tail beyond `mattr_accessor`) — patched individually: `ExecutionWrapper.active_key`, `ActiveSupport::Notifications.notifier`, `ActiveSupport.error_reporter`, `ActiveSupport::ExecutionContext` (after_change_callbacks / nestable), `ActiveSupport::Inflector::Inflections`, `ActionView::PathRegistry`, `ActionView::LookupContext` + `DetailsKey` (`view_context_class` built per-controller in main & shared via `VIEW_CONTEXT_REGISTRY`), `ActionView::Template::Handlers`, `AbstractController::Base` (`controller_path` / `action_methods` / `abstract` / `_prefixes` via per-Ractor Hash caches keyed by class), `AbstractController::UrlFor#action_methods` (sidesteps the unshareable `_routes` define_method-block), `ActionController::ParameterEncoding#action_encoding_template`, `Rack::Request` (`forwarded_priority` / `x_forwarded_proto_priority`), `Rack::Utils` (`default_query_parser` / multipart limits), `ActionDispatch::Request.parameter_parsers`, `I18n::Config` (`default_locale` / `locale`) + `I18n.fallbacks` + `I18n::Locale::Tag.implementation`.
+- **`ActiveSupport::Callbacks#run_callbacks`** — made nil-safe so a worker Ractor whose `__callbacks` couldn't be shared (frozen, self-capturing-Proc callback chains) treats callbacks as empty. Correct for a read-only shared app where boot-time callbacks already ran in main.
 
 ## What this does NOT fix
 
-- **Framework class config in worker Ractors (the current remaining blocker).** `make_app_shareable!` makes `Rails.application` shareable and worker dispatch traverses the full middleware stack, but fails when the request path reads framework class config (`ActionController::Base.config`, etc.) that the shim routes per-Ractor — the worker's slot is empty (nil). The fix: seed the framework class_attribute values into a shareable fallback at `prepare_for_ractors!` time. See `NEXT_STEPS.md` Phase 3.
 - **Gems.** Every gem your app depends on (Devise, Sidekiq, redis-rb, pg, etc.) has its own class ivars. The shim's `mattr_accessor` rewrite helps gems that use that macro, but gems using raw `@ivar ||= ...` need their own patches. The `--check` script surfaces these.
 - **App code** holding mutable state in closures (`cache = {}; ->(env){ cache[...] }`). The shim can't see into closures; `--check` finds class ivars only.
+- **define_method-block methods.** A handful of Rails methods are defined via `define_method` with a block capturing the defining Ractor (e.g. `ActionDispatch::Routing::RouteSet`'s `_routes` singleton helper, `ActionView::Base.with_empty_template_cache`'s `compiled_method_container`). The shim works around these by building the affected classes (e.g. `view_context_class`) in the main Ractor and sharing them, or by reading the route set directly from the shared `Rails.application`. More complex apps may hit additional `define_method`-block call sites that need similar treatment.
 
 ## Limitations
 
