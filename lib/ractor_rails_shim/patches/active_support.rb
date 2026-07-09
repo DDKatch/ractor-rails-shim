@@ -4,6 +4,16 @@
 # I18n::Config, CurrentAttributes (ExecutionContext), LogSubscriber.
 
 module RactorRailsShim
+  # ActiveSupport + concurrent-ruby constants that need to be made shareable.
+  SHAREABLE_CONSTANTS.concat([
+    "ActiveSupport::EnvironmentInquirer::DEFAULT_ENVIRONMENTS",
+    "ActiveSupport::EnvironmentInquirer::LOCAL_ENVIRONMENTS",
+    "ActiveSupport::ErrorReporter::SEVERITIES",
+    "ActiveSupport::CurrentAttributes::INVALID_ATTRIBUTE_NAMES",
+    "ActiveSupport::Delegation::RUBY_RESERVED_KEYWORDS",
+    "Concurrent::NULL",
+  ])
+
   class << self
     # Patch ActiveSupport::Inflector::Inflections to not read @__en_instance__
     # / @__instance__ class ivars from a worker Ractor. The inflections instance

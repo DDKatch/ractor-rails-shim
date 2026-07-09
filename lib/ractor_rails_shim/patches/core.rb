@@ -61,6 +61,11 @@ module RactorRailsShim
   # mattr-definition time (boot, in main, before workers spawn); frozen +
   # made shareable at prepare_for_ractors! time.
   SHAREABLE_MATTR_DEFAULTS = {}
+  # Registry of constant path strings ("A::B::C") whose values are mutable
+  # Arrays/Hashes/Sets that need to be made shareable (deep-frozen) at boot.
+  # Each per-concern file concats its own constants into this array. Users
+  # can add their own via RactorRailsShim.shareable_constants << "MyGem::LIST".
+  SHAREABLE_CONSTANTS = []
   # Shareable registry: controller class → its built view_context_class.
   # Populated at prepare_for_ractors! time by calling view_context_class on
   # each loaded controller in main (build_view_context_class uses

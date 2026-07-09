@@ -6,6 +6,13 @@
 # class ivars.
 
 module RactorRailsShim
+  # ActionController / AbstractController constants that need to be made shareable.
+  SHAREABLE_CONSTANTS.concat([
+    "ActionController::Rendering::RENDER_FORMATS_IN_PRIORITY",
+    "ActionController::Base::PROTECTED_IVARS",
+    "AbstractController::Rendering::DEFAULT_PROTECTED_INSTANCE_VARIABLES",
+  ])
+
   class << self
     # Patch ActionController::ParameterEncoding::ClassMethods#action_encoding_template
     # to not read @_parameter_encodings (a raw class ivar) from a worker

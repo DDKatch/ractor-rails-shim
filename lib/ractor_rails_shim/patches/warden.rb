@@ -8,6 +8,17 @@
 # workers treat them as empty (correct for a read-only shared app).
 
 module RactorRailsShim
+  # Devise constants that need to be made shareable.
+  SHAREABLE_CONSTANTS.concat([
+    "Devise::ParameterSanitizer::DEFAULT_PERMITTED_ATTRIBUTES",
+    "Devise::Mapping::DEFAULTS",
+    "Devise::DEVS",
+    "Devise::URLS",
+    "Devise::STRATEGIES",
+    "Devise::CONTROLLERS",
+    "Devise::MODULES",
+  ])
+
   class << self
     def _install_warden_hooks_patch
       return if @warden_patched

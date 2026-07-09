@@ -4,6 +4,27 @@
 # directly), and Request.parameter_parsers.
 
 module RactorRailsShim
+  # ActionDispatch + Mime constants that need to be made shareable.
+  SHAREABLE_CONSTANTS.concat([
+    "ActionDispatch::FileHandler::PRECOMPRESSED",
+    "ActionDispatch::SSL::PERMANENT_REDIRECT_REQUEST_METHODS",
+    "ActionDispatch::HostAuthorization::VALID_IP_HOSTNAME",
+    "ActionDispatch::HostAuthorization::ALLOWED_HOSTS_IN_DEVELOPMENT",
+    "ActionDispatch::Request::HTTP_METHODS",
+    "ActionDispatch::Request::HTTP_METHOD_LOOKUP",
+    "Mime::SET",
+    "Mime::EXTENSION_LOOKUP",
+    "Mime::LOOKUP",
+    "Mime::Type::TRAILING_STAR_REGEXP",
+    "Mime::Type::PARAMETER_SEPARATOR_REGEXP",
+    "Mime::Type::ACCEPT_HEADER_REGEXP",
+    "Mime::ALL",
+    "ActionDispatch::Response::NullContentTypeHeader",
+    "ActionDispatch::Response::NO_CONTENT_CODES",
+    "ActionDispatch::Response::RackBody::BODY_METHODS",
+    "ActionDispatch::Response::Buffer::BODY_METHODS",
+  ])
+
   class << self
     # Patch ActionDispatch::ExceptionWrapper instance methods that read
     # @@rescue_responses / @@rescue_templates class variables directly

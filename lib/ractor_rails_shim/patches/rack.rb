@@ -4,6 +4,25 @@
 # Rack::Utils singleton attr_accessors.
 
 module RactorRailsShim
+  # Rack constants whose values are mutable and need to be made shareable.
+  SHAREABLE_CONSTANTS.concat([
+    "Rack::Utils::PATH_SEPS",
+    "Rack::Utils::HTTP_STATUS_CODES",
+    "Rack::Utils::COMMON_SEP",
+    "Rack::Utils::STATUS_WITH_NO_ENTITY_BODY",
+    "Rack::Utils::SYMBOL_TO_STATUS_CODE",
+    "Rack::MethodOverride::ALLOWED_METHODS",
+    "Rack::MethodOverride::METHOD_OVERRIDES",
+    "Rack::Headers::KNOWN_HEADERS",
+    "Rack::Request::Helpers::FORM_DATA_MEDIA_TYPES",
+    "Rack::Request::Helpers::PARSEABLE_DATA_MEDIA_TYPES",
+    "Rack::Request::Helpers::DEFAULT_PORTS",
+    "Rack::Mime::MIME_TYPES",
+    "Rack::Files::ALLOWED_VERBS",
+    "Rack::Files::ALLOW_HEADER",
+    "Rack::Response::STATUS_WITH_NO_ENTITY_BODY",
+  ])
+
   class << self
     # Patch Rack::Request's class-level attr_accessors (forwarded_priority,
     # x_forwarded_proto_priority) to not read @ivars from a worker Ractor.

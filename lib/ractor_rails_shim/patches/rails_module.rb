@@ -6,86 +6,17 @@
 
 module RactorRailsShim
   class << self
-    # Rails (and ActiveSupport, and gems) hold constants whose values are
-    # mutable Arrays/Hashes/Sets. Reading those constants from a worker Ractor
-    # raises Ractor::IsolationError ("can not access non-shareable objects in
-    # constant X by non-main ractor"). Unlike class ivars, the value lives in
-    # the constant table — the fix is to make it shareable once at boot
-    # (deep-freeze + share), which makes the constant readable from every
-    # Ractor. Each constant is touched once and only if it currently holds an
-    # unshareable value, so this is a no-op once Rails fixes it upstream.
-    #
-    # The list is a registry of *constant path strings* ("A::B::C"). Callers
-    # can add their own via RactorRailsShim.shareable_constants << "MyGem::LIST"
-    # before install. Each entry is resolved at install time; missing ones are
-    # skipped silently (so the list can name constants that only exist under
-    # certain frameworks without conditionally gating each entry).
-    SHAREABLE_CONSTANTS = [
-      # ActiveSupport
-      "ActiveSupport::EnvironmentInquirer::DEFAULT_ENVIRONMENTS",
-      "ActiveSupport::EnvironmentInquirer::LOCAL_ENVIRONMENTS",
-      "ActiveSupport::ErrorReporter::SEVERITIES",
-      "ActiveSupport::CurrentAttributes::INVALID_ATTRIBUTE_NAMES",
-      "ActiveSupport::Delegation::RUBY_RESERVED_KEYWORDS",
-      # concurrent-ruby
-      "Concurrent::NULL",
-      # Railties
+    # Railties constants (the rest are in their per-concern files: rack.rb,
+    # action_view.rb, action_controller.rb, action_dispatch.rb,
+    # active_support.rb, warden.rb). Each file concats into
+    # RactorRailsShim::SHAREABLE_CONSTANTS (defined empty in core.rb).
+    SHAREABLE_CONSTANTS.concat([
       "Rails::Railtie::ABSTRACT_RAILTIES",
       "Rails::AppLoader::EXECUTABLES",
       "Rails::Command::HELP_MAPPINGS",
       "Rails::Command::VERSION_MAPPINGS",
       "Rails::Application::INITIAL_VARIABLES",
-      # Rack
-      "Rack::Utils::PATH_SEPS",
-      "Rack::Utils::HTTP_STATUS_CODES",
-      "Rack::Utils::COMMON_SEP",
-      "Rack::Utils::STATUS_WITH_NO_ENTITY_BODY",
-      "Rack::Utils::SYMBOL_TO_STATUS_CODE",
-      "Rack::MethodOverride::ALLOWED_METHODS",
-      "Rack::MethodOverride::METHOD_OVERRIDES",
-      "Rack::Headers::KNOWN_HEADERS",
-      "Rack::Request::Helpers::FORM_DATA_MEDIA_TYPES",
-      "Rack::Request::Helpers::PARSEABLE_DATA_MEDIA_TYPES",
-      "Rack::Request::Helpers::DEFAULT_PORTS",
-      "Rack::Mime::MIME_TYPES",
-      "Rack::Files::ALLOWED_VERBS",
-      "Rack::Files::ALLOW_HEADER",
-      "Rack::Response::STATUS_WITH_NO_ENTITY_BODY",
-      # ActionDispatch
-      "ActionDispatch::FileHandler::PRECOMPRESSED",
-      "ActionDispatch::SSL::PERMANENT_REDIRECT_REQUEST_METHODS",
-      "ActionDispatch::HostAuthorization::VALID_IP_HOSTNAME",
-      "ActionDispatch::HostAuthorization::ALLOWED_HOSTS_IN_DEVELOPMENT",
-      "ActionDispatch::Request::HTTP_METHODS",
-      "ActionDispatch::Request::HTTP_METHOD_LOOKUP",
-      # ActionView
-      "ActionView::LookupContext::Accessors::DEFAULT_PROCS",
-      # Mime
-      "Mime::SET",
-      "Mime::EXTENSION_LOOKUP",
-      "Mime::LOOKUP",
-      "Mime::Type::TRAILING_STAR_REGEXP",
-      "Mime::Type::PARAMETER_SEPARATOR_REGEXP",
-      "Mime::Type::ACCEPT_HEADER_REGEXP",
-      "Mime::ALL",
-      "ActionDispatch::Response::NullContentTypeHeader",
-      "ActionDispatch::Response::NO_CONTENT_CODES",
-      "ActionDispatch::Response::RackBody::BODY_METHODS",
-      "ActionDispatch::Response::Buffer::BODY_METHODS",
-      "ActionController::Rendering::RENDER_FORMATS_IN_PRIORITY",
-      "ActionController::Base::PROTECTED_IVARS",
-      "AbstractController::Rendering::DEFAULT_PROTECTED_INSTANCE_VARIABLES",
-      # Devise
-      "Devise::ParameterSanitizer::DEFAULT_PERMITTED_ATTRIBUTES",
-      "Devise::Mapping::DEFAULTS",
-      "Devise::DEVS",
-      "Devise::URLS",
-      "Devise::STRATEGIES",
-      "Devise::CONTROLLERS",
-      "Devise::MODULES",
-      # ActionDispatch / others are added lazily as they're found; add yours
-      # via RactorRailsShim.shareable_constants << "YourGem::CONST"
-    ]
+    ])
 
     def shareable_constants
       SHAREABLE_CONSTANTS

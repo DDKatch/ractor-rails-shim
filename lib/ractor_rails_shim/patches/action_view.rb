@@ -4,6 +4,11 @@
 # define_method(&block)), Template::Handlers, and PathRegistry.
 
 module RactorRailsShim
+  # ActionView constants that need to be made shareable.
+  SHAREABLE_CONSTANTS.concat([
+    "ActionView::LookupContext::Accessors::DEFAULT_PROCS",
+  ])
+
   class << self
     def _install_lookup_context_patch
       return if @lookup_context_patched
