@@ -165,31 +165,52 @@ module RactorRailsShim
         # because they're defined via string eval (no captured binding).
         # But mattr_accessor itself runs at app boot in the main ractor, and
         # the per-accessor redefinition must also use string eval.
+        #
+        # IMPORTANT: Rails' mattr_accessor/cattr_accessor stores values in
+        # CLASS VARIABLES (@@sym), not class instance variables (@sym). The
+        # default value is written via class_variable_set("@@sym", default).
+        # Class variables are also subject to Ractor::IsolationError from
+        # non-main ractors (verified on Ruby 4.0.5), so we route through IES
+        # the same way — but the main-ractor fallback must read @@sym, and
+        # the seed must run in the main ractor at define-time (via super).
         def mattr_accessor(*syms, instance_reader: true, instance_writer: true,
-                           default: nil, **kwargs, &block)
-          super # define the methods via the original path
-
+                           instance_accessor: true, default: nil, **kwargs, &block)
           shareable = kwargs[:shareable]
           mod_name = name
+
+          # Compute the default value the same way Rails does, so we can
+          # seed worker-ractor IES slots with it (workers can't read @@sym).
+          # The block form is evaluated once here (in main ractor) like Rails.
+          sym_default = block_given? && default.nil? ? yield : default
+
+          super # define the methods via the original path (sets @@sym)
 
           syms.each do |sym|
             key = :"ractor_rails_shim_mattr_#{mod_name}_#{sym}"
             key_str = key.inspect
-            ivar = :"@#{sym}"
-            ivar_str = ivar.inspect
-            default_val = default.inspect if default
-            has_default = !default.nil?
+            cv = "@@#{sym}"
+            cv_str = cv.inspect
+            has_default = !sym_default.nil?
+            default_val = has_default ? sym_default.inspect : "nil"
 
             # Redefine the class reader via string eval (no captured binding).
+            # Class variables are only touched from the main ractor; worker
+            # ractors seed their IES slot from the captured default value.
             singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
               def #{sym}
                 v = ActiveSupport::IsolatedExecutionState[#{key_str}]
                 return v unless v.nil?
 
                 if #{!!shareable}
-                  instance_variable_get(#{ivar_str}) if instance_variable_defined?(#{ivar_str})
+                  if class_variable_defined?(#{cv_str})
+                    class_variable_get(#{cv_str})
+                  end
                 elsif Ractor.main?
-                  instance_variable_get(#{ivar_str}) if instance_variable_defined?(#{ivar_str})
+                  if class_variable_defined?(#{cv_str})
+                    class_variable_get(#{cv_str})
+                  else
+                    nil
+                  end
                 else
                   val = #{has_default ? default_val : 'nil'}
                   ActiveSupport::IsolatedExecutionState[#{key_str}] = val
@@ -199,18 +220,23 @@ module RactorRailsShim
 
               def #{sym}=(val)
                 ActiveSupport::IsolatedExecutionState[#{key_str}] = val
-                instance_variable_set(#{ivar_str}, val) if Ractor.main?
+                if Ractor.main? && class_variable_defined?(#{cv_str})
+                  class_variable_set(#{cv_str}, val)
+                elsif Ractor.main?
+                  class_variable_set(#{cv_str}, val)
+                end
                 val
               end
             RUBY
 
             # Instance readers/writers route through the class methods.
-            if instance_reader
+            # Only redefine if instance_accessor is on (matches Rails).
+            if instance_reader && instance_accessor
               module_eval <<-RUBY, __FILE__, __LINE__ + 1
                 def #{sym}; self.class.#{sym}; end
               RUBY
             end
-            if instance_writer
+            if instance_writer && instance_accessor
               module_eval <<-RUBY, __FILE__, __LINE__ + 1
                 def #{sym}=(val); self.class.#{sym} = val; end
               RUBY
