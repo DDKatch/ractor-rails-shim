@@ -48,7 +48,63 @@ module RactorRailsShim
     backtrace_cleaner: :ractor_rails_shim_backtrace_cleaner
   }.freeze
 
+  # Registry of every class_attribute definition the shim's `redefine` patch
+  # has seen. Each entry is [owner_name, namespaced_name (Symbol), key (Symbol)]
+  # so that at `prepare_for_ractors!` time we can capture the main-ractor value
+  # of each attribute, make it shareable, and expose it as a read-only fallback
+  # for worker Ractors (whose own IES slot is empty). Without this, framework
+  # class config (ActionController::Base.config, etc.) is per-Ractor-nil in
+  # workers and request dispatch dies (e.g. default_static_extension -> config
+  # is nil). The fallback is ONLY read by workers; the main ractor keeps its
+  # own live (possibly mutable) value in its IES slot, untouched.
+  #
+  # The fallback table itself is built once, at prepare_for_ractors! time, and
+  # made shareable; workers read it via a constant (RactorRailsShim::SHAREABLE_FALLBACK).
+  CLASS_ATTRIBUTES = []
+  # Shareable registry: controller class → abstract? boolean. Populated at
+  # prepare_for_ractors! time by scanning all AbstractController::Base
+  # descendants for their @abstract ivar. Workers read this via the
+  # patched AbstractController::Base.abstract? (per-class values can't live in
+  # per-Ractor IES). Made shareable (frozen) at prepare time.
+  ABSTRACT_REGISTRY = Ractor.make_shareable({})
+  # Runtime registry: mattr_accessor IES key → default value. Written at
+  # mattr-definition time (boot, in main). The mattr reader (string-eval'd)
+  # looks the default up here by key — we CANNOT inline arbitrary default
+  # values into the eval'd method body (a Logger's `.inspect` is
+  # `#<Logger:...>`, invalid Ruby). Read by workers when both their IES slot
+  # and SHAREABLE_FALLBACK are empty. NOT made shareable (some defaults like
+  # Logger are intrinsically unshareable); workers only reach here if the
+  # value is a simple shareable literal (Symbol/String/Integer), in which
+  # case reading the constant is fine because... actually it IS a constant
+  # holding an unshareable Hash → worker read would raise. So this registry is
+  # ONLY safe to read from workers for shareable defaults. We guard the reader
+  # to only consult it for defaults that are Ractor.shareable?.
+  MATTR_DEFAULTS = {}
+  # Shareable subset of MATTR_DEFAULTS: only defaults that are
+  # Ractor.shareable? (so workers can read the constant safely). Written at
+  # mattr-definition time (boot, in main, before workers spawn); frozen +
+  # made shareable at prepare_for_ractors! time.
+  SHAREABLE_MATTR_DEFAULTS = {}
+  # Shareable registry: controller class → its built view_context_class.
+  # Populated at prepare_for_ractors! time by calling view_context_class on
+  # each loaded controller in main (build_view_context_class uses
+  # Class.new{...} blocks → un-shareable Proc from a worker). Made shareable.
+  VIEW_CONTEXT_REGISTRY = Ractor.make_shareable({})
+  # Frozen, shareable fallback table for class_attribute / mattr_accessor
+  # values. Built once at prepare_for_ractors! time from the main ractor's
+  # live values (class_attribute IES slot / mattr @@sym), each made shareable
+  # via callable-replacement + make_shareable. Workers read this via the
+  # RactorRailsShim::SHAREABLE_FALLBACK constant when their own IES slot is
+  # empty. Values that can't be made shareable are skipped (workers see nil
+  # for those and must set their own).
+  SHAREABLE_FALLBACK = Ractor.make_shareable({})
+
   class << self
+    # Accessor for the abstract-controller registry (written by abstract! in
+    # main, read by abstract? in workers). Reassigned to a shareable frozen
+    # Hash at prepare_for_ractors! time.
+    attr_accessor :_abstract_registry
+    attr_accessor :_view_context_registry
     # Install all the patches. Safe to call multiple times (idempotent).
     #
     # May be called either before or after Rails is loaded:
@@ -61,13 +117,41 @@ module RactorRailsShim
     #     immediately regardless, because it patches the macro itself, not
     #     any Rails constant.
     def install
+      _check_version_support
       install_mattr_accessor
       install_class_attribute
       install_zeitwerk_registry
       install_rails_module
       install_shareable_constants
+      install_execution_wrapper
       @installed = true
       true
+    end
+
+    # Verify the runtime matches the versions the shim was developed against.
+    # The shim's patches target specific Rails 8.1 class layouts and Ruby 4.0
+    # Ractor semantics. On other versions, the patches may silently miss or
+    # break things — fail loudly instead. Warns (doesn't raise) on minor
+    # mismatches so pre-release/patch versions work; raises on major
+    # mismatches.
+    SUPPORTED_RUBY = "4.0"
+    SUPPORTED_RAILS = "8.1"
+
+    def _check_version_support
+      ruby_v = RUBY_VERSION
+      unless ruby_v.start_with?(SUPPORTED_RUBY)
+        warn "ractor-rails-shim: Ruby #{ruby_v} — shim developed against " \
+             "Ruby #{SUPPORTED_RUBY}. Ractor semantics may differ; the shim " \
+             "may break. Proceeding anyway."
+      end
+      if defined?(::Rails) && (rv = ::Rails::VERSION::STRING)
+        unless rv.start_with?(SUPPORTED_RAILS)
+          warn "ractor-rails-shim: Rails #{rv} — shim developed against " \
+               "Rails #{SUPPORTED_RAILS}. Class layouts (class_attribute, " \
+               "callbacks, PathRegistry, etc.) may differ; patches may miss " \
+               "blockers. Proceeding anyway."
+        end
+      end
     end
 
     def installed?
@@ -79,9 +163,875 @@ module RactorRailsShim
     # Constants that didn't exist at install time (e.g. Rails::Railtie, loaded
     # after `module Rails` opens) get fixed here. Idempotent; safe to call
     # multiple times. Must run in the main Ractor.
+    #
+    # NOTE: this does NOT build the framework-config shareable fallback. That
+    # step is folded into `make_app_shareable!` because some class_attribute /
+    # mattr_accessor values reference the app graph, and making them shareable
+    # must happen AFTER the app itself is already frozen (otherwise the app
+    # gets frozen prematurely and precompute/proc-replacement can't mutate
+    # it). If you call prepare_for_ractors! standalone (without
+    # make_app_shareable!), worker Ractors will see nil for framework config
+    # values that couldn't be shared without freezing the app — set them
+    # explicitly per worker, or use make_app_shareable!.
     def prepare_for_ractors!
       do_install_shareable_constants
+      _install_rack_request_patch
+      _install_inflector_patch
+      _install_parameter_encoding_patch
+      _install_path_registry_patch
+      _install_abstract_controller_patch
+      _install_active_support_error_reporter_patch
+      _install_lookup_context_patch
+      _install_i18n_patch
+      _install_template_handlers_patch
+      _install_execution_context_patch
+      _install_request_parameter_parsers_patch
+      _install_rack_utils_patch
     end
+
+    # Patch Rack::Request's class-level attr_accessors (forwarded_priority,
+    # x_forwarded_proto_priority) to not read @ivars from a worker Ractor.
+    # The values are frozen-Symbol Arrays (shareable); route the cache
+    # through IES with the same default in workers. Read per-request via
+    # ActionDispatch::RemoteIp. Applied at prepare_for_ractors! time (after
+    # Rails boots, so Rack is loaded).
+    def _install_rack_request_patch
+      return if @rack_request_patched
+      @rack_request_patched = true
+      return unless defined?(::Rack::Request)
+      req = ::Rack::Request
+      fp_key = :ractor_rails_shim_rack_forwarded_priority
+      xp_key = :ractor_rails_shim_rack_x_forwarded_proto_priority
+      fp_key_str = fp_key.inspect
+      xp_key_str = xp_key.inspect
+      req.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def forwarded_priority
+          v = ActiveSupport::IsolatedExecutionState[#{fp_key_str}]
+          return v unless v.nil?
+          if Ractor.main? && instance_variable_defined?(:@forwarded_priority)
+            @forwarded_priority
+          else
+            [:forwarded, :x_forwarded]
+          end
+        end
+        def forwarded_priority=(val)
+          ActiveSupport::IsolatedExecutionState[#{fp_key_str}] = val
+          @forwarded_priority = val if Ractor.main?
+          val
+        end
+        def x_forwarded_proto_priority
+          v = ActiveSupport::IsolatedExecutionState[#{xp_key_str}]
+          return v unless v.nil?
+          if Ractor.main? && instance_variable_defined?(:@x_forwarded_proto_priority)
+            @x_forwarded_proto_priority
+          else
+            [:proto, :scheme]
+          end
+        end
+        def x_forwarded_proto_priority=(val)
+          ActiveSupport::IsolatedExecutionState[#{xp_key_str}] = val
+          @x_forwarded_proto_priority = val if Ractor.main?
+          val
+        end
+      RUBY
+    end
+
+    # Patch ActiveSupport::Inflector::Inflections to not read @__en_instance__
+    # / @__instance__ class ivars from a worker Ractor. The inflections instance
+    # holds rules (Arrays/Hashes of Strings) populated at boot; for a frozen
+    # shared app it's read-only. Workers share the main-ractor's inflections
+    # instance via a shareable fallback (made shareable in place). `instance`
+    # / `instance_or_fallback` are called per-request during routing (camelize).
+    def _install_inflector_patch
+      return if @inflector_patched
+      @inflector_patched = true
+      return unless defined?(::ActiveSupport::Inflector::Inflections)
+      inf = ::ActiveSupport::Inflector::Inflections
+      en_key = :ractor_rails_shim_inflections_en
+      inst_key = :ractor_rails_shim_inflections_instance
+      en_key_str = en_key.inspect
+      inst_key_str = inst_key.inspect
+      inf.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def instance(locale = :en)
+          if locale == :en
+            v = ActiveSupport::IsolatedExecutionState[#{en_key_str}]
+            return v unless v.nil?
+            if Ractor.main?
+              existing = instance_variable_get(:@__en_instance__) if instance_variable_defined?(:@__en_instance__)
+              ActiveSupport::IsolatedExecutionState[#{en_key_str}] = existing
+              return existing || new.tap { |i| instance_variable_set(:@__en_instance__, i) }
+            end
+            fb = RactorRailsShim::SHAREABLE_FALLBACK[#{en_key_str}]
+            return fb if fb
+            built = new
+            ActiveSupport::IsolatedExecutionState[#{en_key_str}] = built
+            built
+          else
+            h = ActiveSupport::IsolatedExecutionState[#{inst_key_str}] ||= (Ractor.main? ? (instance_variable_defined?(:@__instance__) ? instance_variable_get(:@__instance__) : Concurrent::Map.new) : Concurrent::Map.new)
+            h[locale] ||= new
+          end
+        end
+
+        def instance_or_fallback(locale)
+          return instance(locale) if locale == :en
+          h = ActiveSupport::IsolatedExecutionState[#{inst_key_str}]
+          if h && h.key?(locale)
+            return h[locale]
+          end
+          if Ractor.main? && instance_variable_defined?(:@__instance__)
+            iv = instance_variable_get(:@__instance__)
+            return iv[locale] if iv && iv.key?(locale)
+          end
+          instance(locale)
+        end
+      RUBY
+      # Register so _build_shareable_fallback! captures the :en inflections
+      # instance (made shareable) for workers.
+      CLASS_ATTRIBUTES << ["ActiveSupport::Inflector::Inflections", :__en_instance__, en_key, nil]
+      # Materialize the :en instance into IES in main so the fallback builder
+      # can read + share it.
+      inf.instance(:en) if Ractor.main?
+    end
+
+    # Patch ActionController::ParameterEncoding::ClassMethods#action_encoding_template
+    # to not read @_parameter_encodings (a raw class ivar) from a worker
+    # Ractor. The default is an empty-ish Hash; for a frozen shared app workers
+    # get an empty frozen Hash (no per-action param encodings — correct for
+    # apps that don't declare `parameter_encoding`, e.g. the health controller).
+    def _install_parameter_encoding_patch
+      return if @param_encoding_patched
+      @param_encoding_patched = true
+      return unless defined?(::ActionController::ParameterEncoding)
+      pe = ::ActionController::ParameterEncoding::ClassMethods
+      pe.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def action_encoding_template(action)
+          enc = if Ractor.main?
+            instance_variable_defined?(:@_parameter_encodings) ? @_parameter_encodings : nil
+          else
+            ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_param_encodings]
+          end
+          if enc && enc.has_key?(action.to_s)
+            enc[action.to_s]
+          end
+        end
+      RUBY
+    end
+
+    # Patch ActionView::PathRegistry to not read its raw class ivars
+    # (@view_paths_by_class, @file_system_resolvers) from a worker Ractor.
+    # These are populated at boot (view paths registered by the app). For a
+    # frozen shared app they're read-only; workers read them via the shareable
+    # fallback (built from main's values, made shareable). `get_view_paths` is
+    # called per-request during view lookup; `all_file_system_resolvers` is
+    # called by the exception backtrace builder.
+    def _install_path_registry_patch
+      return if @path_registry_patched
+      @path_registry_patched = true
+      return unless defined?(::ActionView::PathRegistry)
+      pr = ::ActionView::PathRegistry
+      vpc_key = :ractor_rails_shim_path_registry_view_paths_by_class
+      fsr_key = :ractor_rails_shim_path_registry_file_system_resolvers
+      vpc_key_str = vpc_key.inspect
+      fsr_key_str = fsr_key.inspect
+      pr.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def get_view_paths(klass)
+          h = ActiveSupport::IsolatedExecutionState[#{vpc_key_str}]
+          h = (Ractor.main? ? (instance_variable_defined?(:@view_paths_by_class) ? instance_variable_get(:@view_paths_by_class) : {}) : RactorRailsShim::SHAREABLE_FALLBACK[#{vpc_key_str}]) if h.nil?
+          h[klass] || get_view_paths(klass.superclass)
+        end
+
+        def set_view_paths(klass, paths)
+          h = ActiveSupport::IsolatedExecutionState[#{vpc_key_str}] ||= (Ractor.main? ? (instance_variable_defined?(:@view_paths_by_class) ? instance_variable_get(:@view_paths_by_class) : {}) : {})
+          h[klass] = paths
+          instance_variable_set(:@view_paths_by_class, h) if Ractor.main?
+        end
+
+        def all_file_system_resolvers
+          h = ActiveSupport::IsolatedExecutionState[#{fsr_key_str}]
+          h = (Ractor.main? ? (instance_variable_defined?(:@file_system_resolvers) ? instance_variable_get(:@file_system_resolvers) : {}) : RactorRailsShim::SHAREABLE_FALLBACK[#{fsr_key_str}]) if h.nil?
+          h.values
+        end
+      RUBY
+      # Register so the fallback builder captures + shares these.
+      CLASS_ATTRIBUTES << ["ActionView::PathRegistry", :view_paths_by_class, vpc_key, {}]
+      CLASS_ATTRIBUTES << ["ActionView::PathRegistry", :file_system_resolvers, fsr_key, {}]
+    end
+
+    # Patch AbstractController::Base.controller_path to not write/read the
+    # @controller_path class ivar from a worker Ractor. The original is
+    # `@controller_path ||= name.delete_suffix("Controller").underscore` — a
+    # raw class-ivar lazy init. The value is a frozen String (shareable). Route
+    # through IES; workers compute it from `name` (a class method, no ivar) and
+    # cache in their own slot. Read per-request during view lookup.
+    def _install_abstract_controller_patch
+      return if @abstract_controller_patched
+      @abstract_controller_patched = true
+      return unless defined?(::AbstractController::Base)
+      ac = ::AbstractController::Base
+      key = :ractor_rails_shim_abstract_controller_path
+      key_str = key.inspect
+
+      # Populate the shareable abstract registry from every loaded controller
+      # class's @abstract ivar (set by abstract! / inherited at boot). Workers
+      # read this via the patched abstract? (per-class values can't live in
+      # per-Ractor IES).
+      registry = {}
+      ac.descendants.each do |klass|
+        begin
+          registry[klass] = klass.instance_variable_get(:@abstract) if klass.instance_variable_defined?(:@abstract)
+        rescue => e
+          # ignore — best-effort
+        end
+      end
+      registry[ac] = ac.instance_variable_get(:@abstract) if ac.instance_variable_defined?(:@abstract)
+      registry.freeze
+      Ractor.make_shareable(registry)
+      self._abstract_registry = registry
+      ac.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def controller_path
+          cache = (ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_controller_path_cache] ||= {})
+          v = cache[self]
+          return v if v
+          if Ractor.main? && instance_variable_defined?(:@controller_path)
+            v = @controller_path
+            cache[self] = v
+            return v
+          end
+          computed = anonymous? ? nil : name.delete_suffix("Controller").underscore
+          cache[self] = computed
+          computed
+        end
+
+        # action_methods: `@action_methods ||= public_instance_methods(true) -
+        # internal_methods).map(&:name).to_set` — raw class-ivar lazy init.
+        # The value is a Set of Symbols (shareable once frozen). Route through
+        # IES; workers compute it from public_instance_methods (no ivar read)
+        # and cache in their own slot. Read per-request during dispatch.
+        def action_methods
+          cache = (ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_action_methods_cache] ||= {})
+          v = cache[self]
+          return v if v
+          if Ractor.main? && instance_variable_defined?(:@action_methods)
+            v = @action_methods
+            cache[self] = v
+            return v
+          end
+          methods = public_instance_methods(true) - internal_methods
+          methods.map!(&:name)
+          computed = methods.to_set
+          cache[self] = computed
+          computed
+        end
+
+        def clear_action_methods!
+          if Ractor.main?
+            @action_methods = nil
+          end
+          ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_action_methods_cache] = nil
+        end
+
+        # abstract! / abstract / abstract? — raw class ivar (@abstract), a
+        # per-CLASS boolean. IES is per-Ractor (single value), so we can't use a
+        # single IES key for all classes. Instead use a shareable registry
+        # (Hash class→bool) built at prepare_for_ractors! time. Workers read
+        # the registry; main reads its live @abstract ivar (set by abstract!
+        # / inherited). `internal_methods` loops on abstract?.
+        def abstract!
+          RactorRailsShim._abstract_registry[self] = true if Ractor.main?
+          @abstract = true if Ractor.main?
+        end
+
+        def abstract
+          if Ractor.main? && instance_variable_defined?(:@abstract)
+            @abstract
+          else
+            (RactorRailsShim._abstract_registry || RactorRailsShim::ABSTRACT_REGISTRY)[self] || false
+          end
+        end
+        alias_method :abstract?, :abstract
+      RUBY
+
+      # Patch ActionView::ViewPaths::ClassMethods#_prefixes (overrides any
+      # Base version). Original: `@_prefixes ||= begin; return local_prefixes
+      # if superclass.abstract?; local_prefixes + superclass._prefixes; end`.
+      # @_prefixes is a per-CLASS class ivar (workers can't read). Recurse
+      # using the patched abstract? and cache in a per-Ractor Hash by class.
+      if defined?(::ActionView::ViewPaths::ClassMethods)
+        vp = ::ActionView::ViewPaths::ClassMethods
+        vp.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+          def _prefixes
+            cache = (ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_vp_prefixes_cache] ||= {})
+            v = cache[self]
+            return v if v
+            if Ractor.main? && instance_variable_defined?(:@_prefixes)
+              v = @_prefixes
+              cache[self] = v
+              return v
+            end
+            computed = if superclass.respond_to?(:abstract?) && superclass.abstract?
+              local_prefixes
+            elsif superclass.respond_to?(:_prefixes)
+              local_prefixes + superclass._prefixes
+            else
+              local_prefixes
+            end
+            cache[self] = computed
+            computed
+          end
+        RUBY
+      end
+
+      # AbstractController::UrlFor::ClassMethods#action_methods ALSO has a
+      # `@action_methods ||= ...` lazy init (it overrides Base.action_methods
+      # to subtract route helper names). Patch it the same way.
+      if defined?(::AbstractController::UrlFor::ClassMethods)
+        url_for_cm = ::AbstractController::UrlFor::ClassMethods
+        url_for_cm.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+          def action_methods
+            cache = (ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_url_for_action_methods_cache] ||= {})
+            v = cache[self]
+            return v if v
+            if Ractor.main? && instance_variable_defined?(:@action_methods)
+              v = @action_methods
+              cache[self] = v
+              return v
+            end
+            # NOTE: the original reads `@action_methods ||= if _routes; super -
+            # _routes.named_routes.helper_names; else; super; end`. But
+            # `_routes` is a singleton method defined via `define_method` with
+            # a block (route_set.rb:610), capturing the defining Ractor's
+            # binding → "defined with an un-shareable Proc in a different
+            # Ractor" when called from a worker. Instead, read the route set
+            # directly from the shareable Rails.application (frozen, shared).
+            base = super
+            routes = Ractor.main? ? (respond_to?(:_routes) ? _routes : nil) : (defined?(::Rails) && ::Rails.application ? ::Rails.application.routes : nil)
+            computed = if routes
+              base - routes.named_routes.helper_names
+            else
+              base
+            end
+            cache[self] = computed
+            computed
+          end
+        RUBY
+      end
+    end
+
+    # Patch ActiveSupport.error_reporter (and error_reporter=) to not read/write
+    # the @error_reporter class ivar from a worker Ractor. The original is an
+    # `attr_accessor`-backed class ivar. Route through IES; workers build their
+    # own default reporter (which writes to Rails.logger — already per-Ractor).
+    def _install_active_support_error_reporter_patch
+      return if @error_reporter_patched
+      @error_reporter_patched = true
+      return unless defined?(::ActiveSupport)
+      key = :ractor_rails_shim_active_support_error_reporter
+      key_str = key.inspect
+      ::ActiveSupport.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def error_reporter
+          v = ActiveSupport::IsolatedExecutionState[#{key_str}]
+          return v unless v.nil?
+          if Ractor.main? && instance_variable_defined?(:@error_reporter)
+            @error_reporter
+          else
+            built = ActiveSupport::ErrorReporter.new
+            ActiveSupport::IsolatedExecutionState[#{key_str}] = built
+            built
+          end
+        end
+        def error_reporter=(val)
+          ActiveSupport::IsolatedExecutionState[#{key_str}] = val
+          @error_reporter = val if Ractor.main?
+          val
+        end
+      RUBY
+    end
+
+    # Patch ActionView::LookupContext.registered_details (a singleton
+    # attr_accessor backed by @registered_details = []) to not read the class
+    # ivar from a worker Ractor. The value is an Array of Symbols
+    # (shareable once frozen). Route through IES; workers read the shareable
+    # fallback (the boot-time registered details). Read per-request during
+    # view lookup (`initialize_details`).
+    def _install_lookup_context_patch
+      return if @lookup_context_patched
+      @lookup_context_patched = true
+      return unless defined?(::ActionView::LookupContext)
+      lc = ::ActionView::LookupContext
+      key = :ractor_rails_shim_lookup_context_registered_details
+      key_str = key.inspect
+      lc.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def registered_details
+          v = ActiveSupport::IsolatedExecutionState[#{key_str}]
+          return v unless v.nil?
+          if Ractor.main? && instance_variable_defined?(:@registered_details)
+            @registered_details
+          else
+            RactorRailsShim::SHAREABLE_FALLBACK[#{key_str}] || []
+          end
+        end
+        def registered_details=(val)
+          ActiveSupport::IsolatedExecutionState[#{key_str}] = val
+          @registered_details = val if Ractor.main?
+          val
+        end
+      RUBY
+      CLASS_ATTRIBUTES << ["ActionView::LookupContext", :registered_details, key, []]
+
+      # Patch ActionView::Rendering::ClassMethods#view_context_class to read
+      # from a shareable registry (populated in main) instead of building via
+      # Class.new{...} blocks (un-shareable Proc from a worker). The built
+      # class is made shareable; workers read it via the registry.
+      if defined?(::ActionView::Rendering::ClassMethods)
+        rcm = ::ActionView::Rendering::ClassMethods
+
+        # Capture the ORIGINAL view_context_class BEFORE patching, so we can
+        # build per-controller classes in main using the original logic.
+        orig_vcc = rcm.instance_method(:view_context_class)
+
+        # Populate the registry: call the ORIGINAL view_context_class for each
+        # loaded controller in main, capture the built class. Done BEFORE
+        # patching so ctrl.view_context_class hits the original.
+        if Ractor.main?
+          registry = {}
+          ::AbstractController::Base.descendants.each do |ctrl|
+            begin
+              vc = orig_vcc.bind(ctrl).call
+              registry[ctrl] = vc
+            rescue => e
+              # skip controllers that can't build (e.g. abstract)
+            end
+          end
+          registry.delete_if { |_, v| v.nil? }
+          registry.freeze
+          begin
+            Ractor.make_shareable(registry)
+            self._view_context_registry = registry
+          rescue => e
+            # If the registry can't be made shareable, leave it — workers fall
+            # back to the empty-cache base.
+          end
+        end
+
+        rcm.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+          def view_context_class
+            reg = RactorRailsShim._view_context_registry
+            v = reg[self] if reg
+            return v if v
+            if Ractor.main? && instance_variable_defined?(:@view_context_class)
+              @view_context_class
+            else
+              # No registry entry (e.g. a controller loaded after prepare).
+              # Fall back to the DetailsKey view_context_class (the empty-cache
+              # base) — rendering may fail for controllers needing url_helpers,
+              # but simple render :plain works.
+              ActionView::LookupContext::DetailsKey.view_context_class
+            end
+          end
+        RUBY
+      end
+      # uses define_method with blocks → un-shareable Proc from a worker). The
+      # built Class is shareable; register it so the fallback builder captures
+      # it and workers read it via SHAREABLE_FALLBACK.
+      vcc_key = :ractor_rails_shim_lookup_context_view_context_class
+      vcc_key_str = vcc_key.inspect
+      CLASS_ATTRIBUTES << ["ActionView::LookupContext::DetailsKey", :view_context_class, vcc_key, nil]
+      # Build it now in main and stash in IES so the fallback builder picks it up.
+      if Ractor.main? && defined?(::ActionView::Base)
+        built = ::ActionView::LookupContext::DetailsKey.view_context_class
+        # with_empty_template_cache defines compiled_method_container via
+        # define_method (block) → un-shareable Proc, callable only from main.
+        # Redefine both the instance and singleton versions via string-eval
+        # (no captured binding) so they're callable from worker Ractors. The
+        # original returns `subclass` (the built class); the instance method
+        # returns self.class (== built), the singleton returns self (== built).
+        built.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+          def compiled_method_container; self.class; end
+        RUBY
+        built.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+          def compiled_method_container; self; end
+        RUBY
+        ActiveSupport::IsolatedExecutionState[vcc_key] = built
+      end
+
+      # DetailsKey: view_context_class reads the shareable fallback (built in
+      # main above). details_keys / digest_cache are per-Ractor caches
+      # (workers start empty). The @view_context_mutex is bypassed (no
+      # contention in a per-Ractor lazy build, which only happens in main).
+      dk = ::ActionView::LookupContext::DetailsKey
+      dk_key = :ractor_rails_shim_lookup_context_details_keys
+      dc_key = :ractor_rails_shim_lookup_context_digest_cache
+      dk_key_str = dk_key.inspect
+      dc_key_str = dc_key.inspect
+      vcc_key_str2 = vcc_key.inspect
+      dk.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def view_context_class
+          v = ActiveSupport::IsolatedExecutionState[#{vcc_key_str2}]
+          return v unless v.nil?
+          if Ractor.main? && instance_variable_defined?(:@view_context_class)
+            v = @view_context_class
+            ActiveSupport::IsolatedExecutionState[#{vcc_key_str2}] = v
+            v
+          else
+            RactorRailsShim::SHAREABLE_FALLBACK[#{vcc_key_str2}]
+          end
+        end
+        def details_keys
+          v = ActiveSupport::IsolatedExecutionState[#{dk_key_str}]
+          return v if v
+          if Ractor.main? && instance_variable_defined?(:@details_keys)
+            v = @details_keys
+          else
+            v = Concurrent::Map.new
+          end
+          ActiveSupport::IsolatedExecutionState[#{dk_key_str}] = v
+          v
+        end
+        def digest_cache(details)
+          dc = (ActiveSupport::IsolatedExecutionState[#{dc_key_str}] ||= Concurrent::Map.new)
+          dc[details_cache_key(details)] ||= Concurrent::Map.new
+        end
+        def details_cache_key(details)
+          details_keys.fetch(details) do
+            if formats = details[:formats]
+              unless Template::Types.valid_symbols?(formats)
+                details = details.dup
+                details[:formats] &= Template::Types.symbols
+              end
+            end
+            details_keys[details] ||= TemplateDetails::Requested.new(**details)
+          end
+        end
+      RUBY
+    end
+
+    # Patch I18n::Config's class-variable-backed accessors (default_locale,
+    # locale, backend, etc.) to not read @@cvars from a worker Ractor. I18n
+    # defines these manually (`@@default_locale ||= :en`), not via
+    # cattr_accessor, so the shim's mattr rewrite doesn't catch them. The
+    # values are frozen Symbols / shareable config objects; route the
+    # frequently-read ones (default_locale, locale) through IES with the same
+    # default. Read per-request during view lookup (LookupContext details).
+    def _install_i18n_patch
+      return if @i18n_patched
+      @i18n_patched = true
+      return unless defined?(::I18n::Config)
+      cfg = ::I18n::Config
+      dl_key = :ractor_rails_shim_i18n_default_locale
+      l_key = :ractor_rails_shim_i18n_locale
+      dl_key_str = dl_key.inspect
+      l_key_str = l_key.inspect
+      cfg.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def default_locale
+          v = ActiveSupport::IsolatedExecutionState[#{dl_key_str}]
+          return v unless v.nil?
+          if Ractor.main? && class_variable_defined?(:@@default_locale)
+            cv = class_variable_get(:@@default_locale)
+            ActiveSupport::IsolatedExecutionState[#{dl_key_str}] = cv
+            return cv
+          end
+          ActiveSupport::IsolatedExecutionState[#{dl_key_str}] = :en
+          :en
+        end
+        def default_locale=(locale)
+          v = locale && locale.to_sym
+          ActiveSupport::IsolatedExecutionState[#{dl_key_str}] = v
+          class_variable_set(:@@default_locale, v) if Ractor.main?
+          v
+        end
+        def locale
+          v = ActiveSupport::IsolatedExecutionState[#{l_key_str}]
+          return v unless v.nil?
+          default_locale
+        end
+        def locale=(locale)
+          v = locale && locale.to_sym
+          ActiveSupport::IsolatedExecutionState[#{l_key_str}] = v
+          v
+        end
+      RUBY
+
+      # Patch I18n.fallbacks (a singleton method on the I18n module) to not
+      # read the @@fallbacks class variable from a worker Ractor. It already
+      # uses Fiber/Thread-local storage with @@fallbacks as the fallback;
+      # route the @@fallbacks read through IES so workers build their own
+      # I18n::Locale::Fallbacks. Called per-request via LookupContext details.
+      if defined?(::I18n)
+        i18n = ::I18n
+        fb_key = :ractor_rails_shim_i18n_fallbacks
+        fb_key_str = fb_key.inspect
+        i18n.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+          def fallbacks
+            v = ActiveSupport::IsolatedExecutionState[#{fb_key_str}]
+            return v unless v.nil?
+            if Ractor.main? && class_variable_defined?(:@@fallbacks)
+              cv = class_variable_get(:@@fallbacks)
+              if cv
+                ActiveSupport::IsolatedExecutionState[#{fb_key_str}] = cv
+                return cv
+              end
+            end
+            built = I18n::Locale::Fallbacks.new
+            ActiveSupport::IsolatedExecutionState[#{fb_key_str}] = built
+            built
+          end
+        RUBY
+
+        # I18n::Locale::Tag.implementation — manual @@implementation ||= Simple.
+        # The value is a module (shareable). Route through IES.
+        if defined?(::I18n::Locale::Tag)
+          tag = ::I18n::Locale::Tag
+          tag_key = :ractor_rails_shim_i18n_tag_implementation
+          tag_key_str = tag_key.inspect
+          tag.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+            def implementation
+              v = ActiveSupport::IsolatedExecutionState[#{tag_key_str}]
+              return v unless v.nil?
+              if Ractor.main? && class_variable_defined?(:@@implementation)
+                cv = class_variable_get(:@@implementation)
+                ActiveSupport::IsolatedExecutionState[#{tag_key_str}] = cv
+                return cv
+              end
+              ActiveSupport::IsolatedExecutionState[#{tag_key_str}] = I18n::Locale::Tag::Simple
+              I18n::Locale::Tag::Simple
+            end
+          RUBY
+        end
+      end
+    end
+
+    # Patch ActionView::Template::Handlers class-var accessors
+    # (@@template_handlers, @@template_extensions, @@default_template_handlers)
+    # to not read @@cvars from a worker Ractor. The values are Hashes/Arrays of
+    # Symbols + handler objects; route the read paths through IES. The handlers
+    # Hash is registered at boot (frozen shared app → read-only). Workers read
+    # the shareable fallback. `extensions` is called per-request via
+    # LookupContext details.
+    def _install_template_handlers_patch
+      return if @template_handlers_patched
+      @template_handlers_patched = true
+      return unless defined?(::ActionView::Template::Handlers)
+      h = ::ActionView::Template::Handlers
+      th_key = :ractor_rails_shim_av_template_handlers
+      ext_key = :ractor_rails_shim_av_template_extensions
+      dth_key = :ractor_rails_shim_av_default_template_handlers
+      th_key_str = th_key.inspect
+      ext_key_str = ext_key.inspect
+      dth_key_str = dth_key.inspect
+      h.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def template_handlers_hash
+          v = ActiveSupport::IsolatedExecutionState[#{th_key_str}]
+          return v unless v.nil?
+          if Ractor.main? && class_variable_defined?(:@@template_handlers)
+            cv = class_variable_get(:@@template_handlers)
+            ActiveSupport::IsolatedExecutionState[#{th_key_str}] = cv
+            cv
+          else
+            RactorRailsShim::SHAREABLE_FALLBACK[#{th_key_str}] || {}
+          end
+        end
+        def extensions
+          v = ActiveSupport::IsolatedExecutionState[#{ext_key_str}]
+          return v unless v.nil?
+          if Ractor.main? && class_variable_defined?(:@@template_extensions)
+            cv = class_variable_get(:@@template_extensions)
+            cv ||= class_variable_get(:@@template_handlers).keys if class_variable_defined?(:@@template_handlers)
+            ActiveSupport::IsolatedExecutionState[#{ext_key_str}] = cv
+            cv
+          else
+            template_handlers_hash.keys
+          end
+        end
+        def template_handler_extensions
+          template_handlers_hash.keys.map(&:to_s).sort
+        end
+        def registered_template_handler(extension)
+          extension && template_handlers_hash[extension.to_sym]
+        end
+        def handler_for_extension(extension)
+          registered_template_handler(extension) || begin
+            v = ActiveSupport::IsolatedExecutionState[#{dth_key_str}]
+            if v.nil?
+              if Ractor.main? && class_variable_defined?(:@@default_template_handlers)
+                v = class_variable_get(:@@default_template_handlers)
+                ActiveSupport::IsolatedExecutionState[#{dth_key_str}] = v
+              else
+                v = RactorRailsShim::SHAREABLE_FALLBACK[#{dth_key_str}]
+              end
+            end
+            v
+          end
+        end
+      RUBY
+      CLASS_ATTRIBUTES << ["ActionView::Template::Handlers", :template_handlers, th_key, {}]
+      CLASS_ATTRIBUTES << ["ActionView::Template::Handlers", :default_template_handlers, dth_key, nil]
+    end
+
+    # Patch ActiveSupport::ExecutionContext's raw class ivars
+    # (@after_change_callbacks, @nestable) to not read them from a worker
+    # Ractor. `after_change` blocks are registered at boot (e.g. by railties to
+    # flush CurrentAttributes) and capture self → unshareable. For a read-only
+    # shared app, workers get an empty callback list (no flush — workers start
+    # with empty per-Ractor CurrentAttributes anyway) and nestable=false.
+    # `[]=` and `set` are called per-request via controller instrumentation.
+    def _install_execution_context_patch
+      return if @exec_context_patched
+      @exec_context_patched = true
+      return unless defined?(::ActiveSupport::ExecutionContext)
+      ec = ::ActiveSupport::ExecutionContext
+      acb_key = :ractor_rails_shim_exec_context_after_change_callbacks
+      nest_key = :ractor_rails_shim_exec_context_nestable
+      acb_key_str = acb_key.inspect
+      nest_key_str = nest_key.inspect
+      ec.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def after_change_callbacks
+          v = ActiveSupport::IsolatedExecutionState[#{acb_key_str}]
+          return v unless v.nil?
+          if Ractor.main? && instance_variable_defined?(:@after_change_callbacks)
+            v = @after_change_callbacks
+            ActiveSupport::IsolatedExecutionState[#{acb_key_str}] = v
+            v
+          else
+            arr = []
+            ActiveSupport::IsolatedExecutionState[#{acb_key_str}] = arr
+            arr
+          end
+        end
+        def after_change(&block)
+          after_change_callbacks << block
+        end
+        def nestable
+          v = ActiveSupport::IsolatedExecutionState[#{nest_key_str}]
+          return v unless v.nil?
+          if Ractor.main? && instance_variable_defined?(:@nestable)
+            v = @nestable
+            ActiveSupport::IsolatedExecutionState[#{nest_key_str}] = v
+            v
+          else
+            false
+          end
+        end
+        def nestable=(val)
+          ActiveSupport::IsolatedExecutionState[#{nest_key_str}] = val
+          @nestable = val if Ractor.main?
+          val
+        end
+      RUBY
+      # Rewrite the methods that read @after_change_callbacks directly.
+      ec.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def set(**options)
+          options.symbolize_keys!
+          keys = options.keys
+          store = record.store
+          previous_context = if block_given?
+            keys.zip(store.values_at(*keys)).to_h
+          end
+          store.merge!(options)
+          after_change_callbacks.each(&:call)
+          if block_given?
+            begin
+              yield
+            ensure
+              store.merge!(previous_context)
+              after_change_callbacks.each(&:call)
+            end
+          end
+        end
+        def []=(key, value)
+          record.store[key.to_sym] = value
+          after_change_callbacks.each(&:call)
+        end
+      RUBY
+    end
+
+    # Patch ActionDispatch::Request.parameter_parsers (singleton attr_reader
+    # backed by @parameter_parsers) to not read the class ivar from a worker
+    # Ractor. The value is a Hash of MIME-type → parser (lambdas). Route
+    # through IES; workers read the shareable fallback (the boot-time parsers,
+    # made shareable). Read per-request during parameter parsing.
+    def _install_request_parameter_parsers_patch
+      return if @request_param_parsers_patched
+      @request_param_parsers_patched = true
+      return unless defined?(::ActionDispatch::Request)
+      req = ::ActionDispatch::Request
+      pp_key = :ractor_rails_shim_request_parameter_parsers
+      pp_key_str = pp_key.inspect
+      req.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def parameter_parsers
+          v = ActiveSupport::IsolatedExecutionState[#{pp_key_str}]
+          return v unless v.nil?
+          if Ractor.main? && instance_variable_defined?(:@parameter_parsers)
+            v = @parameter_parsers
+            ActiveSupport::IsolatedExecutionState[#{pp_key_str}] = v
+            v
+          else
+            RactorRailsShim::SHAREABLE_FALLBACK[#{pp_key_str}] || ActionDispatch::Request::DEFAULT_PARSERS
+          end
+        end
+      RUBY
+      CLASS_ATTRIBUTES << ["ActionDispatch::Request", :parameter_parsers, pp_key, nil]
+    end
+
+    # Patch Rack::Utils singleton attr_accessors (default_query_parser,
+    # multipart_total_part_limit, multipart_file_limit) to not read @ivars
+    # from a worker Ractor. The values are shareable once frozen (QueryParser,
+    # Integers). Route through IES; workers read the shareable fallback.
+    # `default_query_parser` is read per-request during POST parsing.
+    def _install_rack_utils_patch
+      return if @rack_utils_patched
+      @rack_utils_patched = true
+      return unless defined?(::Rack::Utils)
+      u = ::Rack::Utils
+      dqp_key = :ractor_rails_shim_rack_utils_default_query_parser
+      mtp_key = :ractor_rails_shim_rack_utils_multipart_total_part_limit
+      mfl_key = :ractor_rails_shim_rack_utils_multipart_file_limit
+      dqp_key_str = dqp_key.inspect
+      mtp_key_str = mtp_key.inspect
+      mfl_key_str = mfl_key.inspect
+      u.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def default_query_parser
+          v = ActiveSupport::IsolatedExecutionState[#{dqp_key_str}]
+          return v unless v.nil?
+          if Ractor.main? && instance_variable_defined?(:@default_query_parser)
+            v = @default_query_parser
+            ActiveSupport::IsolatedExecutionState[#{dqp_key_str}] = v
+            v
+          else
+            RactorRailsShim::SHAREABLE_FALLBACK[#{dqp_key_str}] || ::Rack::QueryParser::QueryParser.make_default(32)
+          end
+        end
+        def multipart_total_part_limit
+          v = ActiveSupport::IsolatedExecutionState[#{mtp_key_str}]
+          return v unless v.nil?
+          if Ractor.main? && instance_variable_defined?(:@multipart_total_part_limit)
+            v = @multipart_total_part_limit
+            ActiveSupport::IsolatedExecutionState[#{mtp_key_str}] = v
+            v
+          else
+            RactorRailsShim::SHAREABLE_FALLBACK[#{mtp_key_str}] || 128
+          end
+        end
+        def multipart_file_limit
+          v = ActiveSupport::IsolatedExecutionState[#{mfl_key_str}]
+          return v unless v.nil?
+          if Ractor.main? && instance_variable_defined?(:@multipart_file_limit)
+            v = @multipart_file_limit
+            ActiveSupport::IsolatedExecutionState[#{mfl_key_str}] = v
+            v
+          else
+            RactorRailsShim::SHAREABLE_FALLBACK[#{mfl_key_str}] || 64
+          end
+        end
+      RUBY
+      CLASS_ATTRIBUTES << ["Rack::Utils", :default_query_parser, dqp_key, nil]
+      CLASS_ATTRIBUTES << ["Rack::Utils", :multipart_total_part_limit, mtp_key, nil]
+      CLASS_ATTRIBUTES << ["Rack::Utils", :multipart_file_limit, mfl_key, nil]
+    end
+
+    # The frozen, shareable fallback table for class_attribute / mattr_accessor
+    # `prepare_for_ractors!` time from the main ractor's live values, then made
+    # shareable. Returns a frozen Hash { ies_key => shareable_value }.
+    attr_reader :shareable_fallback
 
     # Public API: make Rails.application shareable across Ractors. Replaces
     # every self-capturing Proc in the app graph with a callable object (no
@@ -98,12 +1048,230 @@ module RactorRailsShim
     # Returns the shareable app. Raises on failure (e.g. if a Proc can't be
     # replaced — add the missing constant to shareable_constants first).
     def make_app_shareable!(app = Rails.application)
-      prepare_for_ractors! unless @shareable_constants_done
+      # Shareable constants + Rack::Request + Inflector + ParameterEncoding +
+      # PathRegistry + AbstractController + error_reporter + LookupContext +
+      # I18n + Template::Handlers + ExecutionContext + Request param parsers.
+      do_install_shareable_constants unless @shareable_constants_done
+      _install_rack_request_patch
+      _install_inflector_patch
+      _install_parameter_encoding_patch
+      _install_path_registry_patch
+      _install_abstract_controller_patch
+      _install_active_support_error_reporter_patch
+      _install_lookup_context_patch
+      _install_i18n_patch
+      _install_template_handlers_patch
+      _install_execution_context_patch
+      _install_request_parameter_parsers_patch
+      _install_rack_utils_patch
+      # Pre-compute lazy ivars BEFORE freezing (they mutate the app).
       _precompute_lazy_ivars(app)
+      # Neutralize the app's logger IO so Ractor.make_shareable doesn't freeze
+      # $stdout/$stderr (freezing STDOUT breaks the process's own output).
+      # Workers build their own per-Ractor Rails.logger, so the app-instance
+      # logger is unused post-freeze; redirect its logdev to a fresh StringIO
+      # sink (which is safely freezable).
+      _neutralize_logger_io!(app)
       _replace_unshareable_procs!(app)
       _replace_locks_and_concurrent_maps!(app)
       Ractor.make_shareable(app)
+      # Build the framework-config fallback AFTER the app is frozen. The
+      # fallback makes class_attribute / mattr_accessor values shareable; some
+      # of those values reference the app graph (e.g. config objects that point
+      # back at Rails.application). Doing this after the app is already
+      # shareable means Ractor.make_shareable on the config values is a no-op
+      # for the app portion (already frozen) — avoiding a "can't modify frozen
+      # app" error when precompute wrote to it. (prepare_for_ractors!, which
+      # also builds the fallback, is a no-op now via @fallback_built.)
+      _build_shareable_fallback!
       app
+    end
+
+     # Detach the logger IO from the app graph so Ractor.make_shareable(app)
+     # doesn't freeze the process's real $stdout/$stderr. The app-instance
+     # logger (app.config.logger) holds an IO in its logdev; freezing it would
+     # silence main-ractor logging and break minitest/server output.
+     #
+     # Strategy: replace app.config.logger (and any broadcast target reachable
+     # from the app) with a frozen, shareable no-op BroadcastLogger (no IO).
+     # Then re-point the MAIN ractor's Rails.logger (the per-Ractor module
+     # accessor, NOT in the app graph) at a fresh live BroadcastLogger writing
+     # to $stderr — which is NOT reachable from the frozen app, so it stays
+     # mutable. Workers already build their own per-Ractor Rails.logger in the
+     # patched reader, so they're unaffected.
+     def _neutralize_logger_io!(app)
+       # A frozen, shareable no-op BroadcastLogger (no broadcasts → no IO) to
+       # swap in for the app-instance logger graph.
+       noop_logger = ::ActiveSupport::BroadcastLogger.new
+       noop_logger.freeze
+       Ractor.make_shareable(noop_logger)
+
+       # Replace the app-instance logger + any IO reachable from the app graph.
+       seen = {}
+       stack = [app]
+       until stack.empty?
+         o = stack.pop
+         next if o.nil? || seen[o.object_id]
+         seen[o.object_id] = true
+         o.instance_variables.each do |iv|
+           begin; v = o.instance_variable_get(iv); rescue; next; end
+           if iv == :@logger
+             # Replace the app-instance / config logger with the no-op (so the
+             # frozen app graph holds no live IO). Best-effort; rescue if the
+             # owner is frozen.
+             o.instance_variable_set(iv, noop_logger) rescue nil
+           elsif v.is_a?(::IO) && (v == $stdout || v == $stderr || v == STDOUT || v == STDERR)
+             # Any stray IO reference → a shareable no-op sink.
+             sink = NoOpLogDev.new
+             sink.freeze
+             Ractor.make_shareable(sink)
+             o.instance_variable_set(iv, sink) rescue nil
+           elsif v
+             stack << v
+           end
+         end
+         if o.is_a?(Array); o.each { |e| stack << e if e }
+         elsif o.is_a?(Hash); o.each { |_, val| stack << val if val }
+         end
+       end
+
+       # Re-point the MAIN ractor's Rails.logger at a fresh live logger (not
+       # reachable from the frozen app) so main keeps logging after the app is
+       # made shareable. $stderr is each-Ractor-local and not in the app graph,
+       # so it stays mutable. Use the same shape Rails uses (BroadcastLogger
+       # broadcasting to a Logger writing $stderr).
+       if Ractor.main? && defined?(::Rails)
+         live = ::ActiveSupport::BroadcastLogger.new(::Logger.new($stderr))
+         ::Rails.logger = live
+       end
+     end
+
+    # --- shareable fallback for framework class config ---
+
+    # Build the shareable fallback for every class_attribute / mattr_accessor
+    # value the shim has rerouted. For each registered attribute we:
+    #   1. Read the main-ractor value (from its IES slot, which `redefine`
+    #      seeded at class_attribute-definition time).
+    #   2. Make it shareable (deep-freeze + callable-replacement for any Procs
+    #      it holds — same technique as make_app_shareable!, applied to the
+    #      config sub-graph).
+    #   3. Store under the IES key in a frozen Hash on RactorRailsShim, which
+    #      is readable from every Ractor (it's a constant).
+    # Workers' class_attribute readers fall back to this when their own IES
+    # slot is nil. Must run in the main Ractor. Idempotent.
+    def _build_shareable_fallback!
+      return if @fallback_built
+      @fallback_built = true
+
+      fallback = {}
+      CLASS_ATTRIBUTES.each do |(owner_name, attr_name, ies_key, default_val)|
+        # Skip the Rails logger — it's intrinsically unshareable (IO + Mutex +
+        # mutable formatter) and workers build their own per-Ractor logger
+        # via the patched reader. Trying to make it shareable would freeze the
+        # IO, breaking logging in main too.
+        next if owner_name == "Rails" && attr_name == :logger
+        val = ActiveSupport::IsolatedExecutionState[ies_key]
+        # For mattr_accessor: the value may have been written to @@sym after
+        # define-time (e.g. by an initializer). Read it from there if the IES
+        # slot is nil (the seed only set the default; the live value may differ).
+        if val.nil? && owner_name && attr_name.is_a?(Symbol)
+          begin
+            owner_mod = owner_name.split("::").inject(Object) { |ns, n| ns.const_get(n) } rescue nil
+            if owner_mod && owner_mod.class_variable_defined?("@@#{attr_name}")
+              val = owner_mod.class_variable_get("@@#{attr_name}")
+            end
+          rescue => e
+            # ignore — best-effort read
+          end
+        end
+        # For raw class ivars (PathRegistry, etc.): read @<attr_name> in main.
+        if val.nil? && owner_name && attr_name.is_a?(Symbol)
+          begin
+            owner_mod = owner_name.split("::").inject(Object) { |ns, n| ns.const_get(n) } rescue nil
+            if owner_mod && owner_mod.instance_variable_defined?("@#{attr_name}")
+              val = owner_mod.instance_variable_get("@#{attr_name}")
+            end
+          rescue => e
+            # ignore — best-effort read
+          end
+        end
+        # For the Rails module accessors (owner_name == "Rails"): the value
+        # may live in the @ivar (set by Rails' own writer via super, or
+        # lazy-init'd by Rails' own reader) rather than in IES. Read it via
+        # the actual accessor in main, which materializes the lazy-init value.
+        if val.nil? && owner_name == "Rails" && defined?(::Rails)
+          begin
+            val = ::Rails.public_send(attr_name) if ::Rails.respond_to?(attr_name, false)
+          rescue => e
+            # ignore — best-effort read
+          end
+        end
+
+        shareable_val = nil
+        # Try the live value first.
+        if !val.nil?
+          shareable_val = _try_make_shareable(val, owner_name, attr_name)
+        end
+        # If the live value couldn't be shared (e.g. __callbacks holds
+        # self-capturing Procs), fall back to the definition-time default.
+        # For a frozen shared app this is correct: boot-time callbacks already
+        # ran in main; workers treat them as already-run (empty/no-op). The
+        # default is dup'd if it's a mutable container (Hash/Array) so each
+        # entry in the fallback is an independent shareable copy.
+        if shareable_val.nil? && !default_val.nil?
+          shareable_val = _try_make_shareable(_shareable_copy(default_val), owner_name, attr_name, default: true)
+        end
+
+        fallback[ies_key] = shareable_val if shareable_val
+      end
+      fallback.freeze
+      Ractor.make_shareable(fallback)
+
+      # Make the shareable mattr-defaults subset shareable too (workers read
+      # it via the constant). Frozen + reassigned via const_set.
+      SHAREABLE_MATTR_DEFAULTS.freeze
+      Ractor.make_shareable(SHAREABLE_MATTR_DEFAULTS)
+
+      # Reassign the constants with the built (shareable) tables. const_set
+      # warns "already initialized constant" — silence that one warning.
+      verbose, $VERBOSE = $VERBOSE, nil
+      begin
+        const_set(:SHAREABLE_FALLBACK, fallback)
+        const_set(:SHAREABLE_MATTR_DEFAULTS, SHAREABLE_MATTR_DEFAULTS)
+      ensure
+        $VERBOSE = verbose
+      end
+      fallback
+    end
+
+    # Best-effort attempt to make `val` shareable (callable-replacement for
+    # Procs + lock-replacement + make_shareable). Returns the shareable val,
+    # or nil if it can't be made shareable. On failure, emits a warning
+    # (unless `default:` — defaults are expected to sometimes be unshareable,
+    # so we skip the noise).
+    def _try_make_shareable(val, owner_name, attr_name, default: false)
+      begin
+        _replace_unshareable_procs!(val)
+        _replace_locks_and_concurrent_maps!(val)
+        Ractor.make_shareable(val)
+        val
+      rescue => e
+        unless default
+          warn "ractor-rails-shim: could not make attribute " \
+               "#{owner_name}##{attr_name} shareable (#{e.class}: #{e.message[0,80]}); workers will fall back to default or nil"
+        end
+        nil
+      end
+    end
+
+    # Return a fresh copy of a mutable default container (Hash/Array) so the
+    # fallback entry is independent. Frozen/shareable defaults pass through.
+    def _shareable_copy(val)
+      case val
+      when Hash then val.dup
+      when Array then val.dup
+      else val
+      end
     end
 
     private
@@ -157,6 +1325,8 @@ module RactorRailsShim
       "ActiveSupport::ErrorReporter::SEVERITIES",
       "ActiveSupport::CurrentAttributes::INVALID_ATTRIBUTE_NAMES",
       "ActiveSupport::Delegation::RUBY_RESERVED_KEYWORDS",
+      # concurrent-ruby
+      "Concurrent::NULL",
       # Railties
       "Rails::Railtie::ABSTRACT_RAILTIES",
       "Rails::AppLoader::EXECUTABLES",
@@ -169,6 +1339,12 @@ module RactorRailsShim
       "Rack::Utils::COMMON_SEP",
       "Rack::Utils::STATUS_WITH_NO_ENTITY_BODY",
       "Rack::Utils::SYMBOL_TO_STATUS_CODE",
+      "Rack::MethodOverride::ALLOWED_METHODS",
+      "Rack::MethodOverride::METHOD_OVERRIDES",
+      "Rack::Headers::KNOWN_HEADERS",
+      "Rack::Request::Helpers::FORM_DATA_MEDIA_TYPES",
+      "Rack::Request::Helpers::PARSEABLE_DATA_MEDIA_TYPES",
+      "Rack::Request::Helpers::DEFAULT_PORTS",
       "Rack::Mime::MIME_TYPES",
       "Rack::Files::ALLOWED_VERBS",
       "Rack::Files::ALLOW_HEADER",
@@ -178,6 +1354,24 @@ module RactorRailsShim
       "ActionDispatch::SSL::PERMANENT_REDIRECT_REQUEST_METHODS",
       "ActionDispatch::HostAuthorization::VALID_IP_HOSTNAME",
       "ActionDispatch::HostAuthorization::ALLOWED_HOSTS_IN_DEVELOPMENT",
+      "ActionDispatch::Request::HTTP_METHODS",
+      "ActionDispatch::Request::HTTP_METHOD_LOOKUP",
+      # ActionView
+      "ActionView::LookupContext::Accessors::DEFAULT_PROCS",
+      # Mime
+      "Mime::SET",
+      "Mime::EXTENSION_LOOKUP",
+      "Mime::Type::TRAILING_STAR_REGEXP",
+      "Mime::Type::PARAMETER_SEPARATOR_REGEXP",
+      "Mime::Type::ACCEPT_HEADER_REGEXP",
+      "Mime::ALL",
+      "ActionDispatch::Response::NullContentTypeHeader",
+      "ActionDispatch::Response::NO_CONTENT_CODES",
+      "ActionDispatch::Response::RackBody::BODY_METHODS",
+      "ActionDispatch::Response::Buffer::BODY_METHODS",
+      "ActionController::Rendering::RENDER_FORMATS_IN_PRIORITY",
+      "ActionController::Base::PROTECTED_IVARS",
+      "AbstractController::Rendering::DEFAULT_PROTECTED_INSTANCE_VARIABLES",
       # ActionDispatch / others are added lazily as they're found; add yours
       # via RactorRailsShim.shareable_constants << "YourGem::CONST"
     ]
@@ -259,6 +1453,17 @@ module RactorRailsShim
     def _patch_rails_module_body(mod)
       k = KEYS
 
+      # Register the Rails module accessors in CLASS_ATTRIBUTES so the
+      # shareable-fallback builder captures their main-ractor values at
+      # prepare_for_ractors! / make_app_shareable! time and exposes them to
+      # worker Ractors (e.g. Rails.logger is read per-request by
+      # Rails::Rack::SilenceRequest). `application` is NOT registered — workers
+      # get the shared app via Ractor.new(app), not via Rails.application.
+      CLASS_ATTRIBUTES << ["Rails", :logger,        k[:logger],        nil]
+      CLASS_ATTRIBUTES << ["Rails", :cache,         k[:cache],         nil]
+      CLASS_ATTRIBUTES << ["Rails", :backtrace_cleaner, k[:backtrace_cleaner], nil]
+      CLASS_ATTRIBUTES << ["Rails", :app_class,     k[:app_class],     nil]
+
       # We PREPEND a module onto Rails.singleton_class rather than redefine
       # the methods directly, because Rails defines its own `application`,
       # `env`, etc. LATER in rails.rb (`class << self; def application; ...`).
@@ -287,10 +1492,13 @@ module RactorRailsShim
         end
 
         # Simple accessors: app_class, cache, logger, backtrace_cleaner.
+        # Workers fall back to the shareable fallback (built from main's
+        # value at make_app_shareable! time) when their own IES slot is empty.
         def app_class
           v = ActiveSupport::IsolatedExecutionState[#{k[:app_class].inspect}]
           return v unless v.nil?
-          Ractor.main? ? super : nil
+          return super if Ractor.main?
+          RactorRailsShim::SHAREABLE_FALLBACK[#{k[:app_class].inspect}]
         end
         def app_class=(val)
           ActiveSupport::IsolatedExecutionState[#{k[:app_class].inspect}] = val
@@ -301,7 +1509,8 @@ module RactorRailsShim
         def cache
           v = ActiveSupport::IsolatedExecutionState[#{k[:cache].inspect}]
           return v unless v.nil?
-          Ractor.main? ? super : nil
+          return super if Ractor.main?
+          RactorRailsShim::SHAREABLE_FALLBACK[#{k[:cache].inspect}]
         end
         def cache=(val)
           ActiveSupport::IsolatedExecutionState[#{k[:cache].inspect}] = val
@@ -312,7 +1521,16 @@ module RactorRailsShim
         def logger
           v = ActiveSupport::IsolatedExecutionState[#{k[:logger].inspect}]
           return v unless v.nil?
-          Ractor.main? ? super : nil
+          return super if Ractor.main?
+          # Loggers are intrinsically mutable (formatters hold tag stacks,
+          # logdevs hold IO + Mutex) and can't be shared read-only. Build a
+          # per-worker ActiveSupport::BroadcastLogger (which mixes in
+          # LoggerSilence#silence, used by Rails::Rack::SilenceRequest)
+          # writing to $stderr (each Ractor has its own $stderr stream) and
+          # cache it in IES so subsequent reads return the same instance.
+          built = ActiveSupport::BroadcastLogger.new(Logger.new($stderr))
+          ActiveSupport::IsolatedExecutionState[#{k[:logger].inspect}] = built
+          built
         end
         def logger=(val)
           ActiveSupport::IsolatedExecutionState[#{k[:logger].inspect}] = val
@@ -323,7 +1541,8 @@ module RactorRailsShim
         def backtrace_cleaner
           v = ActiveSupport::IsolatedExecutionState[#{k[:backtrace_cleaner].inspect}]
           return v unless v.nil?
-          Ractor.main? ? super : nil
+          return super if Ractor.main?
+          RactorRailsShim::SHAREABLE_FALLBACK[#{k[:backtrace_cleaner].inspect}]
         end
         def backtrace_cleaner=(val)
           ActiveSupport::IsolatedExecutionState[#{k[:backtrace_cleaner].inspect}] = val
@@ -396,12 +1615,42 @@ module RactorRailsShim
             key_str = key.inspect
             cv = "@@#{sym}"
             cv_str = cv.inspect
-            has_default = !sym_default.nil?
-            default_val = has_default ? sym_default.inspect : "nil"
+
+            # Register so _build_shareable_fallback! can capture the main-ractor
+            # value (read from @@sym) at prepare_for_ractors! time. The label
+            # is just for diagnostics. The default is stored too so the
+            # fallback builder can use it when the live value can't be shared.
+            RactorRailsShim::CLASS_ATTRIBUTES << [mod_name, sym, key, sym_default]
+            # Store the default in a runtime registry (NOT inlined into the
+            # eval'd method body — arbitrary objects like Logger have invalid
+            # `.inspect` output). The reader looks it up by key.
+            RactorRailsShim::MATTR_DEFAULTS[key] = sym_default
+            # If the default is shareable, add to the shareable subset. We
+            # rebuild the constant as a new frozen shareable Hash each time
+            # (so workers can read the constant even before prepare_for_ractors!
+            # runs — e.g. unit tests). const_set warns "already initialized
+            # constant"; silence it.
+            if sym_default && Ractor.shareable?(sym_default)
+              h = RactorRailsShim::SHAREABLE_MATTR_DEFAULTS.dup
+              h[key] = sym_default
+              h.freeze
+              Ractor.make_shareable(h)
+              verbose, $VERBOSE = $VERBOSE, nil
+              begin
+                RactorRailsShim.const_set(:SHAREABLE_MATTR_DEFAULTS, h)
+              ensure
+                $VERBOSE = verbose
+              end
+            end
 
             # Redefine the class reader via string eval (no captured binding).
             # Class variables are only touched from the main ractor; worker
-            # ractors seed their IES slot from the captured default value.
+            # ractors fall back to SHAREABLE_FALLBACK (built from main's @@sym
+            # at prepare_for_ractors! time) when their own IES slot is empty.
+            # NOTE: we deliberately do NOT inline the default value here —
+            # arbitrary objects (e.g. Logger) have invalid `.inspect` output.
+            # The fallback builder captures the live value (which may equal
+            # the default) at prepare time.
             singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
               def #{sym}
                 v = ActiveSupport::IsolatedExecutionState[#{key_str}]
@@ -418,18 +1667,22 @@ module RactorRailsShim
                     nil
                   end
                 else
-                  val = #{has_default ? default_val : 'nil'}
-                  ActiveSupport::IsolatedExecutionState[#{key_str}] = val
-                  val
+                  # Worker: try the shareable fallback (built from main's @@sym
+                  # at prepare_for_ractors! time). If empty, try the
+                  # definition-time default (only the shareable subset — the
+                  # full MATTR_DEFAULTS holds unshareable defaults like Logger
+                  # which workers can't read via the constant).
+                  fb = RactorRailsShim::SHAREABLE_FALLBACK[#{key_str}]
+                  return fb unless fb.nil?
+                  RactorRailsShim::SHAREABLE_MATTR_DEFAULTS[#{key_str}]
                 end
               end
 
               def #{sym}=(val)
                 ActiveSupport::IsolatedExecutionState[#{key_str}] = val
-                if Ractor.main? && class_variable_defined?(#{cv_str})
-                  class_variable_set(#{cv_str}, val)
-                elsif Ractor.main?
-                  class_variable_set(#{cv_str}, val)
+                if Ractor.main?
+                  class_variable_set(#{cv_str}, val) if class_variable_defined?(#{cv_str})
+                  class_variable_set(#{cv_str}, val) unless class_variable_defined?(#{cv_str})
                 end
                 val
               end
@@ -516,16 +1769,37 @@ module RactorRailsShim
           # main — workers start nil and set their own value via the writer.
           ActiveSupport::IsolatedExecutionState[key] = value if Ractor.main?
 
+          # Register so _build_shareable_fallback! can capture + make shareable
+          # at prepare_for_ractors! time. owner.name may be nil for anonymous
+          # classes (e.g. spec fixtures); use a stable label in that case.
+          # The default value is stored too so the fallback builder can use it
+          # when the live value can't be made shareable (e.g. __callbacks holds
+          # self-capturing Procs — workers get the empty default, treating
+          # boot-time callbacks as already-run, which is correct for a frozen
+          # shared app).
+          owner_label = owner.respond_to?(:name) ? owner.name : owner.class.name
+          owner_label = owner_label || "anon_#{owner.class.name}_#{owner.object_id}"
+          RactorRailsShim::CLASS_ATTRIBUTES << [owner_label, namespaced_name, key, value]
+
           # Always define the namespaced reader/writer on owner's singleton
           # class via string eval (no captured binding). The class_attribute
           # macro itself also defines `def #{name}; #{namespaced_name}; end`
           # via class_eval (string-eval'd, safe) on the owner — that calls our
           # IES-routed namespaced reader/writer. We override BOTH the namespaced
           # and (when owner is a module's singleton) the public name.
+          #
+          # Worker-Ractor fallback: when the worker's own IES slot is empty
+          # (which it is by default — the value lives in main's slot), fall
+          # back to the frozen shareable table built at prepare_for_ractors!
+          # time. This is read-only and shared across all workers; workers that
+          # need their own mutable value call the writer, which writes their
+          # IES slot and shadows the fallback.
           target = owner.singleton_class? ? owner : owner.singleton_class
           target.module_eval <<-RUBY, __FILE__, __LINE__ + 1
             def #{namespaced_name}
-              ActiveSupport::IsolatedExecutionState[#{key_str}]
+              v = ActiveSupport::IsolatedExecutionState[#{key_str}]
+              return v unless v.nil?
+              RactorRailsShim::SHAREABLE_FALLBACK[#{key_str}]
             end
 
             def #{namespaced_name}=(new_value)
@@ -536,11 +1810,13 @@ module RactorRailsShim
 
           # When owner is a module's singleton class, the original also
           # defines a public reader `def #{name} { value }` on owner directly
-          # (block-based). Override it with the IES-routed version.
+          # (block-based). Override it with the IES-routed version + fallback.
           if owner.singleton_class? && owner.attached_object.is_a?(Module)
             owner.module_eval <<-RUBY, __FILE__, __LINE__ + 1
               def #{name}
-                ActiveSupport::IsolatedExecutionState[#{key_str}]
+                v = ActiveSupport::IsolatedExecutionState[#{key_str}]
+                return v unless v.nil?
+                RactorRailsShim::SHAREABLE_FALLBACK[#{key_str}]
               end
 
               def #{name}=(new_value)
@@ -678,6 +1954,101 @@ module RactorRailsShim
       })
     end
 
+    # Patch ActiveSupport::ExecutionWrapper.active_key to not write a class
+    # ivar from a worker Ractor. The original is `@active_key ||= :"..."`,
+    # a raw class-ivar write — illegal from non-main Ractors. The value is a
+    # frozen Symbol (pure function of object_id), so we route the cache
+    # through IES (per-Ractor; each Ractor computes the same Symbol from the
+    # same object_id, so the cached value is identical across Ractors).
+    # ExecutionWrapper is the base for Reloader/Executor; `active_key` is
+    # called on every request via ActionDispatch::Executor middleware.
+    def install_execution_wrapper
+      return if @exec_wrapper_patched
+      @exec_wrapper_patched = true
+      if defined?(::ActiveSupport::ExecutionWrapper)
+        patch_execution_wrapper!
+      else
+        @ew_tp = TracePoint.new(:class) do |trace|
+          if defined?(::ActiveSupport::ExecutionWrapper) && !@exec_wrapper_registry_patched
+            @ew_tp.disable
+            patch_execution_wrapper!
+          end
+        end
+        @ew_tp.enable
+      end
+    end
+
+    def patch_execution_wrapper!
+      return if @exec_wrapper_registry_patched
+      @exec_wrapper_registry_patched = true
+      ew = ::ActiveSupport::ExecutionWrapper
+      key = :ractor_rails_shim_exec_wrapper_active_key
+      key_str = key.inspect
+      # active_key returns :"active_execution_wrapper_<object_id>"; a frozen
+      # Symbol is shareable. Compute it once per Ractor and cache in IES.
+      ew.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def active_key
+          v = ActiveSupport::IsolatedExecutionState[#{key_str}]
+          return v unless v.nil?
+          sym = :"active_execution_wrapper_\#{object_id}"
+          ActiveSupport::IsolatedExecutionState[#{key_str}] = sym
+          sym
+        end
+      RUBY
+
+      # Patch ActiveSupport::Callbacks#run_callbacks to tolerate a nil
+      # __callbacks (the case in worker Ractors whose class_attribute fallback
+      # couldn't be made shareable because callback chains hold frozen,
+      # self-capturing Procs). For a frozen, read-only shared app the boot-time
+      # callbacks (ExecutionContext push/pop, CurrentAttributes clear) already
+      # ran in the main Ractor at boot; worker Ractors don't need to re-run
+      # them per request (CurrentAttributes/ExecutionContext are thread-local,
+      # hence per-Ractor, and start empty in a fresh worker). When __callbacks
+      # is nil, run_callbacks just yields the block — matching the empty-chain
+      # fast path in the original.
+      if defined?(::ActiveSupport::Callbacks)
+        ::ActiveSupport::Callbacks.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+          def run_callbacks_with_nil_safe(kind, type = nil)
+            callbacks = __callbacks[kind.to_sym] if __callbacks
+            if callbacks.nil? || callbacks.empty?
+              yield if block_given?
+            else
+              run_callbacks_without_nil_safe(kind, type) { yield if block_given? }
+            end
+          end
+          alias_method :run_callbacks_without_nil_safe, :run_callbacks
+          alias_method :run_callbacks, :run_callbacks_with_nil_safe
+        RUBY
+      end
+
+      # Patch ActiveSupport::Notifications.notifier to not read the @notifier
+      # class ivar from a worker Ractor. The original is `attr_accessor
+      # :notifier` with `@notifier = Fanout.new` set at module load — a raw
+      # class ivar holding a Fanout (which has a Mutex + subscriber Procs,
+      # both unshareable). Workers get their own per-Ractor Fanout (no
+      # subscribers — instrumentation is a no-op in workers, which is correct
+      # for a read-only shared app where log subscribers already ran in main).
+      # `notifier` is read by `instrumenter` (per-request via Rails::Rack::Logger).
+      if defined?(::ActiveSupport::Notifications)
+        notif = ::ActiveSupport::Notifications
+        nkey = :ractor_rails_shim_notifications_notifier
+        nkey_str = nkey.inspect
+        notif.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+          def notifier
+            v = ActiveSupport::IsolatedExecutionState[#{nkey_str}]
+            return v unless v.nil?
+            if Ractor.main? && instance_variable_defined?(:@notifier)
+              @notifier
+            else
+              built = ActiveSupport::Notifications::Fanout.new
+              ActiveSupport::IsolatedExecutionState[#{nkey_str}] = built
+              built
+            end
+          end
+        RUBY
+      end
+    end
+
     # --- make_app_shareable! helpers ---
 
     # Callable replacements (defined via string eval — no captured binding,
@@ -720,6 +2091,22 @@ module RactorRailsShim
         def try_lock; true; end
         def new_cond; Struct.new(:wait, :signal, :broadcast).new(-> {}, -> {}, -> {}); end
       end
+      # No-op log device sink: a frozen, shareable stand-in for an IO, swapped
+      # in for $stdout/$stderr in the app's logger before make_shareable so
+      # the real IOs aren't frozen. Responds to the write methods a
+      # Logger::LogDevice might call.
+      class NoOpLogDev
+        def write(*_); self; end
+        def <<(*_); self; end
+        def puts(*_); self; end
+        def print(*_); self; end
+        def flush; self; end
+        def close; self; end
+        def sync=(*_); self; end
+        def binmode; self; end
+        def tty?; false; end
+        def closed?; false; end
+      end
     RUBY
 
     SSL_LOC = "/active_dispatch/middleware/ssl.rb".freeze
@@ -739,7 +2126,7 @@ module RactorRailsShim
     # containers (e.g. deprecation behaviors shared across deprecators).
     # Doesn't dedup procs — must replace every occurrence.
     def _replace_unshareable_procs!(app)
-      mw = app.instance_variable_get(:@app)
+      mw = (app.instance_variable_get(:@app) rescue nil)
       3.times do
         procs = _collect_procs(app)
         break if procs.empty?
