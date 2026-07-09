@@ -1,0 +1,39 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# ractor-rails-check — audit a loaded Rails app (or any Ruby app) for
+# class-level instance variables that would block Ractor mode.
+#
+# Usage:
+#   ractor-rails-check            # scan loaded modules, print report
+#   ractor-rails-check --rails    # only Rails framework modules
+#   ractor-rails-check --app      # only app + gems (exclude Rails)
+#
+# Typically run from a Rails console or a boot script:
+#   bundle exec rails runner ractor-rails-check
+
+require "ractor_rails_shim/check"
+
+scope = ARGV.find { |a| a.start_with?("--") }&.sub(/^--/, "")&.to_sym || :all
+
+case scope
+when :rails
+  findings = RactorRailsShim::Check.scan_rails
+when :app
+  findings = RactorRailsShim::Check.scan_app
+else
+  RactorRailsShim::Check.report(print: true)
+  exit 0
+end
+
+# Scoped report
+if findings.empty?
+  puts "no blockers found in scope :#{scope}"
+  exit 0
+end
+
+puts "=== scope :#{scope} (#{findings.size} blockers) ==="
+findings.each do |f|
+  puts "  #{f.owner}#{f.ivar} = #{f.value_class}"
+  puts "    #{f.source}" if f.source
+end
