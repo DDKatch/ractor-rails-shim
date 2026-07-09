@@ -73,7 +73,59 @@ module RactorRailsShim
     "ActiveRecord::Encryption::Properties::ALLOWED_VALUE_CLASSES",
     "ActiveRecord::Encryption::Properties::DEFAULT_PROPERTIES",
     "Arel::SelectManager::STRING_OR_SYMBOL_CLASS",
+    "ActiveRecord::Delegation::GeneratedRelationMethods::MUTEX",
   ])
+
+  # Shareable replacements for Arel::Visitors::*::BIND_BLOCK constants.
+  # These are Procs (e.g. `proc { |i| "$#{i}" }`) used to format bind
+  # parameters in SQL. Procs can't be made shareable. We patch the `bind_block`
+  # method to return a shareable Callable instead (defined via string eval,
+  # no captured binding).
+  class << self
+    def _install_arel_bind_block_patch
+      return if @arel_bind_block_patched
+      @arel_bind_block_patched = true
+      _register_patch :arel_bind_block, "8.1"
+
+      # PostgreSQL: proc { |i| "$#{i}" }
+      if defined?(::Arel::Visitors::PostgreSQL)
+        ::Arel::Visitors::PostgreSQL.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+          def bind_block
+            RactorRailsShim::PgBindBlock
+          end
+        RUBY
+      end
+
+      # ToSql (base): proc { "?" }
+      if defined?(::Arel::Visitors::ToSql)
+        ::Arel::Visitors::ToSql.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+          def bind_block
+            RactorRailsShim::SqlBindBlock
+          end
+        RUBY
+      end
+    end
+  end
+
+  # Shareable snapshot of each AR model class's primary_key, captured at
+  # prepare time. Workers read this instead of the raw @primary_key class ivar
+  # (which is initialized to PRIMARY_KEY_NOT_SET, a BasicObject that can't be
+  # made shareable). Populated by _share_model_classes! in the main ractor.
+  AR_PRIMARY_KEYS_SHAREABLE = Ractor.make_shareable({})
+
+  # Shareable callable that replaces Arel::Visitors::PostgreSQL::BIND_BLOCK
+  # (a Proc `proc { |i| "$#{i}" }`). Callable cross-Ractor.
+  PgBindBlock = Ractor.make_shareable(Object.new.tap do |o|
+    def o.call(i); "$#{i}"; end
+    def o.to_proc; method(:call).to_proc; end
+  end)
+
+  # Shareable callable that replaces Arel::Visitors::ToSql::BIND_BLOCK
+  # (a Proc `proc { "?" }`). Callable cross-Ractor.
+  SqlBindBlock = Ractor.make_shareable(Object.new.tap do |o|
+    def o.call(_i = nil); "?"; end
+    def o.to_proc; method(:call).to_proc; end
+  end)
 
   # Shareable snapshot of ActiveRecord::Base.configurations at
   # prepare_for_ractors! time. Workers read this to establish their own
@@ -91,11 +143,16 @@ module RactorRailsShim
   # read this instead of the per-Ractor class instance variable.
   AR_DB_CONFIG_HANDLERS_SHAREABLE = nil
 
+  # Shareable (deep-frozen) copy of ActiveRecord.query_transformers (an Array
+  # of transformer classes/objects) captured at prepare time. Workers read this
+  # instead of the per-Ractor class instance variable.
+  AR_QUERY_TRANSFORMERS_SHAREABLE = nil
+
+  # Capture the db configurations from the main ractor at
+  # prepare_for_actors! / make_app_shareable! time. This is a shareable
+  # snapshot (frozen Hash of config hashes) that workers use to establish
+  # their own connection pools. Must run in the main Ractor.
   class << self
-    # Capture the db configurations from the main ractor at
-    # prepare_for_ractors! / make_app_shareable! time. This is a shareable
-    # snapshot (frozen Hash of config hashes) that workers use to establish
-    # their own connection pools. Must run in the main Ractor.
     def _capture_ar_configurations!
       return if @_ar_configs_captured
       @_ar_configs_captured = true
@@ -103,21 +160,41 @@ module RactorRailsShim
 
       begin
         # Build a plain Hash snapshot of every db config keyed by
-        # [env_name][config_name]. ActiveRecord::Base.configurations is a
-        # DatabaseConfigurations object that does not respond to #each in
-        # this Rails/Ruby, so read the underlying config from
-        # Rails.application.config.database_configuration (a Hash of
-        # env => { name => config }) which is stable across versions.
-        raw = ::Rails.application.config.database_configuration rescue {}
+        # [env_name][config_name] => config_hash. Use
+        # ActiveRecord::Base.configurations.configs_for (returns DbConfig
+        # objects with .name, .env_name, .configuration_hash) rather than
+        # Rails.application.config.database_configuration (a legacy Hash whose
+        # shape differs between single-config apps (flat Hash = the config
+        # itself) and multi-config apps (nested Hash of name => config)).
+        cfgs = ::ActiveRecord::Base.configurations
         snapshot = {}
-        raw.each do |env_name, env_configs|
-          next unless env_configs.is_a?(::Hash)
-          snapshot[env_name] ||= {}
-          env_configs.each do |name, config|
-            next unless config.is_a?(::Hash)
-            # Drop nil values so Ractor.make_shareable sees a clean,
-            # shareable Hash of simple literals.
-            snapshot[env_name][name] = config.reject { |_k, v| v.nil? }
+        if cfgs.respond_to?(:configs_for)
+          cfgs.configs_for.each do |dc|
+            env_name = dc.env_name
+            name = dc.name || "primary"
+            hash = dc.configuration_hash
+            next unless hash.is_a?(::Hash)
+            snapshot[env_name] ||= {}
+            snapshot[env_name][name] = hash.reject { |_k, v| v.nil? }
+          end
+        end
+        # Fallback: legacy database_configuration Hash (env => { name => config }
+        # OR env => flat config). Used if configs_for is unavailable.
+        if snapshot.empty?
+          raw = ::Rails.application.config.database_configuration rescue {}
+          raw.each do |env_name, env_configs|
+            next unless env_configs.is_a?(::Hash)
+            snapshot[env_name] ||= {}
+            if env_configs.key?("adapter") || env_configs.key?(:adapter)
+              # Flat config: the env value IS the "primary" config itself.
+              snapshot[env_name]["primary"] = env_configs.reject { |_k, v| v.nil? }
+            else
+              # Nested: env => { name => config }
+              env_configs.each do |name, config|
+                next unless config.is_a?(::Hash)
+                snapshot[env_name][name] = config.reject { |_k, v| v.nil? }
+              end
+            end
           end
         end
         snapshot.freeze
@@ -263,6 +340,7 @@ module RactorRailsShim
         # from being set).
         warm_calls = [
           -> { klass.connection_pool if klass.respond_to?(:connection_pool) },
+          -> { klass.send(:reset_primary_key) if klass.respond_to?(:reset_primary_key, true) },
           -> { klass.table_name },
           -> { klass.arel_table },
           -> { klass.columns_hash },
@@ -273,6 +351,7 @@ module RactorRailsShim
           -> { klass.send(:relation) if klass.respond_to?(:relation, true) },
           -> { klass.count rescue nil },
           -> { klass.first rescue nil },
+          -> { klass.send(:query_constraints_list) if klass.respond_to?(:query_constraints_list, true) },
           -> { if defined?(::Kaminari) && klass.respond_to?(:page)
                  klass.page(1).to_a rescue nil
                end },
@@ -298,9 +377,29 @@ module RactorRailsShim
           # BasicObject / frozen owners
         end
       end
-    end
 
-    # Compute a shareable replacement for an unshareable class-ivar value:
+      # Capture each model's primary_key into a shareable snapshot. Workers
+      # read this instead of the raw @primary_key class ivar (which starts as
+      # PRIMARY_KEY_NOT_SET, a BasicObject that can't be made shareable).
+      begin
+        pk_map = {}
+        classes.each do |klass|
+          n = klass.name
+          next unless n
+          pk = klass.primary_key rescue next
+          pk_map[n] = pk if pk
+        end
+        shareable = Ractor.make_shareable(pk_map)
+        verbose, $VERBOSE = $VERBOSE, nil
+        begin
+          const_set(:AR_PRIMARY_KEYS_SHAREABLE, shareable)
+        ensure
+          $VERBOSE = verbose
+        end
+      rescue => e
+        # best-effort
+      end
+    end
     #  - Monitor/Mutex  -> NoOpLock (never contended post-boot)
     #  - Concurrent::Map -> frozen Hash
     #  - else           -> Ractor.make_shareable; if that fails (statement
@@ -372,6 +471,13 @@ module RactorRailsShim
       #    by `ConnectionAdapters.resolve` during establish_connection.
       if defined?(::ActiveRecord::ConnectionAdapters)
         _freeze_class_ivars!(::ActiveRecord::ConnectionAdapters)
+      end
+
+      # 3. ActiveRecord::Type — holds @default_value (a lazy singleton Value
+      #    used as a fallback type). Warm it and freeze the class ivar.
+      if defined?(::ActiveRecord::Type)
+        ::ActiveRecord::Type.default_value rescue nil
+        _freeze_class_ivars!(::ActiveRecord::Type)
       end
     end
 
@@ -451,14 +557,14 @@ module RactorRailsShim
           v = ActiveSupport::IsolatedExecutionState[#{key_str}]
           return v unless v.nil?
           if Ractor.main?
-            @@configurations
+            ActiveRecord::Core.class_variable_get(:@@configurations)
           else
             RactorRailsShim::AR_CONFIGURATIONS_SHAREABLE
           end
         end
         def configurations=(config)
           ActiveSupport::IsolatedExecutionState[#{key_str}] = config
-          @@configurations = config if Ractor.main?
+          ActiveRecord::Core.class_variable_set(:@@configurations, config) if Ractor.main?
         end
       RUBY
     end
@@ -519,6 +625,364 @@ module RactorRailsShim
       RUBY
     end
 
+    # Patch ActiveRecord.query_transformers to route through IES with a
+    # shareable fallback. `query_transformers` is a `singleton_class
+    # .attr_accessor` (a class instance variable on the `ActiveRecord` module)
+    # holding an Array of transformer objects (e.g. `ActiveRecord::QueryLogs`).
+    # `DatabaseStatements#preprocess_query` reads it on every query:
+    # `ActiveRecord.query_transformers.each { |t| t.call(sql, self) }`.
+    #
+    # Class instance variables are per-Ractor, so a worker's `@query_transformers`
+    # is nil (set in main at boot via `self.query_transformers = []`, then
+    # `<< QueryLogs` in the railtie). The transformer objects themselves ARE
+    # shareable (they're Classes/modules), so we deep-freeze the Array in main
+    # and expose it as a shareable constant the worker reads. Same pattern as
+    # `_install_activerecord_db_config_handlers_patch`.
+    def _install_activerecord_query_transformers_patch
+      return if @ar_query_transformers_patched
+      @ar_query_transformers_patched = true
+      _register_patch :activerecord_query_transformers, "8.1"
+      return unless defined?(::ActiveRecord)
+
+      if Ractor.main?
+        begin
+          transformers = ::ActiveRecord.query_transformers
+          transformers.each { |t| Ractor.make_shareable(t) rescue nil }
+          shareable = Ractor.make_shareable(transformers.dup)
+          verbose, $VERBOSE = $VERBOSE, nil
+          begin
+            const_set(:AR_QUERY_TRANSFORMERS_SHAREABLE, shareable)
+          ensure
+            $VERBOSE = verbose
+          end
+        rescue => e
+          # best-effort
+        end
+      end
+
+      key = :ractor_rails_shim_ar_query_transformers
+      key_str = key.inspect
+      ::ActiveRecord.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def query_transformers
+          v = ActiveSupport::IsolatedExecutionState[#{key_str}]
+          return v unless v.nil?
+          if Ractor.main?
+            @query_transformers
+          else
+            RactorRailsShim::AR_QUERY_TRANSFORMERS_SHAREABLE
+          end
+        end
+        def query_transformers=(val)
+          ActiveSupport::IsolatedExecutionState[#{key_str}] = val
+          @query_transformers = val if Ractor.main?
+        end
+      RUBY
+    end
+
+    # Patch ActiveRecord module-level singleton_class.attr_accessor attributes
+    # (schema_cache_ignored_tables, database_cli, etc.) to route through IES
+    # with shareable fallbacks. These are class instance variables on the
+    # `ActiveRecord` module that workers can't read/write. Each is an Array or
+    # Hash of simple literals, so they can be deep-frozen and shared.
+    def _install_activerecord_module_attrs_patch
+      return if @ar_module_attrs_patched
+      @ar_module_attrs_patched = true
+      _register_patch :activerecord_module_attrs, "8.1"
+      return unless defined?(::ActiveRecord)
+
+      # [method_name, const_name] pairs. The const holds the shareable snapshot.
+      attrs = [
+        [:schema_cache_ignored_tables, :AR_SCHEMA_CACHE_IGNORED_TABLES_SHAREABLE],
+        [:database_cli, :AR_DATABASE_CLI_SHAREABLE],
+      ]
+
+      attrs.each do |method_name, const_name|
+        if Ractor.main?
+          begin
+            val = ::ActiveRecord.public_send(method_name)
+            shareable = Ractor.make_shareable(val.is_a?(::Array) ? val.dup : val)
+            verbose, $VERBOSE = $VERBOSE, nil
+            begin
+              const_set(const_name, shareable)
+            ensure
+              $VERBOSE = verbose
+            end
+          rescue => e
+            # best-effort
+          end
+        end
+
+        key = :"ractor_rails_shim_ar_#{method_name}"
+        key_str = key.inspect
+        const_str = const_name.to_s
+        ::ActiveRecord.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+          def #{method_name}
+            v = ActiveSupport::IsolatedExecutionState[#{key_str}]
+            return v unless v.nil?
+            if Ractor.main?
+              @#{method_name}
+            else
+              RactorRailsShim::#{const_str}
+            end
+          end
+          def #{method_name}=(val)
+            ActiveSupport::IsolatedExecutionState[#{key_str}] = val
+            @#{method_name} = val if Ractor.main?
+          end
+        RUBY
+      end
+    end
+
+    # Patch Deduplicable::ClassMethods#registry to route the lazy class instance
+    # variable @registry through IES. `registry` returns `@registry ||= {}` —
+    # a mutable Hash used to deduplicate column metadata objects. It's called
+    # during schema introspection (`Post.all` -> `columns` -> `new_column_from_field`
+    # -> `fetch_type_metadata` -> `Deduplicable.new` -> `deduplicate` -> `registry`).
+    # The class instance variable write fails from a non-main Ractor.
+    # Fix: route through IES so each Ractor builds its own registry Hash.
+    def _install_activerecord_deduplicable_patch
+      return if @ar_deduplicable_patched
+      @ar_deduplicable_patched = true
+      _register_patch :activerecord_deduplicable, "8.1"
+      return unless defined?(::ActiveRecord::ConnectionAdapters::Deduplicable)
+
+      ::ActiveRecord::ConnectionAdapters::Deduplicable::ClassMethods.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def registry
+          key = :"ractor_rails_shim_dedup_registry_\#{name || object_id}"
+          v = ActiveSupport::IsolatedExecutionState[key]
+          return v unless v.nil?
+          h = {}
+          ActiveSupport::IsolatedExecutionState[key] = h
+          h
+        end
+      RUBY
+    end
+
+    # Patch Persistence::ClassMethods#query_constraints_list and #has_query_constraints?
+    # to route the lazy @query_constraints_list class ivar through IES.
+    # `query_constraints_list` does `@query_constraints_list ||= <computation>`
+    # — the class ivar write fails from a non-main Ractor. Called during
+    # `Post.first` -> `ordered_relation` -> `_order_columns`.
+    def _install_activerecord_query_constraints_patch
+      return if @ar_query_constraints_patched
+      @ar_query_constraints_patched = true
+      _register_patch :activerecord_query_constraints, "8.1"
+      return unless defined?(::ActiveRecord::Persistence::ClassMethods)
+
+      ::ActiveRecord::Persistence::ClassMethods.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def query_constraints_list
+          key = :"ractor_rails_shim_qcl_\#{name || object_id}"
+          v = ActiveSupport::IsolatedExecutionState[key]
+          return v unless v.nil?
+          result = if base_class? || primary_key != base_class.primary_key
+            primary_key if primary_key.is_a?(::Array)
+          else
+            base_class.query_constraints_list
+          end
+          ActiveSupport::IsolatedExecutionState[key] = result
+          result
+        end
+        def has_query_constraints?
+          key = :"ractor_rails_shim_qcl_\#{name || object_id}"
+          v = ActiveSupport::IsolatedExecutionState[key]
+          return !v.nil? unless v.nil?
+          result = query_constraints_list
+          !result.nil?
+        end
+      RUBY
+    end
+
+    # Patch ActiveRecord::ConnectionAdapters::PoolConfig#initialize to skip
+    # writing to the INSTANCES ObjectSpace::WeakMap registry in non-main
+    # Ractors. This is the first wall a worker hits when establishing a
+    # connection (`ConnectionHandler#establish_connection` ->
+    # `resolve_pool_config` -> `PoolConfig.new` -> `INSTANCES[self] = self`).
+    #
+    # `INSTANCES` is a `private_constant` `ObjectSpace::WeakMap`. A WeakMap is
+    # intrinsically unshareable (it can't be frozen / made shareable), and a
+    # non-main Ractor cannot access the constant at all (Ractor::IsolationError:
+    # "can not access non-shareable objects in constant ... by non-main ractor").
+    #
+    # The registry is ONLY used by the class methods `discard_pools!` and
+    # `disconnect_all!` (which iterate all pool configs to disconnect/reload).
+    # Those are called during reloading (dev) and explicit disconnect — never
+    # in a read-only production worker serving requests. So skipping the
+    # registry write in workers is safe: workers manage their own per-Ractor
+    # handler + pools, and the main ractor's registry stays intact for reload.
+    #
+    # We redefine `initialize` via string eval (no captured binding) so it's
+    # callable from any Ractor. The body replicates the original exactly except
+    # the final `INSTANCES[self] = self` is guarded by `Ractor.main?`. The
+    # private `INSTANCES` constant is accessible via constant lookup because
+    # the method is defined on PoolConfig itself.
+    def _install_activerecord_pool_config_patch
+      return if @ar_pool_config_patched
+      @ar_pool_config_patched = true
+      _register_patch :activerecord_pool_config, "8.1"
+      return unless defined?(::ActiveRecord::ConnectionAdapters::PoolConfig)
+
+      ::ActiveRecord::ConnectionAdapters::PoolConfig.class_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def initialize(connection_class, db_config, role, shard)
+          super()
+          @server_version = nil
+          self.connection_descriptor = connection_class
+          @db_config = db_config
+          @role = role
+          @shard = shard
+          @pool = nil
+          INSTANCES[self] = self if Ractor.main?
+        end
+      RUBY
+    end
+
+    # Patch ConnectionPool::Reaper#run to no-op in non-main Ractors.
+    #
+    # `ConnectionPool#initialize` (connection_pool.rb:307) calls `@reaper.run`,
+    # which calls `Reaper.register_pool` (a class method). `register_pool`
+    # reads/writes the Reaper class's instance variables (@mutex, @pools,
+    # @threads — a Mutex, a Hash, and a Hash of Threads) and spawns a
+    # background reaper thread. Class instance variables are off-limits to
+    # non-main Ractors (Ractor::IsolationError), so this is the second wall a
+    # worker hits during `establish_connection` -> `ConnectionPool.new`.
+    #
+    # The reaper is a background maintenance thread that periodically reaps
+    # dead-thread connections, flushes idle connections, and keepalives stale
+    # ones. In a worker Ractor this is neither safe (can't share the reaper
+    # thread or its class-ivar registry across Ractors) nor essential: each
+    # Ractor owns its own connection pool, and when the Ractor exits its pool
+    # is garbage-collected with it. Connection health for long-lived workers
+    # can be addressed later with a per-Ractor reaper if needed; for now,
+    # no-op'ing registration unblocks connection establishment.
+    #
+    # `register_pool` is only called from `Reaper#run`, so patching `run` to
+    # return early in non-main Ractors fully prevents the class-ivar access and
+    # the thread spawn. The pool itself still functions normally.
+    def _install_activerecord_reaper_patch
+      return if @ar_reaper_patched
+      @ar_reaper_patched = true
+      _register_patch :activerecord_reaper, "8.1"
+      return unless defined?(::ActiveRecord::ConnectionAdapters::ConnectionPool::Reaper)
+
+      ::ActiveRecord::ConnectionAdapters::ConnectionPool::Reaper.class_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def run
+          return unless frequency && frequency > 0
+          return unless Ractor.main?
+          self.class.register_pool(pool, frequency)
+        end
+      RUBY
+    end
+
+    # Patch Arel::Visitors::Visitor.dispatch_cache to route through IES.
+    #
+    # `dispatch_cache` is a class method that lazily initializes a class
+    # instance variable: `@dispatch_cache ||= Hash.new { |hash, klass| ... }
+    # .compare_by_identity`. The cache maps AST node classes to visit method
+    # symbols (e.g. Arel::Nodes::SelectStatement -> :visit_Arel_Nodes_SelectStatement).
+    # It's read on every Arel traversal (every query) and written on cache-miss
+    # (default proc) and on method-not-found fallback (visit() rescue).
+    #
+    # The class instance variable `@dispatch_cache` can't be read or written by
+    # a non-main Ractor (Ractor::IsolationError). The Hash also has a default
+    # Proc (which is intrinsically unshareable), so the value can't be
+    # frozen+shared. This is the third wall a worker hits during the first
+    # query: `Post.count` -> adapter creation -> `arel_visitor` ->
+    # `ToSql#initialize` -> `Visitor#initialize` -> `get_dispatch_cache` ->
+    # `self.class.dispatch_cache` -> `@dispatch_cache ||= ...`.
+    #
+    # Fix: route through per-class IES. Each Ractor builds its own mutable
+    # cache (with its own default proc) on first access. The key includes
+    # `self.name` so each visitor subclass (ToSql, SQLite3, etc.) gets its own
+    # cache — necessary because the method-not-found fallback
+    # (`dispatch[object.class] = dispatch[superklass]`) resolves differently per
+    # visitor class. The main ractor's existing `@dispatch_cache` (if any) is
+    # left orphaned; new visitors created after the patch use the IES cache.
+    # String-eval'd (no captured binding), callable from any Ractor.
+    def _install_arel_visitor_dispatch_cache_patch
+      return if @arel_visitor_patched
+      @arel_visitor_patched = true
+      _register_patch :arel_visitor_dispatch_cache, "8.1"
+      return unless defined?(::Arel::Visitors::Visitor)
+
+      ::Arel::Visitors::Visitor.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def dispatch_cache
+          key = :"ractor_rails_shim_arel_dispatch_\#{name || object_id}"
+          v = ActiveSupport::IsolatedExecutionState[key]
+          return v if v
+          cache = Hash.new do |hash, klass|
+            hash[klass] = :"visit_\#{(klass.name || "").gsub("::", "_")}"
+          end.compare_by_identity
+          ActiveSupport::IsolatedExecutionState[key] = cache
+          cache
+        end
+      RUBY
+    end
+
+    # Patch the adapter quoting caches (QUOTED_COLUMN_NAMES /
+    # QUOTED_TABLE_NAMES) to use per-Ractor storage instead of the
+    # unshareable `Concurrent::Map` constants.
+    #
+    # Each adapter (SQLite3, MySQL, PostgreSQL) defines these as
+    # `Concurrent::Map.new` constants in its `Quoting` module, and the
+    # `quote_column_name` / `quote_table_name` class methods lazily populate
+    # them via `MAP[name] ||= <quoting_logic>.freeze`. `Concurrent::Map` is
+    # intrinsically unshareable (no `#freeze`), so a worker Ractor cannot
+    # access the constant at all (Ractor::IsolationError: "can not access
+    # non-shareable objects in constant ..."). This is the fourth wall a worker
+    # hits: during `Post.count` -> Arel traversal -> `quote_table_name` ->
+    # `QUOTED_TABLE_NAMES[name] ||= ...`.
+    #
+    # Fix: redefine `quote_column_name` / `quote_table_name` on each adapter's
+    # `Quoting::ClassMethods` module to use a per-Ractor Hash cache (stored in
+    # IES, keyed by the adapter class name). Each Ractor builds its own
+    # mutable cache on first access. The quoting logic is replicated per
+    # adapter (it's simple, stable string manipulation). String-eval'd (no
+    # captured binding), callable from any Ractor.
+    def _install_activerecord_quoting_cache_patch
+      return if @ar_quoting_patched
+      @ar_quoting_patched = true
+      _register_patch :activerecord_quoting_cache, "8.1"
+
+      # [module_path, column_logic, table_logic] per adapter.
+      adapters = [
+        ["ActiveRecord::ConnectionAdapters::SQLite3::Quoting",
+         %q{%Q("#{name.to_s.gsub('"', '""')}").freeze},
+         %q{%Q("#{name.to_s.gsub('"', '""').gsub(".", "\".\"")}").freeze}],
+        ["ActiveRecord::ConnectionAdapters::MySQL::Quoting",
+         %q{"`#{name.to_s.gsub('`', '``')}`".freeze},
+         %q{"`#{name.to_s.gsub('`', '``').gsub(".", "`.`")}`".freeze}],
+        ["ActiveRecord::ConnectionAdapters::PostgreSQL::Quoting",
+         %q{::PG::Connection.quote_ident(name.to_s).freeze},
+         %q{::ActiveRecord::ConnectionAdapters::PostgreSQL::Utils.extract_schema_qualified_name(name.to_s).quoted.freeze}],
+      ]
+
+      adapters.each do |mod_path, column_logic, table_logic|
+        mod = begin
+          mod_path.split("::").inject(Object) { |ns, n| ns.const_get(n, false) }
+        rescue
+          nil
+        end
+        next unless mod
+        klass_mod = mod.const_get(:ClassMethods, false) rescue next
+        next unless klass_mod.method_defined?(:quote_column_name)
+
+        klass_mod.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+          def quote_column_name(name)
+            key = :"ractor_rails_shim_quoted_cols_\#{self.name}"
+            cache = ActiveSupport::IsolatedExecutionState[key]
+            cache ||= (ActiveSupport::IsolatedExecutionState[key] = {})
+            cache[name] ||= (#{column_logic})
+          end
+
+          def quote_table_name(name)
+            key = :"ractor_rails_shim_quoted_tables_\#{self.name}"
+            cache = ActiveSupport::IsolatedExecutionState[key]
+            cache ||= (ActiveSupport::IsolatedExecutionState[key] = {})
+            cache[name] ||= (#{table_logic})
+          end
+        RUBY
+      end
+    end
+
     # Patch ActiveRecord::Base to route default_connection_handler through
     # IES, and ensure connection_handler returns the per-Ractor handler.
     # In the main ractor, falls back to the original default_connection_handler
@@ -536,28 +1000,38 @@ module RactorRailsShim
       # Capture configs at install time if AR is already loaded (main ractor).
       _capture_ar_configurations! if Ractor.main?
 
+      # Capture the main ractor's default_connection_handler value BEFORE we
+      # override the method below (the override shadows the original
+      # class_attribute reader). The class_attribute reader (already patched
+      # by the shim) routes through IES, so read the value now. Store it in
+      # CLASS_ATTR_VALUES so the patched reader can find it, and seed IES so
+      # connection_handler finds it immediately.
+      dch_key = :ractor_rails_shim_ar_default_connection_handler
+      dch_key_str = dch_key.inspect
+      if Ractor.main?
+        begin
+          orig_handler = ::ActiveRecord::Base.default_connection_handler
+          if orig_handler
+            RactorRailsShim::CLASS_ATTR_VALUES[:__ractor_rails_shim_ar_default_connection_handler__] = orig_handler
+            ActiveSupport::IsolatedExecutionState[dch_key] = orig_handler
+          end
+        rescue => e
+          # Best-effort
+        end
+      end
+
       # Patch default_connection_handler to route through IES.
       # The class_attribute reader for default_connection_handler is already
       # patched by the shim (it's in the known-unshareable skip list → nil
       # in workers). We override the class method to return the per-Ractor
       # handler if set, then fall back to the original (main only) or nil.
-      dch_key = :ractor_rails_shim_ar_default_connection_handler
-      dch_key_str = dch_key.inspect
       ::ActiveRecord::Base.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def default_connection_handler
           v = ActiveSupport::IsolatedExecutionState[#{dch_key_str}]
           return v unless v.nil?
           if Ractor.main?
-            # In main, read the original class_attribute value (set at boot
-            # via self.default_connection_handler = ConnectionHandler.new).
-            # The class_attribute reader returns this via the shim's
-            # CLASS_ATTR_VALUES fallback.
             cv = RactorRailsShim::CLASS_ATTR_VALUES[:__ractor_rails_shim_ar_default_connection_handler__]
             return cv if cv
-            # Fall back to the instance variable if class_attribute set it.
-            if instance_variable_defined?(:@default_connection_handler)
-              return instance_variable_get(:@default_connection_handler)
-            end
           end
           nil
         end
@@ -605,22 +1079,126 @@ module RactorRailsShim
           handler.connected?(connection_specification_name, role: current_role, shard: current_shard)
         end
       RUBY
+    end
 
-      # Capture the main ractor's default_connection_handler value into
-      # CLASS_ATTR_VALUES so the patched reader can find it. The key must
-      # match the one used in the class_attribute redefine.
-      if Ractor.main?
-        begin
-          orig_handler = ::ActiveRecord::Base.instance_variable_get(:@default_connection_handler) rescue nil
-          if orig_handler
-            RactorRailsShim::CLASS_ATTR_VALUES[:__ractor_rails_shim_ar_default_connection_handler__] = orig_handler
-            # Also seed IES in main so connection_handler finds it immediately.
-            ActiveSupport::IsolatedExecutionState[dch_key] = orig_handler
-          end
-        rescue => e
-          # Best-effort
+    # Patch ActiveModel::Type::SerializeCastValue::ClassMethods
+    # #serialize_cast_value_compatible? to route the lazy class instance
+    # variable @serialize_cast_value_compatible through IES.
+    #
+    # This method lazily caches a boolean: `return @x if defined?(@x); @x =
+    # <computation>`. It's called during type-map initialization (every
+    # adapter's `initialize_type_map` creates type objects whose constructors
+    # eagerly call this to precompute the value). The class instance variable
+    # write fails from a non-main Ractor (Ractor::IsolationError: "can not set
+    # instance variables of classes/modules by non-main Ractors").
+    #
+    # Fix: route through IES so each Ractor computes + caches its own value.
+    # The computation is deterministic (compares ancestor positions of two
+    # methods), so per-Ractor recomputation yields the same result. Each
+    # including class gets its own IES key (keyed by `self.name`). String-eval'd
+    # (no captured binding), callable from any Ractor.
+    def _install_activerecord_serialize_cast_value_patch
+      return if @ar_serialize_cast_patched
+      @ar_serialize_cast_patched = true
+      _register_patch :activerecord_serialize_cast_value, "8.1"
+      return unless defined?(::ActiveModel::Type::SerializeCastValue)
+
+      ::ActiveModel::Type::SerializeCastValue::ClassMethods.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def serialize_cast_value_compatible?
+          key = :"ractor_rails_shim_scv_\#{name || object_id}"
+          v = ActiveSupport::IsolatedExecutionState[key]
+          return v unless v.nil?
+          result = ancestors.index(instance_method(:serialize_cast_value).owner) <= ancestors.index(instance_method(:serialize).owner)
+          ActiveSupport::IsolatedExecutionState[key] = result
+          result
         end
-      end
+      RUBY
+    end
+
+    # Patch ActiveRecord::Delegation.uncacheable_methods to route the lazy
+    # class instance variable @uncacheable_methods through IES.
+    #
+    # `uncacheable_methods` is a class method on the `Delegation` module:
+    # `@uncacheable_methods ||= (delegated_classes.flat_map(&:public_instance_methods)
+    # - Relation.public_instance_methods).to_set.freeze`. It's read during
+    # `method_missing` on relation delegate classes (e.g. when Kaminari calls
+    # `Post.page(1).per(10)` — `per` isn't a standard Relation method, so
+    # `ClassSpecificRelation#method_missing` checks `uncacheable_methods` to
+    # decide whether to delegate). The class instance variable write fails
+    # from a non-main Ractor (Ractor::IsolationError).
+    #
+    # Fix: route through IES so each Ractor computes + caches its own Set.
+    # The computation is deterministic (same delegated_classes everywhere).
+    # String-eval'd (no captured binding), callable from any Ractor.
+    def _install_activerecord_delegation_patch
+      return if @ar_delegation_patched
+      @ar_delegation_patched = true
+      _register_patch :activerecord_delegation, "8.1"
+      return unless defined?(::ActiveRecord::Delegation)
+
+      ::ActiveRecord::Delegation.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def uncacheable_methods
+          key = :ractor_rails_shim_ar_uncacheable_methods
+          v = ActiveSupport::IsolatedExecutionState[key]
+          return v unless v.nil?
+          result = (
+            delegated_classes.flat_map(&:public_instance_methods) - ActiveRecord::Relation.public_instance_methods
+          ).to_set.freeze
+          ActiveSupport::IsolatedExecutionState[key] = result
+          result
+        end
+      RUBY
+    end
+
+    # Patch ActiveRecord::AttributeMethods::PrimaryKey#primary_key and
+    # #composite_primary_key? to not read the PRIMARY_KEY_NOT_SET constant.
+    #
+    # The original code: `reset_primary_key if PRIMARY_KEY_NOT_SET.equal?(@primary_key)`
+    # reads the constant on every call. PRIMARY_KEY_NOT_SET is a BasicObject
+    # (can't be frozen, can't be made shareable), so reading the constant from
+    # a worker Ractor raises Ractor::IsolationError — even if @primary_key is
+    # already set to the real value.
+    #
+    # Fix: replace the sentinel check with a shareable-snapshot lookup. At
+    # _share_model_classes! time, each model's primary_key is warmed in main
+    # and stored in AR_PRIMARY_KEYS_SHAREABLE (a frozen Hash). The patched
+    # primary_key method checks IES first (per-Ractor), then the shareable
+    # snapshot, then falls back to the original logic in the main ractor.
+    # Workers never read the constant. String-eval'd (no captured binding).
+    def _install_activerecord_primary_key_patch
+      return if @ar_primary_key_patched
+      @ar_primary_key_patched = true
+      _register_patch :activerecord_primary_key, "8.1"
+      return unless defined?(::ActiveRecord::AttributeMethods::PrimaryKey::ClassMethods)
+
+      mod = ::ActiveRecord::AttributeMethods::PrimaryKey::ClassMethods
+      mod.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def primary_key
+          key = :"ractor_rails_shim_pk_\#{name || object_id}"
+          v = ActiveSupport::IsolatedExecutionState[key]
+          return v unless v.nil?
+          if Ractor.main?
+            reset_primary_key if PRIMARY_KEY_NOT_SET.equal?(@primary_key)
+            v = @primary_key
+            ActiveSupport::IsolatedExecutionState[key] = v
+            v
+          else
+            RactorRailsShim::AR_PRIMARY_KEYS_SHAREABLE[name]
+          end
+        end
+        def composite_primary_key?
+          key = :"ractor_rails_shim_pk_\#{name || object_id}"
+          v = ActiveSupport::IsolatedExecutionState[key]
+          return v.is_a?(::Array) unless v.nil?
+          if Ractor.main?
+            reset_primary_key if PRIMARY_KEY_NOT_SET.equal?(@primary_key)
+            @primary_key.is_a?(::Array)
+          else
+            pk = RactorRailsShim::AR_PRIMARY_KEYS_SHAREABLE[name]
+            pk.is_a?(::Array)
+          end
+        end
+      RUBY
     end
 
     # A shareable Rack middleware that ensures each worker Ractor establishes

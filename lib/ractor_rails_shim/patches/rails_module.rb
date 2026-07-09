@@ -77,14 +77,22 @@ module RactorRailsShim
     end
 
     # Best-effort shareable replacement for a constant value. Monitor/Mutex
-    # become a NoOpLock (never contended post-boot). Everything else is
-    # deep-frozen via Ractor.make_shareable; if that fails (e.g. a Proc, or a
-    # Concurrent::Map / TypeMap holding Procs — both intrinsically unshareable
-    # and needing upstream Rails changes), returns nil and the constant is
-    # left as-is (the worker will raise a clear IsolationError on read).
+    # become a NoOpLock (never contended post-boot). BasicObject instances
+    # (used as sentinel sentinels, e.g. PRIMARY_KEY_NOT_SET) can't be frozen
+    # (BasicObject has no #freeze method) — replace with a frozen Symbol.
+    # Everything else is deep-frozen via Ractor.make_shareable; if that fails
+    # (e.g. a Proc, or a Concurrent::Map / TypeMap holding Procs — both
+    # intrinsically unshareable and needing upstream Rails changes), returns
+    # nil and the constant is left as-is (the worker will raise a clear
+    # IsolationError on read).
     def _make_value_shareable(val)
-      if val.is_a?(::Monitor) || val.is_a?(::Mutex)
+      if (val.is_a?(::Monitor) rescue false) || (val.is_a?(::Mutex) rescue false)
         Ractor.make_shareable(NoOpLock.new)
+      elsif !(val.respond_to?(:freeze) rescue false)
+        # BasicObject subclasses don't have #freeze/#respond_to? (Kernel not
+        # included). Replace with a frozen Symbol sentinel — it's compared
+        # with `equal?`, and a frozen Symbol is always shareable.
+        Ractor.make_shareable(:"__shim_unshareable_sentinel__")
       else
         begin
           Ractor.make_shareable(val)

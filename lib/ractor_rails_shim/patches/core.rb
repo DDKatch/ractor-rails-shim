@@ -171,6 +171,18 @@ module RactorRailsShim
       _install_activerecord_connection_handler_patch
       _install_activerecord_configurations_patch
       _install_activerecord_db_config_handlers_patch
+      _install_activerecord_query_transformers_patch
+      _install_activerecord_module_attrs_patch
+      _install_activerecord_deduplicable_patch
+      _install_activerecord_pool_config_patch
+      _install_activerecord_reaper_patch
+      _install_arel_visitor_dispatch_cache_patch
+      _install_arel_bind_block_patch
+      _install_activerecord_quoting_cache_patch
+      _install_activerecord_serialize_cast_value_patch
+      _install_activerecord_delegation_patch
+      _install_activerecord_primary_key_patch
+      _install_activerecord_query_constraints_patch
       _install_activerecord_relation_delegate_cache_patch
       _install_activerecord_model_classes_patch
       _install_kaminari_config_patch
