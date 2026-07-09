@@ -1,0 +1,33 @@
+/Users/dev/My_Space/Workspace/Current_Projects/Ruby_4_Ractors_Web_Server/ractor-rails-shim/phase2_probe.rb:87: warning: Ractor API is experimental and may change in future versions of Ruby.
+/Users/dev/My_Space/Workspace/Current_Projects/Ruby_4_Ractors_Web_Server/ractor-rails-shim/phase2_probe.rb:108: warning: Ractor API is experimental and may change in future versions of Ruby.
+=== App built ===
+app.class = TestApp::Application
+Ractor.shareable?(app) = false
+
+=== Blocker #1: Ractor.make_shareable(Rails.application) ===
+ERROR: Ractor::Error: can not make shareable object for #<Monitor:0x00000001281f6c78>
+  backtrace top: /Users/dev/My_Space/Workspace/Current_Projects/Ruby_4_Ractors_Web_Server/ractor-rails-shim/phase2_probe.rb:31:in 'Ractor.make_shareable'
+  /Users/dev/My_Space/Workspace/Current_Projects/Ruby_4_Ractors_Web_Server/ractor-rails-shim/phase2_probe.rb:31:in '<main>'
+
+=== Blocker #1b: locate Monitor/Mutex in Rails.application graph ===
+  app.@app.@app.@app.@app.@app.@app.@subscriber.@mutex = Thread::Mutex (#<Thread::Mutex:0x000000012937f5a8>)
+  app.@app_build_lock = Thread::Mutex (#<Thread::Mutex:0x000000011fff2b50>)
+  app.@autoloaders.@main.@inceptions.@mutex = Thread::Mutex (#<Thread::Mutex:0x000000012813c0f8>)
+  app.@autoloaders.@main.@namespace_dirs.@mutex = Thread::Mutex (#<Thread::Mutex:0x000000012813c058>)
+  app.@autoloaders.@main.@mutex = Thread::Mutex (#<Thread::Mutex:0x000000012813bea0>)
+  app.@autoloaders.@main.@dirs_autoload_monitor = Monitor (#<Monitor:0x0000000128115570>)
+  app.@autoloaders.@once.@inceptions.@mutex = Thread::Mutex (#<Thread::Mutex:0x000000012813bbd0>)
+  app.@autoloaders.@once.@namespace_dirs.@mutex = Thread::Mutex (#<Thread::Mutex:0x000000012813bb58>)
+  app.@autoloaders.@once.@mutex = Thread::Mutex (#<Thread::Mutex:0x000000012813bae0>)
+  app.@autoloaders.@once.@dirs_autoload_monitor = Monitor (#<Monitor:0x00000001281152a0>)
+  (10 Monitor/Mutex found in app graph)
+
+=== Blocker #2: dispatch a request from a worker ractor ===
+ERROR: Ractor::Error: can not copy Monitor object.
+  backtrace top: /Users/dev/My_Space/Workspace/Current_Projects/Ruby_4_Ractors_Web_Server/ractor-rails-shim/phase2_probe.rb:87:in 'Ractor.new'
+  /Users/dev/My_Space/Workspace/Current_Projects/Ruby_4_Ractors_Web_Server/ractor-rails-shim/phase2_probe.rb:87:in '<main>'
+
+=== Shim target check: read Rails.application from a worker ractor ===
+main: Rails.method(:application).source_location = ["/Users/dev/My_Space/Workspace/Current_Projects/Ruby_4_Ractors_Web_Server/ractor-rails-shim/lib/ractor_rails_shim/patches.rb", 193]
+main: Rails.application.class = TestApp::Application
+SUCCEEDED: [:ok, ["/Users/dev/My_Space/Workspace/Current_Projects/Ruby_4_Ractors_Web_Server/ractor-rails-shim/lib/ractor_rails_shim/patches.rb", 193], "NilClass", "development", Hash]
