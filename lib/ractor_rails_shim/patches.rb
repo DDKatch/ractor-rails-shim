@@ -1194,6 +1194,15 @@ module RactorRailsShim
           self.class.rescue_responses.key?(exception.class.name)
         end
       RUBY
+      # Also patch the class method (status_code_for_exception) that reads
+      # @@rescue_responses directly — called by ActionController::Instrumentation
+      # at request time. Route through the mattr reader (which the shim already
+      # reroutes through IES).
+      ::ActionDispatch::ExceptionWrapper.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def status_code_for_exception(class_name)
+          ActionDispatch::Response.rack_status_code(rescue_responses[class_name])
+        end
+      RUBY
     end
 
     # Patch ActiveSupport::LogSubscriber.logger — a raw class ivar with lazy
@@ -1310,13 +1319,14 @@ module RactorRailsShim
        # Replace the app-instance logger + any IO reachable from the app graph.
        seen = {}
        stack = [app]
-       until stack.empty?
-         o = stack.pop
-         next if o.nil? || seen[o.object_id]
-         seen[o.object_id] = true
-         o.instance_variables.each do |iv|
-           begin; v = o.instance_variable_get(iv); rescue; next; end
-           if iv == :@logger
+        until stack.empty?
+          o = stack.pop
+          next if o.equal?(nil) || seen[o.object_id]
+          seen[o.object_id] = true
+          begin
+            o.instance_variables.each do |iv|
+              begin; v = o.instance_variable_get(iv); rescue; next; end
+              if iv == :@logger
              # Replace the app-instance / config logger with the no-op (so the
              # frozen app graph holds no live IO). Best-effort; rescue if the
              # owner is frozen.
@@ -1327,13 +1337,16 @@ module RactorRailsShim
              sink.freeze
              Ractor.make_shareable(sink)
              o.instance_variable_set(iv, sink) rescue nil
-           elsif v
-             stack << v
-           end
-         end
-         if o.is_a?(Array); o.each { |e| stack << e if e }
-         elsif o.is_a?(Hash); o.each { |_, val| stack << val if val }
-         end
+            elsif v
+              stack << v
+            end
+          end
+          rescue => e
+            # BasicObject or frozen objects don't support instance_variables
+          end
+          if o.is_a?(Array); o.each { |e| stack << e if e }
+          elsif o.is_a?(Hash); o.each { |_, val| stack << val if val }
+          end
        end
 
        # Re-point the MAIN ractor's Rails.logger at a fresh live logger (not
@@ -1451,6 +1464,17 @@ module RactorRailsShim
     # (unless `default:` — defaults are expected to sometimes be unshareable,
     # so we skip the noise).
     def _try_make_shareable(val, owner_name, attr_name, default: false)
+      # __callbacks and validators hold callback chains / validator instances
+      # with self-capturing Procs that can NEVER be made shareable. This is
+      # expected: workers correctly treat callbacks as already-run (the
+      # nil-safe run_callbacks patch yields the block directly). Skip the
+      # attempt entirely — don't waste cycles traversing the graph, and don't
+      # emit warnings for known-expected failures.
+      attr_sym = attr_name.to_s
+      return nil if attr_sym.end_with?("__callbacks") ||
+                    attr_sym.end_with?("__validators") ||
+                    attr_sym.end_with?("default_connection_handler")
+
       begin
         _replace_unshareable_procs!(val)
         _replace_locks_and_concurrent_maps!(val)
@@ -2383,7 +2407,11 @@ module RactorRailsShim
       stack = [[app, "app", nil, nil]]
       until stack.empty?
         o, _path, parent, ivar = stack.pop
-        next if o.nil?
+        next if o.equal?(nil)
+        # Skip BasicObject subclasses that don't respond to is_a?/object_id
+        # (e.g. ActiveSupport::Callbacks::CallTemplate internals). Must guard
+        # BEFORE calling is_a? — BasicObject doesn't define it.
+        next unless o.respond_to?(:is_a?)
         if o.is_a?(Proc)
           procs << [o, _path, parent, ivar]
           next
@@ -2391,9 +2419,13 @@ module RactorRailsShim
         next if seen[o.object_id]
         seen[o.object_id] = true
         next if o.is_a?(Mutex) || o.is_a?(Monitor)
-        o.instance_variables.each do |iv|
-          begin; v = o.instance_variable_get(iv); rescue; next; end
-          stack << [v, "#{_path}.#{iv}", o, iv] if v
+        begin
+          o.instance_variables.each do |iv|
+            begin; v = o.instance_variable_get(iv); rescue; next; end
+            stack << [v, "#{_path}.#{iv}", o, iv] if v
+          end
+        rescue => e
+          # Some objects (BasicObject) don't support instance_variables
         end
         if o.is_a?(Array)
           o.each_with_index { |e, i| stack << [e, "#{_path}[#{i}]", o, nil] if e }
@@ -2455,20 +2487,26 @@ module RactorRailsShim
       stack = [[app, "app", nil, nil]]
       until stack.empty?
         o, _p, _parent, _ivar = stack.pop
-        next if o.nil? || seen[o.object_id]
+        next if o.equal?(nil)
+        next unless o.respond_to?(:is_a?)
+        next if seen[o.object_id]
         seen[o.object_id] = true
         next if o.is_a?(Mutex) || o.is_a?(Monitor)
-        o.instance_variables.each do |iv|
-          begin; v = o.instance_variable_get(iv); rescue; next; end
-          if v.is_a?(Mutex) || v.is_a?(Monitor)
-            o.instance_variable_set(iv, NoOpLock.new) rescue nil
-          elsif defined?(::Concurrent::Map) && v.is_a?(::Concurrent::Map)
-            hash_copy = {}
-            v.each_pair { |k, val| hash_copy[k] = val }
-            o.instance_variable_set(iv, hash_copy) rescue nil
-          elsif v
-            stack << [v, "#{_p}.#{iv}", o, iv]
+        begin
+          o.instance_variables.each do |iv|
+            begin; v = o.instance_variable_get(iv); rescue; next; end
+            if v.is_a?(Mutex) || v.is_a?(Monitor)
+              o.instance_variable_set(iv, NoOpLock.new) rescue nil
+            elsif defined?(::Concurrent::Map) && v.is_a?(::Concurrent::Map)
+              hash_copy = {}
+              v.each_pair { |k, val| hash_copy[k] = val }
+              o.instance_variable_set(iv, hash_copy) rescue nil
+            elsif v
+              stack << [v, "#{_p}.#{iv}", o, iv]
+            end
           end
+        rescue => e
+          # BasicObject or frozen objects don't support instance_variables
         end
         if o.is_a?(Array); o.each_with_index { |e, i| stack << [e, "#{_p}[#{i}]", o, nil] if e }
         elsif o.is_a?(Hash); o.each { |k, val| stack << [k, "#{_p}.key", o, nil] if k; stack << [val, "#{_p}[#{k.inspect}]", o, nil] if val }
