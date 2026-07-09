@@ -1,0 +1,12 @@
+/.bundle/
+/.yardoc
+/_yardoc/
+/coverage/
+/doc/
+/pkg/
+/spec/reports/
+/tmp/
+/racker-rails-shim-*.gem
+*.gem
+Gemfile.lock
+.rspec_status
