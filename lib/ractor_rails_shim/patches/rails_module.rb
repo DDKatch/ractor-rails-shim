@@ -58,9 +58,11 @@ module RactorRailsShim
       val = owner.const_get(name, false)
       return true if Ractor.shareable?(val)
 
+      shareable = _make_value_shareable(val)
+      return true unless shareable
+
       # Deep-freeze and reassign. Ractor.make_shareable mutates `val` in
       # place (freezing it and its reachable objects) and returns it.
-      shareable = Ractor.make_shareable(val)
       # const_set warns "already initialized constant" because Rails'
       # environment_inquirer.rb defined the constant first. The reassign is
       # intentional (we're replacing the mutable value with its frozen
@@ -72,6 +74,24 @@ module RactorRailsShim
         $VERBOSE = verbose
       end
       true
+    end
+
+    # Best-effort shareable replacement for a constant value. Monitor/Mutex
+    # become a NoOpLock (never contended post-boot). Everything else is
+    # deep-frozen via Ractor.make_shareable; if that fails (e.g. a Proc, or a
+    # Concurrent::Map / TypeMap holding Procs — both intrinsically unshareable
+    # and needing upstream Rails changes), returns nil and the constant is
+    # left as-is (the worker will raise a clear IsolationError on read).
+    def _make_value_shareable(val)
+      if val.is_a?(::Monitor) || val.is_a?(::Mutex)
+        Ractor.make_shareable(NoOpLock.new)
+      else
+        begin
+          Ractor.make_shareable(val)
+        rescue => e
+          nil
+        end
+      end
     end
 
     # Split "A::B::C" into [A::B (module), :C]. Returns [nil, nil] if the

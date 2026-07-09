@@ -41,6 +41,10 @@ module RactorRailsShim
       _install_exception_wrapper_patch
       _install_warden_hooks_patch
       _install_activerecord_connection_handler_patch
+      _install_activerecord_configurations_patch
+      _install_activerecord_db_config_handlers_patch
+      _install_activerecord_relation_delegate_cache_patch
+      _install_activerecord_model_classes_patch
       _install_kaminari_config_patch
       # Pre-compute lazy ivars BEFORE freezing (they mutate the app).
       _precompute_lazy_ivars(app)
@@ -425,7 +429,16 @@ module RactorRailsShim
         end
 
       if ivar == :__default_proc__
-        parent.default = nil
+        # The parent Hash may already be frozen (e.g. by an earlier
+        # shareability pass on AR internals). A frozen Hash can't have its
+        # default cleared, but a frozen Hash with a default_proc is still
+        # unshareable — Ractor.make_shareable(parent) later will replace it
+        # wholesale if needed. Just skip here when frozen.
+        begin
+          parent.default = nil
+        rescue FrozenError, RuntimeError
+          # frozen Hash — leave the default_proc; make_shareable handles it.
+        end
       elsif ivar
         parent.instance_variable_set(ivar, replacement) rescue nil
       elsif parent.is_a?(Array)
@@ -435,7 +448,7 @@ module RactorRailsShim
         end
       elsif parent.is_a?(Hash)
         key = parent.key(proc_obj)
-        parent[key] = replacement if key
+        parent[key] = replacement if key rescue nil
       end
     end
 

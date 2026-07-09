@@ -169,6 +169,10 @@ module RactorRailsShim
       _install_exception_wrapper_patch
       _install_warden_hooks_patch
       _install_activerecord_connection_handler_patch
+      _install_activerecord_configurations_patch
+      _install_activerecord_db_config_handlers_patch
+      _install_activerecord_relation_delegate_cache_patch
+      _install_activerecord_model_classes_patch
       _install_kaminari_config_patch
     end
 
