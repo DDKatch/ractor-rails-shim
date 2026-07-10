@@ -89,6 +89,22 @@ module RactorRailsShim
         asset.content_type rescue nil
         asset.digest rescue nil
       end
+      # Warm the resolver manifest cache. Propshaft::Resolver::Static#manifest
+      # memoizes `@manifest ||= Propshaft::Manifest.from_path(...)`; the
+      # resolver is frozen in the shared graph, so without warming, a worker
+      # rendering a `stylesheet_link_tag` (or reading asset integrity) for a
+      # PRECOMPILED manifest raises FrozenError ("can't modify frozen
+      # Propshaft::Resolver::Static"). `#manifest` is private — invoke via
+      # send to trigger the `||=` in MAIN (while still mutable) so workers only
+      # read the frozen, cached value.
+      resolver = assets.resolver rescue nil
+      if resolver.respond_to?(:manifest, true)
+        begin
+          resolver.send(:manifest)
+        rescue
+          nil
+        end
+      end
     end
   end
 end

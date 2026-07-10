@@ -509,7 +509,17 @@ module RactorRailsShim
           redirect = parent.instance_variable_get(:@redirect)
           CallableConst.new(!redirect)
         elsif src.end_with?(FILES_LOC) && ivar == :@app
-          files_server = _find_files_server(mw) || parent
+          # The lambda is `Rack::Files#initialize`'s `lambda { |env| get env }`,
+          # stored as `Rack::Head#@app`. Its `self` (binding receiver) is the
+          # `Rack::Files` instance that defines `get` — NOT the `Rack::Head`
+          # that holds it. Use the binding receiver as the callable target so
+          # the worker calls `Rack::Files#get(env)` (the original behavior).
+          # Fall back to the middleware-chain search if the receiver can't be
+          # resolved (e.g. frozen/unavailable binding).
+          receiver = proc_obj.binding.receiver rescue nil
+          files_server = receiver if receiver && receiver.respond_to?(:get)
+          files_server ||= _find_files_server(mw)
+          files_server ||= parent
           Callable.new(files_server, :get)
         elsif src.end_with?(COOKIE_LOC)
           RequestCallable.new(:cookies_same_site_protection)
