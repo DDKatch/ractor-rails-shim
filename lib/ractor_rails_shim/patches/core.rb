@@ -194,6 +194,7 @@ module RactorRailsShim
       _install_activerecord_model_classes_patch
       _install_activerecord_model_schema_patch
       _install_active_model_conversion_patch
+      _install_activerecord_find_by_cache_patch
       _install_kaminari_config_patch
       _install_propshaft_patch
       _install_devise_url_helpers_patch

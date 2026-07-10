@@ -1285,6 +1285,39 @@ module RactorRailsShim
       RUBY
     end
 
+    # `ActiveRecord::Base#cached_find_by_statement` reads
+    # `@find_by_statement_cache[connection.prepared_statements]` (a Hash whose
+    # values are `Concurrent::Map`s) and calls `cache.compute_if_absent(key)`.
+    # `Concurrent::Map` is unshareable, so `make_app_shareable!` replaces the
+    # maps with frozen Hashes whose values end up `nil` — and `Hash` has no
+    # `compute_if_absent` anyway. In a worker Ractor this raises
+    # `NoMethodError: undefined method 'compute_if_absent' for nil`, breaking
+    # `find` / `find_by` / `take` (but not `where`, which doesn't use the
+    # cache). Fix: in non-main Ractors, build the per-find-statement cache in
+    # `IsolatedExecutionState` (per-Ractor, mutable) keyed by the model class
+    # and `connection.prepared_statements`. Main keeps the original
+    # `Concurrent::Map`-backed behavior via `super`.
+    def _install_activerecord_find_by_cache_patch
+      return if @activerecord_find_by_cache_patched
+      @activerecord_find_by_cache_patched = true
+      _register_patch :activerecord_find_by_cache, "8.1"
+      return unless defined?(::ActiveRecord::Base)
+
+      ::ActiveRecord::Base.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def cached_find_by_statement(connection, key, &block)
+          return super if Ractor.main?
+          cache = (ActiveSupport::IsolatedExecutionState[:"ractor_rails_shim_find_by_cache_\#{object_id}"] ||= {})
+          prepared = connection.prepared_statements
+          sub = (cache[prepared] ||= {})
+          if sub.key?(key)
+            sub[key]
+          else
+            sub[key] = ::ActiveRecord::StatementCache.create(connection, &block)
+          end
+        end
+      RUBY
+    end
+
     # A shareable Rack middleware that ensures each worker Ractor establishes
     # its own ActiveRecord connection handler on the first request it serves.
     # Kino's `:ractor` mode has no per-worker init hook, so the connection
