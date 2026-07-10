@@ -182,7 +182,11 @@ module RactorRailsShim
         def application
           v = ActiveSupport::IsolatedExecutionState[#{k[:application].inspect}]
           return v unless v.nil?
-          Ractor.main? ? super : nil
+          if Ractor.main?
+            super
+          else
+            RactorRailsShim.const_defined?(:SHAREABLE_APP) ? RactorRailsShim::SHAREABLE_APP : nil
+          end
         end
 
         def application=(val)

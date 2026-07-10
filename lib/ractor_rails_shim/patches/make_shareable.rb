@@ -40,14 +40,18 @@ module RactorRailsShim
       _install_log_subscriber_patch
       _install_exception_wrapper_patch
       _install_warden_hooks_patch
+      _install_action_dispatch_mounted_helpers_patch
       _install_activerecord_connection_handler_patch
       _install_activerecord_configurations_patch
       _install_activerecord_db_config_handlers_patch
       _install_activerecord_relation_delegate_cache_patch
       _install_activerecord_model_classes_patch
       _install_kaminari_config_patch
+      _install_propshaft_patch
+      _install_devise_url_helpers_patch
       # Pre-compute lazy ivars BEFORE freezing (they mutate the app).
       _precompute_lazy_ivars(app)
+      _precompute_propshaft!(app)
       # Neutralize the app's logger IO so Ractor.make_shareable doesn't freeze
       # $stdout/$stderr (freezing STDOUT breaks the process's own output).
       # Workers build their own per-Ractor Rails.logger, so the app-instance
@@ -57,6 +61,19 @@ module RactorRailsShim
       _replace_unshareable_procs!(app)
       _replace_locks_and_concurrent_maps!(app)
       Ractor.make_shareable(app)
+      # Stash the now-shareable app in a constant so worker Ractors can read
+      # `Rails.application` (e.g. Propshaft::Helper reads
+      # `Rails.application.assets`, and various gems call Rails.application
+      # internally). The shared app is frozen (read-only), so returning it
+      # from worker Ractors is safe — they only read from it, never mutate.
+      if Ractor.main?
+        verbose, $VERBOSE = $VERBOSE, nil
+        begin
+          const_set(:SHAREABLE_APP, app) unless const_defined?(:SHAREABLE_APP)
+        ensure
+          $VERBOSE = verbose
+        end
+      end
       # Build the framework-config fallback AFTER the app is frozen. The
       # fallback makes class_attribute / mattr_accessor values shareable; some
       # of those values reference the app graph (e.g. config objects that point
@@ -278,6 +295,14 @@ module RactorRailsShim
     module_eval <<-RUBY, __FILE__, __LINE__ + 1
       class NoOpProc
         def call(*_); nil; end
+        # A NoOpProc is a shareable stand-in for an arbitrary Proc in the app
+        # graph. Some Rails code passes such values through `&block`, which
+        # calls `#to_proc` and then requires the result to be a real Proc.
+        # Return a frozen no-op lambda so the implicit conversion succeeds and
+        # the (side-effect-free) call is a true no-op, matching `#call`.
+        def to_proc
+          @_to_proc ||= ->(*) { nil }.freeze
+        end
       end
       class Callable
         def initialize(target, method_name)
@@ -302,6 +327,75 @@ module RactorRailsShim
           request.env["devise.mapping"] = @mapping
           true
         end
+      end
+      # Shareable snapshot of a Devise::Mapping. The real Mapping holds an
+      # unshareable lambda (failure_app) plus a default-proc Hash (controllers),
+      # so it can't be Ractor.make_shareable'd. Request-time code only reads a
+      # handful of attributes (name, to/class, router_name, controllers, ...),
+      # which are all shareable values. We copy those now (in main) into a
+      # frozen Plain Old Object that plays the role of the Mapping in workers.
+      class DeviseMappingSnapshot
+        def initialize(mapping)
+          @name         = mapping.name
+          @klass        = mapping.to
+          @router_name  = mapping.instance_variable_get(:@router_name)
+          @singular     = mapping.instance_variable_get(:@singular)
+          @scoped_path  = mapping.instance_variable_get(:@scoped_path)
+          @path         = mapping.instance_variable_get(:@path)
+          @path_prefix  = mapping.instance_variable_get(:@path_prefix)
+          @format       = mapping.instance_variable_get(:@format)
+          @sign_out_via = mapping.instance_variable_get(:@sign_out_via)
+          @modules      = mapping.modules
+          @strategies   = mapping.strategies
+          @routes       = mapping.routes
+          @used_helpers = mapping.used_helpers
+          # controllers is a Hash with a default proc (unshareable) — copy the
+          # entries into a plain frozen Hash.
+          h = {}
+          mapping.controllers.each { |k, v| h[k] = v } rescue nil
+          @controllers = h.freeze
+          freeze
+        end
+
+        def name; @name; end
+        def to; @klass; end
+        def router_name; @router_name; end
+        def singular; @singular; end
+        def scoped_path; @scoped_path; end
+        def path; @path; end
+        def path_prefix; @path_prefix; end
+        def format; @format; end
+        def sign_out_via; @sign_out_via; end
+        def modules; @modules; end
+        def strategies; @strategies; end
+        def routes; @routes; end
+        def used_helpers; @used_helpers; end
+        def controllers; @controllers; end
+        def authenticatable?; @modules.any? { |m| m.to_s =~ /authenticatable/ }; end
+        def no_input_strategies; @strategies & Devise::NO_INPUT; end
+        def fullpath; "/#{@path_prefix}/#{@path}".squeeze("/"); end
+        # Devise::Mapping defines one `x?` predicate per Devise module
+        # (confirmable?, rememberable?, registerable?, ...) via `add_module`.
+        # Rather than enumerate them, fall back for any `x?` predicate to
+        # checking @modules — matching the generated behaviour.
+        def respond_to_missing?(method, _)
+          method.to_s.end_with?("?") || super
+        end
+
+        def method_missing(method, *args)
+          s = method.to_s
+          if s.end_with?("?") && args.empty?
+            @modules.include?(s.chomp("?").to_sym)
+          else
+            super
+          end
+        end
+      end
+
+      def _devise_mapping_snapshot(mapping)
+        DeviseMappingSnapshot.new(mapping)
+      rescue
+        nil
       end
       class StrategyServe
         def call(app, req); app.serve(req); end
@@ -468,12 +562,7 @@ module RactorRailsShim
       end
       mapping = mock_env["devise.mapping"]
       if mapping
-        begin
-          _replace_unshareable_procs!(mapping)
-          mapping = Ractor.make_shareable(mapping)
-        rescue
-          mapping = nil
-        end
+        mapping = _devise_mapping_snapshot(mapping)
       end
       if mapping
         DeviseMappingCallable.new(mapping)

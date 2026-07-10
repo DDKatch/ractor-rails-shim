@@ -157,7 +157,12 @@ module RactorRailsShim
       _install_inflector_patch
       _install_parameter_encoding_patch
       _install_path_registry_patch
+      _install_action_view_resolver_patch
+      _install_action_view_partial_path_patch
+      _install_action_view_field_type_patch
+      _install_action_view_safe_join_patch
       _install_abstract_controller_patch
+      _install_action_controller_controller_name_patch
       _install_active_support_error_reporter_patch
       _install_lookup_context_patch
       _install_i18n_patch
@@ -167,6 +172,8 @@ module RactorRailsShim
       _install_rack_utils_patch
       _install_log_subscriber_patch
       _install_exception_wrapper_patch
+      _install_action_dispatch_routing_patch
+      _install_action_dispatch_mounted_helpers_patch
       _install_warden_hooks_patch
       _install_activerecord_connection_handler_patch
       _install_activerecord_configurations_patch
@@ -185,7 +192,11 @@ module RactorRailsShim
       _install_activerecord_query_constraints_patch
       _install_activerecord_relation_delegate_cache_patch
       _install_activerecord_model_classes_patch
+      _install_activerecord_model_schema_patch
+      _install_active_model_conversion_patch
       _install_kaminari_config_patch
+      _install_propshaft_patch
+      _install_devise_url_helpers_patch
     end
 
     # Verify the runtime matches the versions the shim was developed against.

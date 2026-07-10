@@ -514,6 +514,90 @@ module RactorRailsShim
       _share_active_record_internals! if Ractor.main?
     end
 
+    # Patch ActiveRecord::ModelSchema::ClassMethods lazy class-ivar caches
+    # (`symbol_column_to_string`, `content_columns`, `column_defaults`) to
+    # route through IsolatedExecutionState. Each Ractor builds its own cache
+    # (deterministic from `columns`/`columns_hash`, which are warmed in main
+    # and read-only in workers). Without this, the first worker call that
+    # misses the cache tries to WRITE the class ivar (`@symbol_column_to_string_name_hash
+    # ||= ...`) and dies with `Ractor::IsolationError: can not set instance
+    # variables of classes/modules by non-main Ractors`. Seen via Devise's
+    # `clean_up_passwords` -> `respond_to?` -> `symbol_column_to_string`.
+    def _install_activerecord_model_schema_patch
+      return if @ar_model_schema_patched
+      @ar_model_schema_patched = true
+      _register_patch :activerecord_model_schema, "8.1"
+      return unless defined?(::ActiveRecord::ModelSchema)
+
+      ::ActiveRecord::ModelSchema::ClassMethods.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def symbol_column_to_string(name_symbol)
+          key = :"ractor_rails_shim_symbol_column_to_string_\#{self.name}"
+          v = ActiveSupport::IsolatedExecutionState[key]
+          return v[name_symbol] if v
+          hash = column_names.index_by(&:to_sym)
+          ActiveSupport::IsolatedExecutionState[key] = hash
+          hash[name_symbol]
+        end
+
+        def content_columns
+          key = :"ractor_rails_shim_content_columns_\#{self.name}"
+          v = ActiveSupport::IsolatedExecutionState[key]
+          return v if v
+          cols = columns.reject do |c|
+            c.name == primary_key ||
+            c.name == inheritance_column ||
+            c.name.end_with?("_id", "_count")
+          end.freeze
+          ActiveSupport::IsolatedExecutionState[key] = cols
+          cols
+        end
+
+        def column_defaults
+          key = :"ractor_rails_shim_column_defaults_\#{self.name}"
+          v = ActiveSupport::IsolatedExecutionState[key]
+          return v if v
+          defaults = _default_attributes.deep_dup.to_hash.freeze
+          ActiveSupport::IsolatedExecutionState[key] = defaults
+          defaults
+        end
+      RUBY
+    end
+
+    # Patch ActiveModel::Conversion::ClassMethods#_to_partial_path to route its
+    # lazy class-ivar cache (`@_to_partial_path ||= ...`) through
+    # IsolatedExecutionState. The cache holds a deterministic String derived
+    # from `model_name`, so each Ractor can build its own. Without this, the
+    # first `render @posts` / `render post` in a worker Ractor writes the class
+    # ivar and dies with `Ractor::IsolationError: can not set instance variables
+    # of classes/modules by non-main Ractors`. Seen via ActionView's
+    # `CollectionRenderer#render_collection_derive_partial` -> `to_partial_path`.
+    def _install_active_model_conversion_patch
+      return if @active_model_conversion_patched
+      @active_model_conversion_patched = true
+      _register_patch :active_model_conversion, "8.1"
+      return unless defined?(::ActiveModel::Conversion)
+      amc = ::ActiveModel::Conversion
+      amc.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        module ClassMethods
+          def _to_partial_path
+            key = :"ractor_rails_shim_to_partial_path_\#{name}"
+            v = ActiveSupport::IsolatedExecutionState[key]
+            return v if v
+            path = if respond_to?(:model_name)
+              "\#{model_name.collection}/\#{model_name.element}"
+            else
+              element = ActiveSupport::Inflector.underscore(ActiveSupport::Inflector.demodulize(name))
+              collection = ActiveSupport::Inflector.tableize(name)
+              "\#{collection}/\#{element}"
+            end
+            path = path.freeze
+            ActiveSupport::IsolatedExecutionState[key] = path
+            path
+          end
+        end
+      RUBY
+    end
+
     # Patch ActiveRecord::Core.configurations / configurations= to route the
     # raw `@@configurations` class variable (which a non-main Ractor cannot
     # read or write) through IsolatedExecutionState, with a shareable

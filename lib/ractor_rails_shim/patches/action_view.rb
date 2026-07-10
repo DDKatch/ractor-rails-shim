@@ -5,9 +5,14 @@
 
 module RactorRailsShim
   # ActionView constants that need to be made shareable.
-  SHAREABLE_CONSTANTS.concat([
-    "ActionView::LookupContext::Accessors::DEFAULT_PROCS",
-  ])
+    SHAREABLE_CONSTANTS.concat([
+      "ActionView::LookupContext::Accessors::DEFAULT_PROCS",
+      "ActionView::Template::NONE",
+      "ActionView::Template::Handlers::ERB::ENCODING_TAG",
+      "ActionView::AbstractRenderer::RenderedTemplate::EMPTY_SPACER",
+      "ActionView::Helpers::TagHelper::PRE_CONTENT_STRINGS",
+      "ActionView::Helpers::AssetUrlHelper::ASSET_EXTENSIONS",
+    ])
 
   class << self
     def _install_lookup_context_patch
@@ -15,6 +20,16 @@ module RactorRailsShim
       @lookup_context_patched = true
       _register_patch :lookup_context, "8.1"
       return unless defined?(::ActionView::LookupContext)
+      # Force autoload of the nested ActionView::Template constants that the
+      # patched details_cache_key references (Template::Types,
+      # TemplateDetails::Requested). Constants are global, so defining them
+      # here (main ractor) makes them visible to worker ractors, which cannot
+      # autoload. Without this, the first template render in a worker dies on
+      # `NameError: uninitialized constant ActionView::Template::TemplateDetails`.
+      if Ractor.main? && defined?(::ActionView::Template)
+        ::ActionView::Template::Types rescue nil
+        ::ActionView::TemplateDetails rescue nil
+      end
       lc = ::ActionView::LookupContext
       key = :ractor_rails_shim_lookup_context_registered_details
       key_str = key.inspect
@@ -174,12 +189,12 @@ module RactorRailsShim
         def details_cache_key(details)
           details_keys.fetch(details) do
             if formats = details[:formats]
-              unless Template::Types.valid_symbols?(formats)
+              unless ::ActionView::Template::Types.valid_symbols?(formats)
                 details = details.dup
-                details[:formats] &= Template::Types.symbols
+                details[:formats] &= ::ActionView::Template::Types.symbols
               end
             end
-            details_keys[details] ||= TemplateDetails::Requested.new(**details)
+            details_keys[details] ||= ::ActionView::TemplateDetails::Requested.new(**details)
           end
         end
       RUBY
@@ -190,60 +205,92 @@ module RactorRailsShim
       @template_handlers_patched = true
       _register_patch :template_handlers, "8.1"
       return unless defined?(::ActionView::Template::Handlers)
+      # Eager-load the handler classes in main so workers don't need to
+      # autoload them (workers can't autoload).
+      if Ractor.main?
+        ::ActionView::Template::Handlers::Raw rescue nil
+        ::ActionView::Template::Handlers::ERB rescue nil
+        ::ActionView::Template::Handlers::Html rescue nil
+        ::ActionView::Template::Handlers::Builder rescue nil
+      end
       h = ::ActionView::Template::Handlers
       th_key = :ractor_rails_shim_av_template_handlers
-      ext_key = :ractor_rails_shim_av_template_extensions
       dth_key = :ractor_rails_shim_av_default_template_handlers
       th_key_str = th_key.inspect
-      ext_key_str = ext_key.inspect
       dth_key_str = dth_key.inspect
-      h.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
-        def template_handlers_hash
-          v = ActiveSupport::IsolatedExecutionState[#{th_key_str}]
-          return v unless v.nil?
-          if Ractor.main? && class_variable_defined?(:@@template_handlers)
-            cv = class_variable_get(:@@template_handlers)
-            ActiveSupport::IsolatedExecutionState[#{th_key_str}] = cv
-            cv
-          else
-            RactorRailsShim::SHAREABLE_FALLBACK[#{th_key_str}] || {}
-          end
-        end
-        def extensions
-          v = ActiveSupport::IsolatedExecutionState[#{ext_key_str}]
-          return v unless v.nil?
-          if Ractor.main? && class_variable_defined?(:@@template_extensions)
-            cv = class_variable_get(:@@template_extensions)
-            cv ||= class_variable_get(:@@template_handlers).keys if class_variable_defined?(:@@template_handlers)
-            ActiveSupport::IsolatedExecutionState[#{ext_key_str}] = cv
-            cv
-          else
-            template_handlers_hash.keys
-          end
-        end
-        def template_handler_extensions
-          template_handlers_hash.keys.map(&:to_s).sort
-        end
-        def registered_template_handler(extension)
-          extension && template_handlers_hash[extension.to_sym]
-        end
-        def handler_for_extension(extension)
-          registered_template_handler(extension) || begin
-            v = ActiveSupport::IsolatedExecutionState[#{dth_key_str}]
-            if v.nil?
-              if Ractor.main? && class_variable_defined?(:@@default_template_handlers)
-                v = class_variable_get(:@@default_template_handlers)
-                ActiveSupport::IsolatedExecutionState[#{dth_key_str}] = v
-              else
-                v = RactorRailsShim::SHAREABLE_FALLBACK[#{dth_key_str}]
-              end
+      # The handler registry lives in class variables (@@template_handlers,
+      # @@default_template_handlers, @@template_extensions) whose values are
+      # mutable Hashes holding handler instances — and an unshareable `:ruby`
+      # lambda. A worker Ractor cannot read these class vars. Route the
+      # registry through IsolatedExecutionState: each Ractor builds its own
+      # handler map (the defaults are deterministic), and in main we seed from
+      # the live class var (capturing any custom handlers gems registered at
+      # boot). The `:ruby` lambda makes the map unshareable, so the old
+      # SHAREABLE_FALLBACK approach (which skips unshareable values) left
+      # workers with an empty map. These are instance methods (Handlers is
+      # extended into ActionView::Template, and the render path calls them on
+      # the Template instance), so they must be defined on the module itself,
+      # not just the singleton class.
+      h.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def self._ractor_rails_shim_handlers
+          map = ActiveSupport::IsolatedExecutionState[#{th_key_str}]
+          return map unless map.nil?
+          if Ractor.main?
+            cv = class_variable_get(:@@template_handlers) rescue nil
+            cv = nil if cv && cv.empty?
+            if cv
+              ActiveSupport::IsolatedExecutionState[#{th_key_str}] = cv
+              return cv
             end
-            v
           end
+          built = {
+            raw: ::ActionView::Template::Handlers::Raw.new,
+            erb: ::ActionView::Template::Handlers::ERB.new,
+            html: ::ActionView::Template::Handlers::Html.new,
+            builder: ::ActionView::Template::Handlers::Builder.new,
+            ruby: ->(_, source) { source },
+          }
+          ActiveSupport::IsolatedExecutionState[#{th_key_str}] = built
+          built
+        end
+
+        def self._ractor_rails_shim_persist(map)
+          ActiveSupport::IsolatedExecutionState[#{th_key_str}] = map
+          class_variable_set(:@@template_handlers, map) if Ractor.main?
+        end
+
+        def self.extensions
+          self._ractor_rails_shim_handlers.keys
+        end
+
+        def registered_template_handler(extension)
+          extension && ::ActionView::Template::Handlers._ractor_rails_shim_handlers[extension.to_sym]
+        end
+
+        def handler_for_extension(extension)
+          registered_template_handler(extension) || ::ActionView::Template::Handlers::ERB.new
+        end
+
+        def template_handler_extensions
+          ::ActionView::Template::Handlers._ractor_rails_shim_handlers.keys.map(&:to_s).sort
+        end
+
+        def register_template_handler(*extensions, handler)
+          map = ::ActionView::Template::Handlers._ractor_rails_shim_handlers.dup
+          extensions.each { |ext| map[ext.to_sym] = handler }
+          ::ActionView::Template::Handlers._ractor_rails_shim_persist(map)
+        end
+
+        def unregister_template_handler(*extensions)
+          map = ::ActionView::Template::Handlers._ractor_rails_shim_handlers.dup
+          extensions.each { |ext| map.delete(ext.to_sym) }
+          ::ActionView::Template::Handlers._ractor_rails_shim_persist(map)
+        end
+
+        def register_default_template_handler(extension, klass)
+          register_template_handler(extension, klass)
         end
       RUBY
-      CLASS_ATTRIBUTES << ["ActionView::Template::Handlers", :template_handlers, th_key, {}]
-      CLASS_ATTRIBUTES << ["ActionView::Template::Handlers", :default_template_handlers, dth_key, nil]
     end
 
     # Patch ActionView::PathRegistry to not read its raw class ivars
@@ -286,5 +333,155 @@ module RactorRailsShim
       CLASS_ATTRIBUTES << ["ActionView::PathRegistry", :view_paths_by_class, vpc_key, {}]
       CLASS_ATTRIBUTES << ["ActionView::PathRegistry", :file_system_resolvers, fsr_key, {}]
     end
+
+    # Patch ActionView::FileSystemResolver#_find_all. The original reads the
+    # resolver's `@unbound_templates` cache, which `make_app_shareable!`
+    # rewrites from a Concurrent::Map into a frozen Hash (Concurrent::Map
+    # refuses #freeze). The original then calls `cache.compute_if_absent`
+    # (a Concurrent::Map API) on it, which a frozen Hash lacks -> NoMethodError
+    # in a worker Ractor. Route the per-virtual-path cache through
+    # IsolatedExecutionState instead: each Ractor builds its own mutable Hash
+    # (deterministic from disk via `unbound_templates_from_path`), so the
+    # frozen shareable app graph is never mutated.
+    def _install_action_view_resolver_patch
+      return if @action_view_resolver_patched
+      @action_view_resolver_patched = true
+      _register_patch :action_view_resolver, "8.1"
+      return unless defined?(::ActionView::FileSystemResolver)
+      # Eager-load nested constants referenced below (workers can't autoload).
+      if Ractor.main?
+        ::ActionView::TemplateDetails rescue nil
+        ::ActionView::TemplatePath rescue nil
+      end
+      ::ActionView::FileSystemResolver.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def _find_all(name, prefix, partial, details, key, locals)
+          requested_details = key || ::ActionView::TemplateDetails::Requested.new(**details)
+          virtual = ::ActionView::TemplatePath.virtual(name, prefix, partial)
+          # Key the cache by resolver path AND virtual path: each resolver
+          # (app/views, each gem) has its own @path and its own templates.
+          # Keying only by virtual path would let the first resolver poison
+          # the cache for all others (e.g. app/views caches [] for
+          # devise/sessions/new, hiding the template that lives in the
+          # devise gem resolver).
+          cache = (ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_resolver_cache] ||= {})
+          cache_key = [@path, virtual]
+          unbound_templates =
+            if cache.key?(cache_key)
+              cache[cache_key]
+            else
+              path = ::ActionView::TemplatePath.build(name, prefix, partial)
+              tmpls = unbound_templates_from_path(path)
+              cache[cache_key] = tmpls
+              tmpls
+            end
+          filter_and_sort_by_details(unbound_templates, requested_details).map do |unbound_template|
+            unbound_template.bind_locals(locals)
+          end
+        end
+      RUBY
+
+      # Patch ActionView::Resolver::PathParser#parse. The resolver's
+      # @path_parser instance is part of the shareable app graph frozen by
+      # make_app_shareable!, and the original method memoizes its compiled
+      # regex in `@regex ||= build_path_regex` — assigning @regex on a frozen
+      # object raises FrozenError in a worker Ractor. Route the memoization
+      # through IsolatedExecutionState keyed by the parser's object_id, so each
+      # Ractor compiles its own regex once without mutating the frozen object.
+      if defined?(::ActionView::Resolver::PathParser)
+        pp = ::ActionView::Resolver::PathParser
+        pp_key = :ractor_rails_shim_path_parser_regex
+        pp_key_str = pp_key.inspect
+        pp.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+          def parse(path)
+            regex = ActiveSupport::IsolatedExecutionState[:"#{pp_key_str}_\#{object_id}"] ||= build_path_regex
+            match = regex.match(path)
+            path = ::ActionView::TemplatePath.build(match[:action], match[:prefix] || "", !!match[:partial])
+            details = ::ActionView::TemplateDetails.new(
+              match[:locale]&.to_sym,
+              match[:handler]&.to_sym,
+              match[:format]&.to_sym,
+              match[:variant]&.to_sym
+            )
+            ::ActionView::Resolver::PathParser::ParsedPath.new(path, details)
+          end
+        RUBY
+      end
+    end
+
+    # Patch ActionView::AbstractRenderer::ObjectRendering#partial_path. The
+    # original reads `PREFIXED_PARTIAL_NAMES` — a `Concurrent::Map` constant
+    # (nested Concurrent::Maps) — and writes a nested entry via
+    # `PREFIXED_PARTIAL_NAMES[@context_prefix][path] ||= ...`. Concurrent::Map
+    # is intrinsically unshareable (it refuses #freeze), so a worker Ractor
+    # cannot read the constant NOR write to it. Redefine the method to use a
+    # per-Ractor Hash via IsolatedExecutionState (each Ractor builds its own
+    # cache from `merge_prefix_into_object_path`, which is deterministic).
+    def _install_action_view_partial_path_patch
+      return if @action_view_partial_path_patched
+      @action_view_partial_path_patched = true
+      _register_patch :action_view_partial_path, "8.1"
+      return unless defined?(::ActionView::AbstractRenderer)
+      ::ActionView::AbstractRenderer::ObjectRendering.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def partial_path(object, view)
+          object = object.to_model if object.respond_to?(:to_model)
+          path = if object.respond_to?(:to_partial_path)
+            object.to_partial_path
+          else
+            raise ArgumentError.new("\#{object.inspect}' is not an ActiveModel-compatible object. It must implement #to_partial_path.")
+          end
+          if view.prefix_partial_path_with_controller_namespace
+            cache = (ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_prefixed_partial_names] ||= {})
+            cache[@context_prefix] ||= {}
+            cache[@context_prefix][path] ||= merge_prefix_into_object_path(@context_prefix, path.dup)
+          else
+            path
+          end
+        end
+      RUBY
+    end
+
+    # Patch ActionView::Helpers::Tags::TextField.field_type (and the subclasses
+    # EmailField/PasswordField/... that inherit it). The original memoizes its
+    # computed String in a lazy class ivar (`@field_type ||= name...`). The
+    # class ivar is per-subclass and unshareable-writable from a worker Ractor.
+    # Route the cache through IsolatedExecutionState keyed by the class name so
+    # each Ractor builds its own copy; the computation is deterministic.
+    def _install_action_view_field_type_patch
+      return if @action_view_field_type_patched
+      @action_view_field_type_patched = true
+      _register_patch :action_view_field_type, "8.1"
+      return unless defined?(::ActionView::Helpers::Tags::TextField)
+      tf = ::ActionView::Helpers::Tags::TextField
+      tf.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def field_type
+          key = :"ractor_rails_shim_field_type_\#{name}"
+          v = ActiveSupport::IsolatedExecutionState[key]
+          return v if v
+          ft = name.split("::").last.sub("Field", "").downcase
+          ActiveSupport::IsolatedExecutionState[key] = ft
+          ft
+        end
+      RUBY
+    end
+
+    # Patch ActionView::Helpers::OutputSafetyHelper#safe_join. Its default
+    # separator parameter is `sep = $,` — a reference to the `$` global, which a
+    # worker Ractor cannot read (Ractor::IsolationError: can not access global
+    # variable $,). The `$` global is nil in every normal Rails process, so
+    # defaulting to nil reproduces the identical behaviour without touching the
+    # global.
+    def _install_action_view_safe_join_patch
+      return if @action_view_safe_join_patched
+      @action_view_safe_join_patched = true
+      _register_patch :action_view_safe_join, "8.1"
+      return unless defined?(::ActionView::Helpers::OutputSafetyHelper)
+      ::ActionView::Helpers::OutputSafetyHelper.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def safe_join(array, sep = nil)
+          sep = ERB::Util.unwrapped_html_escape(sep)
+          array.flatten.map! { |i| ERB::Util.unwrapped_html_escape(i) }.join(sep).html_safe
+        end
+      RUBY
+    end
+
   end
 end

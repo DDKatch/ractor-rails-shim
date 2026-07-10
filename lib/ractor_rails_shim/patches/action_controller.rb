@@ -195,5 +195,27 @@ module RactorRailsShim
         RUBY
       end
     end
+
+      # Patch ActionController::Metal.controller_name (a class method). It
+      # memoizes its computed String in a lazy class ivar (`@controller_name ||=`),
+      # which a worker Ractor cannot write. Route the cache through
+      # IsolatedExecutionState keyed by the class name so each Ractor builds its
+      # own copy; the computation is deterministic from the class name.
+      def _install_action_controller_controller_name_patch
+        return if @action_controller_controller_name_patched
+        @action_controller_controller_name_patched = true
+        _register_patch :action_controller_controller_name, "8.1"
+        return unless defined?(::ActionController::Metal)
+        ::ActionController::Metal.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+          def controller_name
+            key = :"ractor_rails_shim_controller_name_\#{name}"
+            v = ActiveSupport::IsolatedExecutionState[key]
+            return v if v
+            cn = (name.demodulize.delete_suffix("Controller").underscore unless anonymous?)
+            ActiveSupport::IsolatedExecutionState[key] = cn
+            cn
+          end
+        RUBY
+      end
   end
 end
