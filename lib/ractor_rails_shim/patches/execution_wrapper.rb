@@ -64,6 +64,45 @@ module RactorRailsShim
           def run_callbacks_with_nil_safe(kind, type = nil)
             callbacks = __callbacks[kind.to_sym] if __callbacks
             if callbacks.nil? || callbacks.empty?
+              # In a worker Ractor, class_attribute-backed `__callbacks`
+              # falls back to the empty default (see class_attribute.rb /
+              # make_shareable.rb), so controller `before_action` /
+              # `after_action` filters are normally SKIPED. For
+              # `:process_action` we replay the captured SYMBOL filters
+              # (see make_shareable!#_capture_controller_callbacks!)
+              # so actions that depend on a before_action (e.g. `set_post`
+              # loading `@post`) render correctly. Proc/lambda filters
+              # are not captured (self-capturing, unshareable) and are
+              # skipped — a known limitation.
+              if !Ractor.main? && kind.to_sym == :process_action &&
+                 defined?(::RactorRailsShim::SHAREABLE_CALLBACKS)
+                entries = ::RactorRailsShim::SHAREABLE_CALLBACKS[self.class.object_id]
+                if entries
+                  action = (self.action_name rescue nil)
+                  action = action.to_sym if action
+                  # A captured symbolic filter applies to this action unless
+                  # constrained by `only:`/`except:` (stored as :only /
+                  # :except action arrays). `kind` (before/after) decides
+                  # whether it wraps the action pre- or post-yield.
+                  applies = lambda do |e|
+                    next false unless (e[:before] || e[:after])
+                    in_only = e[:only].nil? || (action && e[:only].include?(action))
+                    not_except = e[:except].nil? || !(action && e[:except].include?(action))
+                    in_only && not_except
+                  end
+                  result = nil
+                  entries.each do |e|
+                    next unless e[:before] && applies.call(e)
+                    begin; self.send(e[:filter]); rescue; end
+                  end
+                  result = (yield if block_given?)
+                  entries.each do |e|
+                    next unless e[:after] && applies.call(e)
+                    begin; self.send(e[:filter]); rescue; end
+                  end
+                  return result
+                end
+              end
               yield if block_given?
             else
               run_callbacks_without_nil_safe(kind, type) { yield if block_given? }

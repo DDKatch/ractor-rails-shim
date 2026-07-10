@@ -52,6 +52,15 @@ module RactorRailsShim
       # Pre-compute lazy ivars BEFORE freezing (they mutate the app).
       _precompute_lazy_ivars(app)
       _precompute_propshaft!(app)
+      # Capture controller `process_action` symbol filters (before_action /
+      # after_action) into a shareable table so worker Ractors can run them.
+      # The shim routes class_attribute-backed `__callbacks` through IES and
+      # seeds workers with the empty default, so controller filters do NOT run
+      # in workers by default (see execution_wrapper.rb run_callbacks patch).
+      # For GET requests that depend on a before_action (e.g. `set_post` loading
+      # `@post`), that breaks rendering. We capture the symbolic filters here
+      # (in main, before freeze) and the patched run_callbacks replays them.
+      _capture_controller_callbacks!(app)
       # Neutralize the app's logger IO so Ractor.make_shareable doesn't freeze
       # $stdout/$stderr (freezing STDOUT breaks the process's own output).
       # Workers build their own per-Ractor Rails.logger, so the app-instance
@@ -622,6 +631,103 @@ module RactorRailsShim
         elsif o.is_a?(Hash); o.each { |k, val| stack << [k, "#{_p}.key", o, nil] if k; stack << [val, "#{_p}[#{k.inspect}]", o, nil] if val }
         end
       end
+    end
+
+    # Capture controller `process_action` symbol filters (before_action /
+    # after_action) so worker Ractors can run them. The shim routes
+    # class_attribute-backed `__callbacks` through IES and seeds workers with
+    # the empty default, so controller filters do NOT run in workers — which
+    # breaks GET actions that depend on a before_action (e.g. `set_post`
+    # loading `@post`). We only capture SYMBOL filters (the common
+    # `before_action :set_post` form). Proc/lambda filters are skipped —
+    # they are self-capturing and cannot be replayed safely in a worker
+    # (known limitation; symbolic filters cover the typical case, including
+    # Devise's symbol filters like `:authenticate_user!`). Each entry
+    # records `before`/`after` and the `name` (the `only`/`except`
+    # action constraint) so the patched run_callbacks can apply the right
+    # subset per action. Stored in RactorRailsShim::SHAREABLE_CALLBACKS
+    # keyed by the controller class object_id (stable across Ractors
+    # since classes are shared).
+    def _capture_controller_callbacks!(app)
+      return unless Ractor.main?
+      return if @controller_callbacks_captured
+      @controller_callbacks_captured = true
+      table = {}
+      _collect_controller_classes(app).each do |klass|
+        next unless klass.respond_to?(:__callbacks)
+        cbs = klass.__callbacks rescue nil
+        next unless cbs
+        chain = cbs[:process_action] rescue nil
+        next unless chain
+        entries = []
+        chain.each do |cb|
+          f = cb.respond_to?(:filter) ? cb.filter : nil
+          next unless f.is_a?(Symbol)
+          # before/after is stored in `@kind` (`:before`/`:after`/`:around`),
+          # NOT `@before`/`@after`. `@name` is the callback KIND
+          # (`:process_action`), not the action constraint.
+          kind = (cb.instance_variable_get(:@kind) rescue nil)
+          before = (kind == :before)
+          after  = (kind == :after)
+          # The `only:`/`except:` action constraint lives in the
+          # `ActionFilter` objects held by `@if`/`@unless` (NOT `@name`).
+          only = nil
+          except = nil
+          [cb.instance_variable_get(:@if), cb.instance_variable_get(:@unless)].each do |arr|
+            next unless arr.is_a?(Array)
+            arr.each do |af|
+              next unless af.respond_to?(:conditional_key) && af.respond_to?(:actions)
+              ck = af.conditional_key
+              acts = (af.actions rescue nil)
+              only = acts if ck == :only
+              except = acts if ck == :except
+            end
+          end
+          entries << {
+            filter: f,
+            before: before,
+            after: after,
+            only: (only.freeze rescue nil),
+            except: (except.freeze rescue nil)
+          }
+        end
+        table[klass.object_id] = entries.freeze unless entries.empty?
+      end
+      # Deep-freeze (make shareable) the whole table so worker Ractors can
+      # read the constant. Entries are Hashes of Symbols/booleans/nil —
+      # all natively shareable — so Ractor.make_shareable deep-freezes
+      # cleanly. A non-frozen constant raises Ractor::IsolationError
+      # ("can not access non-shareable objects in constant ... by non-main
+      # Ractor") when a worker reads it.
+      begin
+        Ractor.make_shareable(table)
+        RactorRailsShim.const_set(:SHAREABLE_CALLBACKS, table)
+      rescue
+        nil
+      end
+    end
+
+    def _collect_controller_classes(app)
+      classes = []
+      begin
+        router = (app.respond_to?(:routes) ? app.routes : nil) || (defined?(::Rails) && ::Rails.application && ::Rails.application.routes)
+        router.routes.each do |r|
+          c = r.defaults[:controller] rescue nil
+          next unless c && c.respond_to?(:camelize)
+          klass = "#{c.camelize}Controller".safe_constantize rescue nil
+          classes << klass if klass
+        end
+      rescue
+        nil
+      end
+      begin
+        if defined?(::ApplicationController) && ::ApplicationController.respond_to?(:descendants)
+          classes.concat(::ApplicationController.descendants)
+        end
+      rescue
+        nil
+      end
+      classes.compact.uniq
     end
   end
 end
