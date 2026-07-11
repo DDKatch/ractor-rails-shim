@@ -20,12 +20,12 @@ module RactorRailsShim
     "Mime::Type::PARAMETER_SEPARATOR_REGEXP",
     "Mime::Type::ACCEPT_HEADER_REGEXP",
     "Mime::ALL",
-    "ActionDispatch::Response::NullContentTypeHeader",
-    "ActionDispatch::Response::NO_CONTENT_CODES",
-    "ActionDispatch::Response::RackBody::BODY_METHODS",
-      "ActionDispatch::Response::Buffer::BODY_METHODS",
-      "ActionView::Helpers::ControllerHelper::CONTROLLER_DELEGATES",
-    ])
+      "ActionDispatch::Response::NullContentTypeHeader",
+      "ActionDispatch::Response::NO_CONTENT_CODES",
+      "ActionDispatch::Response::RackBody::BODY_METHODS",
+        "ActionDispatch::Response::Buffer::BODY_METHODS",
+        "ActionView::Helpers::ControllerHelper::CONTROLLER_DELEGATES",
+      ])
 
   class << self
     # Patch ActionDispatch::ExceptionWrapper instance methods that read
@@ -86,6 +86,64 @@ module RactorRailsShim
         end
       RUBY
       CLASS_ATTRIBUTES << ["ActionDispatch::Request", :parameter_parsers, pp_key, nil]
+    end
+
+    # ActionDispatch::QueryParser.each_pair returns `enum_for(:each_pair, s,
+    # separator)` when called without a block. The Enumerator wraps a Proc that
+    # was compiled in the main Ractor, so when a worker Ractor iterates it
+    # (`pairs.each` inside ParamBuilder#from_pairs) Ruby raises "defined with an
+    # un-shareable Proc in a different Ractor". Redefine it to materialize into a
+    # plain (shareable) frozen Array using a block-free loop, so worker Ractors
+    # can parse form/query pairs without crossing Ractor boundaries.
+    def _install_query_parser_patch
+      return if @query_parser_patched
+      @query_parser_patched = true
+      return unless defined?(::ActionDispatch::QueryParser)
+      ::ActionDispatch::QueryParser.singleton_class.module_eval <<-'RUBY', __FILE__, __LINE__ + 1
+        def each_pair(s, separator = nil)
+          return _materialized_pairs(s, separator) unless block_given?
+          s ||= ""
+          splitter =
+            if separator
+              ::ActionDispatch::QueryParser::COMMON_SEP[separator] || /[#{separator}] */n
+            else
+              ::ActionDispatch::QueryParser::DEFAULT_SEP
+            end
+          s.split(splitter).each do |part|
+            next if part.empty?
+            k, v = part.split("=", 2)
+            k = URI.decode_www_form_component(k)
+            v &&= URI.decode_www_form_component(v)
+            yield k, v
+          end
+          nil
+        end
+
+        def _materialized_pairs(s, separator)
+          s ||= ""
+          splitter =
+            if separator
+              ::ActionDispatch::QueryParser::COMMON_SEP[separator] || /[#{separator}] */n
+            else
+              ::ActionDispatch::QueryParser::DEFAULT_SEP
+            end
+          parts = s.split(splitter)
+          result = []
+          i = 0
+          while i < parts.length
+            part = parts[i]
+            i += 1
+            if part.empty?
+              next
+            end
+            kv = part.split("=", 2)
+            k = URI.decode_www_form_component(kv[0])
+            v = kv[1] && URI.decode_www_form_component(kv[1])
+            result << [k, v]
+          end
+          result.freeze
+        end
+      RUBY
     end
 
     # Patch ActionDispatch::Routing::RouteSet::MountedHelpers#main_app (and
@@ -437,23 +495,162 @@ module RactorRailsShim
         RUBY
       end
 
-      # `#_routes` is `define_method(:_routes) { @_routes || routes }` on the
-      # url_helpers module included into controllers/views. That block captures
-      # the main Ractor's `routes`. Patch `#_routes` directly on the concrete
-      # controller/view base classes (which win over the included module's
-      # method) so workers return the captured shareable RouteSet instead of
-      # evaluating the proc block.
-      %w[ActionController::Base ActionView::Base].each do |klass_name|
-        next unless defined?(::ActionController::Base) || defined?(::ActionView::Base)
-        klass = Object.const_get(klass_name) rescue next
-        next unless klass.is_a?(::Module)
-        klass.class_eval <<-RUBY, __FILE__, __LINE__ + 1
-          def _routes
-            return super if Ractor.main?
-            RactorRailsShim::SHAREABLE_ROUTES || super
+      # NOTE: the block-based `_routes` accessors that break workers are now
+      # fixed at their source by `_install_url_helpers_patch` (patches/
+      # url_helpers.rb), which intercepts `Module#redefine_singleton_method`
+      # / `Module#define_method` for `:_routes` and replaces the main-Ractor
+      # block with a string-eval'd method returning `Rails.application.routes`.
+      # No per-class enumeration needed.
+    end
+
+    # Make Journey route recognition work under kino :ractor.
+    #
+    # The shared app graph (frozen + made shareable by make_app_shareable!)
+    # already carries the routes' ast and the GTG simulator. The simulator,
+    # however, is normally UNshareable because TransitionTable seeds @memos
+    # with a default-Proc Hash (`Hash.new { |h,k| h[k] = [] }`), and because
+    # its @memos holds the per-route Route objects whose constraint Procs can't
+    # cross Ractor boundaries. The default Proc is the only thing *we* can fix;
+    # the Route constraint Procs are instead made shareable by make_app_shareable!
+    # when it freezes the whole graph (its proc-replacement pass rewrites them).
+    #
+    # So the plan:
+    #   1. Patch TransitionTable to use a plain Hash + `add_memo` using `||= []`
+    #      (behavior-identical, but shareable once Route memos are frozen).
+    #   2. Warm + cache `@ast` / `@simulator` on the live Routes object AFTER
+    #      make_app_shareable!'s route precompute (which reloads/resets the
+    #      routes) and BEFORE Ractor.make_shareable freezes the graph. Once
+    #      frozen into the shared graph, worker Ractors read the cached ivars
+    #      via the ORIGINAL Routes#ast/#simulator (no per-worker rebuild — a
+    #      rebuild would have to read the frozen Route memos AND reuse several
+    #      non-shareable class constants, which is fragile).
+    #
+    # We deliberately do NOT override ast/simulator: the original methods read
+    # the cached ivars, which is exactly what workers need.
+    def _install_journey_routes_patch
+      return if @journey_routes_patched
+      @journey_routes_patched = true
+      _register_patch :journey_routes, "8.1"
+      return unless defined?(::ActionDispatch::Journey::Routes)
+
+      # Patch TransitionTable to drop its default-Proc @memos. Must run before
+      # the simulator is warmed (in _warm_journey_routes!, called from
+      # make_app_shareable! after the route precompute).
+      if defined?(::ActionDispatch::Journey::GTG::TransitionTable)
+        tt = ::ActionDispatch::Journey::GTG::TransitionTable
+        tt.class_eval <<-RUBY, __FILE__, __LINE__ + 1
+          def initialize
+            @stdparam_states = {}
+            @regexp_states   = {}
+            @string_states   = {}
+            @accepting       = {}
+            @memos           = {}
+          end
+          def add_memo(idx, memo)
+            (@memos[idx] ||= []) << memo
           end
         RUBY
       end
+    end
+
+    # Journey's routing visitors are stored as instance singletons in class
+    # constants (e.g. `ActionDispatch::Journey::Visitors::Each::INSTANCE`).
+    # Worker Ractors read these constants while recognizing routes
+    # (`Node#each` → `Each::INSTANCE.accept`, `Path::Pattern#match` →
+    # `offsets` → `node.each`), and a non-frozen instance is NOT a shareable
+    # object → `Ractor::IsolationError: can not access non-shareable objects in
+    # constant ...::Each::INSTANCE by non-main Ractor`. The visitor instances
+    # are stateless, so freezing them makes them shareable with no behavior
+    # change. The same applies to the `DISPATCH_CACHE` Hashes the visitor
+    # `accept`/`visit` dispatch through. These constants are NOT reachable
+    # from the frozen app graph (Ractor.make_shareable never touches them), so
+    # we must freeze them explicitly here (in main, before workers spawn).
+    def _freeze_journey_visitors!
+      return unless defined?(::ActionDispatch::Journey::Visitors)
+      v = ::ActionDispatch::Journey::Visitors
+      [[:Each, :INSTANCE], [:String, :INSTANCE], [:Dot, :INSTANCE]].each do |klass, const|
+        mod = v.const_get(klass) rescue nil
+        next unless mod && mod.const_defined?(const)
+        inst = mod.const_get(const)
+        inst.freeze if inst.respond_to?(:freeze) && !inst.frozen?
+      end
+      [[:Visitor, :DISPATCH_CACHE], [:FunctionalVisitor, :DISPATCH_CACHE]].each do |klass, const|
+        mod = v.const_get(klass) rescue nil
+        next unless mod && mod.const_defined?(const)
+        cache = mod.const_get(const)
+        cache.freeze if cache.respond_to?(:freeze) && !cache.frozen?
+      end
+    end
+
+    # Pre-compute every Journey::Path::Pattern's lazy memoized ivars
+    # (@required_names, @optional_names, @offsets, @re,
+    # @requirements_for_missing_keys_check) on the LIVE (unfrozen) pattern,
+    # before Ractor.make_shareable freezes the graph. `Path::Pattern#match`
+    # (called on every request during route recognition) memoizes @offsets
+    # via `@offsets ||= ...`; on a frozen pattern that write raises
+    # FrozenError. By computing it now (and caching into the frozen object),
+    # the worker reads the cached value and never writes. We deliberately do
+    # NOT call the built-in `eager_load!`, which sets `@ast = nil` (the
+    # @ast/@spec are still read by `requirements_anchored?` and must survive).
+    def _warm_path_patterns!(routes)
+      return unless routes.respond_to?(:routes)
+      routes.routes.each do |r|
+        p = r.respond_to?(:path) ? r.path : nil
+        next unless p
+        begin
+          p.required_names
+          p.optional_names
+          p.send(:offsets)
+          p.to_regexp
+          p.requirements_for_missing_keys_check if p.respond_to?(:requirements_for_missing_keys_check)
+        rescue
+          # best-effort — a pattern we can't warm will fall back to its own
+          # (non-frozen) copy if one exists; ignore unusual shapes.
+        end
+      end
+    end
+
+    # Warm + cache `@ast` / `@simulator` on the live Routes graph. Called from
+    # make_app_shareable! AFTER the route precompute (which resets the routes)
+    # and BEFORE Ractor.make_shareable freezes the graph. Must run in the main
+    # Ractor. Idempotent (caches on the mutable object, then frozen in place).
+    def _warm_journey_routes!
+      return unless Ractor.main?
+      _freeze_journey_visitors!
+      _freeze_mime_negotiation!
+      begin
+        rs = ::Rails.application.routes rescue nil
+        routes = rs.respond_to?(:routes) ? rs.routes : nil
+        if routes
+          routes.ast
+          routes.simulator
+          _warm_path_patterns!(routes)
+        end
+      rescue => e
+        # best-effort
+      end
+    end
+
+    # ActionDispatch::Http::MimeNegotiation holds module-level constants
+    # (e.g. RESCUABLE_MIME_FORMAT_ERRORS, an Array of exception classes) that
+    # are referenced from the request path (params_readable? -> `rescue *
+    # RESCUABLE_MIME_FORMAT_ERRORS`). These Arrays are non-frozen, hence
+    # non-shareable, so a worker Ractor raises Ractor::IsolationError when it
+    # reads them. Freeze the mutable constant-containing modules so workers can
+    # read shareable copies. Regexp/Class constants are already shareable; only
+    # the wrapping Array/Hash need freezing.
+    def _freeze_mime_negotiation!
+      return unless defined?(::ActionDispatch::Http::MimeNegotiation)
+      mod = ::ActionDispatch::Http::MimeNegotiation
+      mod.constants.each do |name|
+        c = mod.const_get(name) rescue nil
+        next unless c.is_a?(::Array) || c.is_a?(::Hash)
+        next if c.frozen?
+        c.freeze
+        ::Ractor.make_shareable(c) rescue nil
+      end
+    rescue => e
+      warn "[ractor-rails-shim] _freeze_mime_negotiation!: #{e.class}: #{e.message}"
     end
   end
 end

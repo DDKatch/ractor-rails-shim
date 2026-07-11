@@ -11,8 +11,18 @@ module RactorRailsShim
     "ActiveSupport::ErrorReporter::SEVERITIES",
     "ActiveSupport::CurrentAttributes::INVALID_ATTRIBUTE_NAMES",
     "ActiveSupport::Delegation::RUBY_RESERVED_KEYWORDS",
+    "ActiveSupport::ExecutionWrapper::Null",
     "Concurrent::NULL",
     "I18n::RESERVED_KEYS",
+    # ActiveSupport::JSON::Encoding constants. The module is shareable, but its
+    # constants hold values (Regexps built via Regexp.union, and a Hash of
+    # frozen binary strings) that are NOT Ractor-shareable in Ruby 4.0, so a
+    # worker Ractor cannot read them (HTML_ENTITIES_REGEX etc.). Deep-freeze
+    # each into a shareable twin and const_set it back on the module.
+    "ActiveSupport::JSON::Encoding::ESCAPED_CHARS",
+    "ActiveSupport::JSON::Encoding::HTML_ENTITIES_REGEX",
+    "ActiveSupport::JSON::Encoding::FULL_ESCAPE_REGEX",
+    "ActiveSupport::JSON::Encoding::JS_SEPARATORS_REGEX",
   ])
 
   class << self
@@ -72,6 +82,40 @@ module RactorRailsShim
       # Materialize the :en instance into IES in main so the fallback builder
       # can read + share it.
       inf.instance(:en) if Ractor.main?
+    end
+
+    # Patch Module#module_parent_name so a worker Ractor does not write the
+    # `@parent_name` class ivar on a shared (non-frozen) module. The default
+    # memoizes `@parent_name ||= ...` on first use; when that first use happens
+    # in a worker it writes a class ivar on a shared module, which raises
+    # Ractor::IsolationError ("can not set instance variables of
+    # classes/modules by non-main Ractors"). Route the per-worker cache through
+    # IsolatedExecutionState (keyed by module object_id); main keeps the
+    # original class-ivar behavior.
+    def _install_module_introspection_patch
+      return if @module_introspection_patched
+      @module_introspection_patched = true
+      _register_patch :module_introspection, "8.1"
+      return unless defined?(::Module)
+      ::Module.module_eval do
+        def module_parent_name
+          if defined?(@parent_name)
+            @parent_name
+          else
+            name = self.name
+            return if name.nil?
+
+            parent_name = name =~ /::[^:]+\z/ ? -$` : nil
+            if Ractor.main?
+              @parent_name = parent_name unless frozen?
+            else
+              store = (ActiveSupport::IsolatedExecutionState[:rrs_module_parent_names] ||= {})
+              store[object_id] ||= parent_name
+            end
+            parent_name
+          end
+        end
+      end
     end
 
     # Patch ActiveSupport module's @error_reporter class ivar (defined via
@@ -134,8 +178,8 @@ module RactorRailsShim
         def default_locale
           v = ActiveSupport::IsolatedExecutionState[#{dl_key_str}]
           return v unless v.nil?
-          if Ractor.main? && class_variable_defined?(:@@default_locale)
-            cv = class_variable_get(:@@default_locale)
+          if Ractor.main? && defined?(@@default_locale)
+            cv = @@default_locale
             ActiveSupport::IsolatedExecutionState[#{dl_key_str}] = cv
             return cv
           end
@@ -145,7 +189,7 @@ module RactorRailsShim
         def default_locale=(locale)
           v = locale && locale.to_sym
           ActiveSupport::IsolatedExecutionState[#{dl_key_str}] = v
-          class_variable_set(:@@default_locale, v) if Ractor.main?
+          @@default_locale = v if Ractor.main?
           v
         end
         def locale
@@ -172,7 +216,7 @@ module RactorRailsShim
           v = ActiveSupport::IsolatedExecutionState[#{av_key_str}]
           return v unless v.nil?
           if Ractor.main?
-            if class_variable_defined?(:@@available_locales) && (cv = class_variable_get(:@@available_locales))
+            if defined?(@@available_locales) && (cv = @@available_locales)
               ActiveSupport::IsolatedExecutionState[#{av_key_str}] = cv
               return cv
             end
@@ -189,13 +233,13 @@ module RactorRailsShim
           v = Array(locales).map { |l| l.to_sym }
           v = nil if v.empty?
           ActiveSupport::IsolatedExecutionState[#{av_key_str}] = v
-          class_variable_set(:@@available_locales, v) if Ractor.main?
+          @@available_locales = v if Ractor.main?
           v
         end
         def available_locales_set
           v = ActiveSupport::IsolatedExecutionState[#{avs_key_str}]
           return v unless v.nil?
-          if Ractor.main? && class_variable_defined?(:@@available_locales_set) && (cv = class_variable_get(:@@available_locales_set))
+          if Ractor.main? && defined?(@@available_locales_set) && (cv = @@available_locales_set)
             ActiveSupport::IsolatedExecutionState[#{avs_key_str}] = cv
             return cv
           end
@@ -215,8 +259,8 @@ module RactorRailsShim
         def enforce_available_locales
           v = ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_enforce]
           return v unless v.nil?
-          if Ractor.main? && class_variable_defined?(:@@enforce_available_locales)
-            cv = class_variable_get(:@@enforce_available_locales)
+          if Ractor.main? && defined?(@@enforce_available_locales)
+            cv = @@enforce_available_locales
             ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_enforce] = cv
             return cv
           end
@@ -226,7 +270,7 @@ module RactorRailsShim
         def enforce_available_locales=(val)
           v = !!val
           ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_enforce] = v
-          class_variable_set(:@@enforce_available_locales, v) if Ractor.main?
+          @@enforce_available_locales = v if Ractor.main?
           v
         end
         # backend reads the @@backend class variable (which a worker Ractor
@@ -261,7 +305,7 @@ module RactorRailsShim
           v = ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_load_path]
           return v unless v.nil?
           if Ractor.main?
-            lp = (class_variable_defined?(:@@load_path) && class_variable_get(:@@load_path)) || []
+            lp = (defined?(@@load_path) && @@load_path) || []
             lp = lp.dup.freeze if lp.respond_to?(:freeze) && !lp.frozen?
             ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_load_path] = lp
             lp
@@ -272,7 +316,7 @@ module RactorRailsShim
         def load_path=(lp)
           lp = Array(lp)
           ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_load_path] = lp
-          class_variable_set(:@@load_path, lp) if Ractor.main?
+          @@load_path = lp if Ractor.main?
           lp
         end
         # default_separator / exception_handler / missing_interpolation_argument_handler
@@ -285,7 +329,7 @@ module RactorRailsShim
           v = ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_sep]
           return v unless v.nil?
           if Ractor.main?
-            cv = class_variable_defined?(:@@default_separator) ? class_variable_get(:@@default_separator) : "."
+            cv = defined?(@@default_separator) ? @@default_separator : "."
             ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_sep] = cv
             cv
           else
@@ -294,14 +338,14 @@ module RactorRailsShim
         end
         def default_separator=(separator)
           ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_sep] = separator
-          class_variable_set(:@@default_separator, separator) if Ractor.main?
+          @@default_separator = separator if Ractor.main?
           separator
         end
         def exception_handler
           v = ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_exc]
           return v unless v.nil?
           if Ractor.main?
-            cv = class_variable_defined?(:@@exception_handler) ? class_variable_get(:@@exception_handler) : ::I18n::ExceptionHandler.new
+            cv = defined?(@@exception_handler) ? @@exception_handler : ::I18n::ExceptionHandler.new
             ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_exc] = cv
             cv
           else
@@ -310,14 +354,14 @@ module RactorRailsShim
         end
         def exception_handler=(handler)
           ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_exc] = handler
-          class_variable_set(:@@exception_handler, handler) if Ractor.main?
+          @@exception_handler = handler if Ractor.main?
           handler
         end
         def missing_interpolation_argument_handler
           v = ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_miss]
           return v unless v.nil?
           if Ractor.main?
-            cv = class_variable_defined?(:@@missing_interpolation_argument_handler) ? class_variable_get(:@@missing_interpolation_argument_handler) : lambda do |missing_key, provided_hash, string|
+            cv = defined?(@@missing_interpolation_argument_handler) ? @@missing_interpolation_argument_handler : lambda do |missing_key, provided_hash, string|
                 raise ::I18n::MissingInterpolationArgument.new(missing_key, provided_hash, string)
               end
             ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_miss] = cv
@@ -330,14 +374,14 @@ module RactorRailsShim
         end
         def missing_interpolation_argument_handler=(handler)
           ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_miss] = handler
-          class_variable_set(:@@missing_interpolation_argument_handler, handler) if Ractor.main?
+          @@missing_interpolation_argument_handler = handler if Ractor.main?
           handler
         end
         def interpolation_patterns
           v = ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_ip]
           return v unless v.nil?
           if Ractor.main?
-            cv = class_variable_defined?(:@@interpolation_patterns) ? class_variable_get(:@@interpolation_patterns) : ::I18n::DEFAULT_INTERPOLATION_PATTERNS.dup
+            cv = defined?(@@interpolation_patterns) ? @@interpolation_patterns : ::I18n::DEFAULT_INTERPOLATION_PATTERNS.dup
             ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_ip] = cv
             cv
           else
@@ -346,7 +390,7 @@ module RactorRailsShim
         end
         def interpolation_patterns=(patterns)
           ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_ip] = patterns
-          class_variable_set(:@@interpolation_patterns, patterns) if Ractor.main?
+          @@interpolation_patterns = patterns if Ractor.main?
           patterns
         end
       RUBY
@@ -390,8 +434,8 @@ module RactorRailsShim
           def fallbacks
             v = ActiveSupport::IsolatedExecutionState[#{fb_key_str}]
             return v unless v.nil?
-            if Ractor.main? && class_variable_defined?(:@@fallbacks)
-              cv = class_variable_get(:@@fallbacks)
+            if Ractor.main? && defined?(@@fallbacks)
+              cv = @@fallbacks
               if cv
                 ActiveSupport::IsolatedExecutionState[#{fb_key_str}] = cv
                 return cv
@@ -413,8 +457,8 @@ module RactorRailsShim
             def implementation
               v = ActiveSupport::IsolatedExecutionState[#{tag_key_str}]
               return v unless v.nil?
-              if Ractor.main? && class_variable_defined?(:@@implementation)
-                cv = class_variable_get(:@@implementation)
+              if Ractor.main? && defined?(@@implementation)
+                cv = @@implementation
                 ActiveSupport::IsolatedExecutionState[#{tag_key_str}] = cv
                 return cv
               end
@@ -480,7 +524,80 @@ module RactorRailsShim
       end
     end
 
-    # Patch ActiveSupport::ExecutionContext — the @after_change_callbacks
+    # Patch I18n::Backend::Simple::Implementation#translations and
+    # #store_translations. The original uses a MUTEX-backed Concurrent::Hash
+    # default block (`MUTEX` is a non-shareable constant on the module), so a
+    # worker Ractor that builds its own (per the patched I18n::Config#backend)
+    # backend and lazy-loads translations hits "can not access non-shareable
+    # objects in constant ...MUTEX". Worker-local backends are single-threaded
+    # (a Ractor serializes its requests), so drop the mutex and use a plain
+    # Hash. Applied at prepare_for_ractors! time (after the i18n backend class
+    # is loaded).
+    def _install_i18n_backend_patch
+      return if @i18n_backend_patched
+      @i18n_backend_patched = true
+      _register_patch :i18n_backend, "8.1"
+      return unless defined?(::I18n::Backend::Simple::Implementation)
+      impl = ::I18n::Backend::Simple::Implementation
+      impl.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def translations(do_init: false)
+          init_translations if do_init && !initialized?
+          @translations ||= {}
+        end
+        def store_translations(locale, data, options = {})
+          if ::I18n.enforce_available_locales &&
+             ::I18n.available_locales_initialized? &&
+             !::I18n.locale_available?(locale)
+            return data
+          end
+          locale = locale.to_sym
+          translations[locale] ||= {}
+          data = ::I18n::Utils.deep_symbolize_keys(data) unless options.fetch(:skip_symbolize_keys, false)
+          ::I18n::Utils.deep_merge!(translations[locale], data)
+        end
+      RUBY
+    end
+
+    # Patch I18n.interpolate_hash. It reads INTERPOLATION_PATTERNS_CACHE — a
+    # constant Hash with a default proc (unshareable) — to fetch the compiled
+    # interpolation Regexp. A worker Ractor cannot read that constant, raising
+    # "can not access non-shareable objects in constant
+    # I18n::INTERPOLATION_PATTERNS_CACHE by non-main ractor". Route the cache
+    # through IsolatedExecutionState so each Ractor compiles its own Regexp once.
+    def _install_i18n_interpolation_patch
+      return if @i18n_interpolation_patched
+      @i18n_interpolation_patched = true
+      _register_patch :i18n_interpolation, "8.1"
+      return unless defined?(::I18n)
+      ::I18n.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def interpolate_hash(string, values)
+          patterns = config.interpolation_patterns
+          cache = (ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_interp_cache] ||= {})
+          pattern = cache[patterns] ||= ::Regexp.union(patterns)
+          interpolated = false
+
+          interpolated_string = string.gsub(pattern) do |match|
+            interpolated = true
+
+            if match == '%%'
+              '%'
+            else
+              key = ($1 || $2 || match.tr("%{}", "")).to_sym
+              value = if values.key?(key)
+                        values[key]
+                      else
+                        config.missing_interpolation_argument_handler.call(key, values, string)
+                      end
+              value = value.call(values) if value.respond_to?(:call)
+              $3 ? sprintf("%#{$3}", value) : value
+            end
+          end
+
+          interpolated ? interpolated_string : string
+        end
+      RUBY
+    end
+
     # class ivar and nestable are read/written per-request. Route through
     # IES; workers get empty arrays (correct for a read-only shared app
     # where ExecutionContext is per-Ractor and starts empty in a fresh
@@ -584,6 +701,204 @@ module RactorRailsShim
           ActiveSupport::IsolatedExecutionState[#{key_str}] = val
         end
       RUBY
+    end
+
+    # Patch ActiveSupport::Reloader#check! / #reloaded!. These are CLASS
+    # methods that memoize `@should_reload` in a class ivar. ActionDispatch::
+    # Executor#call runs `Reloader.run!` -> `check!` on EVERY request, so a
+    # worker Ractor writing that class ivar raises Ractor::IsolationError
+    # ("can not set instance variables of classes/modules by non-main
+    # Ractors"). Route the flag through IsolatedExecutionState so each Ractor
+    # has its own. With reloading disabled (config.enable_reloading = false,
+    # the right setting for a frozen, shared kino :ractor graph) check.call is
+    # `lambda { false }`, so workers compute false (no reload) — but the write
+    # must still be Ractor-safe.
+    def _install_reloader_patch
+      return if @reloader_patched
+      @reloader_patched = true
+      _register_patch :reloader, "8.1"
+      return unless defined?(::ActiveSupport::Reloader)
+      rl = ::ActiveSupport::Reloader
+      key = :ractor_rails_shim_reloader_should_reload
+      key_str = key.inspect
+      rl.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def check!
+          v = ActiveSupport::IsolatedExecutionState[#{key_str}]
+          return v unless v.nil?
+          result = check.call
+          ActiveSupport::IsolatedExecutionState[#{key_str}] = result
+          result
+        end
+
+        def reloaded!
+          ActiveSupport::IsolatedExecutionState[#{key_str}] = false
+        end
+      RUBY
+    end
+
+    # Patch ActiveSupport::Cache::Strategy::LocalCache#local_cache_key. The
+    # original memoizes the key in a `@local_cache_key` ivar on the store:
+    #   `@local_cache_key ||= "...".to_sym`
+    # When the store is part of the frozen, shared Rails.application graph
+    # (deep-frozen by make_app_shareable! for kino :ractor mode), a worker
+    # Ractor writing that ivar raises FrozenError. The key is a pure function
+    # of the store's class + object_id (both stable for the shared object),
+    # so compute it deterministically each call — no ivar write. The key still
+    # addresses LocalCacheRegistry, which is already Ractor-safe (it uses
+    # IsolatedExecutionState), so each Ractor keeps its own local cache.
+    def _install_local_cache_patch
+      return if @local_cache_patched
+      @local_cache_patched = true
+      _register_patch :local_cache, "8.1"
+      return unless defined?(::ActiveSupport::Cache::Strategy::LocalCache)
+      lc = ::ActiveSupport::Cache::Strategy::LocalCache
+      lc.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def local_cache_key
+          str = "\#{self.class.name.underscore}_local_cache_\#{object_id}".gsub(/[\\/-]/, "_")
+          str.to_sym
+        end
+      RUBY
+    end
+
+    # Patch ActiveSupport::CachingKeyGenerator#generate_key. Its `@cache_keys`
+    # ivar is a Concurrent::Map; make_app_shareable! rewrites Concurrent::Map
+    # ivars into FROZEN Hashes (see make_shareable.rb), so a worker Ractor's
+    # `@cache_keys[args.join("|")] ||= ...` write raises FrozenError. The cache
+    # is pure memoization keyed by (generator, args), so route it through
+    # IsolatedExecutionState (one mutable cache per Ractor). The inner
+    # @key_generator.generate_key now works from workers thanks to the
+    # OpenSSL::Digest lambda patch.
+    def _install_caching_key_generator_patch
+      return if @caching_key_generator_patched
+      @caching_key_generator_patched = true
+      _register_patch :caching_key_generator, "8.1"
+      return unless defined?(::ActiveSupport::CachingKeyGenerator)
+      ::ActiveSupport::CachingKeyGenerator.class_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def generate_key(*args)
+          store = (ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_caching_key_generator] ||= {})
+          key = "\#{object_id}|\#{args.join("|")}"
+          store.fetch(key) { store[key] = @key_generator.generate_key(*args) }
+        end
+      RUBY
+    end
+
+    # Patch ActiveSupport::Messages::SerializerWithFallback. Its SERIALIZERS
+    # constant is a Hash of serializer modules — but the Hash itself is not
+    # Ractor-shareable, so a worker Ractor reading it raises "can not access
+    # non-shareable objects in constant ...SERIALIZERS". The individual
+    # serializer modules ARE shareable, so route the lookup through
+    # IsolatedExecutionState (a per-Ractor cache of the same module
+    # references, which workers can read). `.load` resolves the fallback
+    # serializer the same way.
+    def _install_messages_serializer_patch
+      return if @messages_serializer_patched
+      @messages_serializer_patched = true
+      _register_patch :messages_serializer, "8.1"
+      return unless defined?(::ActiveSupport::Messages::SerializerWithFallback)
+      swf = ::ActiveSupport::Messages::SerializerWithFallback
+      swf.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def serializer_for(format)
+          if Ractor.main?
+            SERIALIZERS.fetch(format)
+          else
+            (ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_serializers] ||= {
+              marshal: ::ActiveSupport::Messages::SerializerWithFallback::MarshalWithFallback,
+              json: ::ActiveSupport::Messages::SerializerWithFallback::JsonWithFallback,
+              json_allow_marshal: ::ActiveSupport::Messages::SerializerWithFallback::JsonWithFallbackAllowMarshal,
+              message_pack: ::ActiveSupport::Messages::SerializerWithFallback::MessagePackWithFallback,
+              message_pack_allow_marshal: ::ActiveSupport::Messages::SerializerWithFallback::MessagePackWithFallbackAllowMarshal,
+            })[format]
+          end
+        end
+
+        def [](format)
+          if format.to_s.include?("message_pack") && !defined?(::ActiveSupport::MessagePack)
+            require "active_support/message_pack"
+          end
+          serializer_for(format)
+        end
+      RUBY
+      swf.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def load(dumped)
+          format = detect_format(dumped)
+          if format == self.format
+            _load(dumped)
+          elsif format && fallback?(format)
+            payload = { serializer: self.format, fallback: format, serialized: dumped }
+            ActiveSupport::Notifications.instrument("message_serializer_fallback.active_support", payload) do
+              payload[:deserialized] = serializer_for(format)._load(dumped)
+            end
+          else
+            raise "Unsupported serialization format"
+          end
+        end
+      RUBY
+    end
+
+    # Patch ActiveSupport::JSON::Encoding. The module memoizes two encoders in
+    # class ivars (@encoder_without_options / @encoder_without_escape) inside
+    # `json_encoder=`, and exposes `json_encoder` as a `attr_reader` (so it too
+    # reads the @json_encoder class ivar). A worker Ractor cannot read any of
+    # these module ivars, raising Ractor::IsolationError ("can not get
+    # unshareable values from instance variables of classes/modules from
+    # non-main Ractors"). Capture the encoder CLASS in main (on assignment) into
+    # a shareable constant, then build a per-Ractor encoder instance via
+    # IsolatedExecutionState instead of reading the module ivars.
+    def _install_json_encoding_patch
+      return if @json_encoding_patched
+      @json_encoding_patched = true
+      _register_patch :json_encoding, "8.1"
+      return unless defined?(::ActiveSupport::JSON::Encoding)
+      enc = ::ActiveSupport::JSON::Encoding
+      ec_key = :ractor_rails_shim_json_encoder
+      ec_key_str = ec_key.inspect
+      ecn_key = :ractor_rails_shim_json_encoder_no_escape
+      ecn_key_str = ecn_key.inspect
+      enc.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def json_encoder=(encoder)
+          RactorRailsShim.const_set(:JSON_ENCODER_CLASS, encoder) if Ractor.main? && defined?(RactorRailsShim)
+          @json_encoder = encoder if Ractor.main?
+          encoder
+        end
+        def json_encoder
+          RactorRailsShim::JSON_ENCODER_CLASS
+        end
+        def encode_without_options(value)
+          encoder = ActiveSupport::IsolatedExecutionState[#{ec_key_str}]
+          encoder ||= (ActiveSupport::IsolatedExecutionState[#{ec_key_str}] = RactorRailsShim::JSON_ENCODER_CLASS.new)
+          encoder.encode(value)
+        end
+        def encode_without_escape(value)
+          encoder = ActiveSupport::IsolatedExecutionState[#{ecn_key_str}]
+          encoder ||= (ActiveSupport::IsolatedExecutionState[#{ecn_key_str}] = RactorRailsShim::JSON_ENCODER_CLASS.new(escape: false))
+          encoder.encode(value)
+        end
+      RUBY
+      # The JSON encoding constants (HTML_ENTITIES_REGEX etc.) live on
+      # ActiveSupport::JSON::Encoding but are NOT Ractor-shareable in Ruby 4.0
+      # (Regexp.union / frozen-string Hash return false for Ractor.shareable?).
+      # Deep-freeze + replace them here (in main, during prepare_for_ractors!)
+      # so worker Ractors can read them when the encoder escapes HTML. Belt and
+      # suspenders alongside the SHAREABLE_CONSTANTS registration.
+      if Ractor.main?
+        %w[ESCAPED_CHARS HTML_ENTITIES_REGEX FULL_ESCAPE_REGEX JS_SEPARATORS_REGEX].each do |name|
+          next unless enc.const_defined?(name, false)
+          v = enc.const_get(name, false)
+          unless Ractor.shareable?(v)
+            begin
+              enc.const_set(name, Ractor.make_shareable(v))
+            rescue
+              nil
+            end
+          end
+        end
+      end
+      # Make sure the constant exists on RactorRailsShim so worker references
+      # resolve. It is set on the first `json_encoder=` call during init; seed a
+      # default here so even a direct call before init is safe.
+      unless RactorRailsShim.const_defined?(:JSON_ENCODER_CLASS)
+        RactorRailsShim.const_set(:JSON_ENCODER_CLASS, ::ActiveSupport::JSON::Encoding::JSONGemEncoder)
+      end
     end
   end
 end

@@ -4,6 +4,17 @@
 # define_method(&block)), Template::Handlers, and PathRegistry.
 
 module RactorRailsShim
+  # Shareable, mutable module that holds compiled template methods
+  # (e.g. `_app_views_...`). ActionView attaches compiled template methods to
+  # `compiled_method_container`; the default returns a per-class container,
+  # which isolates the shared application layout's compiled method to whichever
+  # controller first rendered it (so other controllers raise NoMethodError on
+  # the layout). Routing every view_context_class to this ONE shared module
+  # makes compiled methods available to all controllers/workers. It is a plain
+  # Module (shareable without freezing, so workers can still define methods on
+  # it).
+  SHAREABLE_COMPILED_MODULE = Module.new unless defined?(::RactorRailsShim::SHAREABLE_COMPILED_MODULE)
+
   # ActionView constants that need to be made shareable.
     SHAREABLE_CONSTANTS.concat([
       "ActionView::LookupContext::Accessors::DEFAULT_PROCS",
@@ -93,19 +104,64 @@ module RactorRailsShim
       if defined?(::ActionView::Rendering::ClassMethods)
         rcm = ::ActionView::Rendering::ClassMethods
 
-        # Capture the ORIGINAL view_context_class BEFORE patching, so we can
-        # build per-controller classes in main using the original logic.
-        orig_vcc = rcm.instance_method(:view_context_class)
+        # `ActionView::Base.with_empty_template_cache` (action_view/base.rb:204)
+        # builds the base view class and defines `compiled_method_container`
+        # (instance + singleton) via `define_method(&block)` — an un-shareable
+        # Proc compiled in the main Ractor. Every controller's view_context_class
+        # subclasses that class, so calling `compiled_method_container` from a
+        # worker Ractor raises "defined with an un-shareable Proc in a different
+        # Ractor". Redefine it as a plain `def` returning `self.class` (the
+        # original semantics) so there is no captured Proc to trip Ractor
+        # isolation. Must run in main before DetailsKey.view_context_class
+        # (which calls with_empty_template_cache) is first evaluated.
+        if Ractor.main? && defined?(::ActionView::Base)
+          ::ActionView::Base.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+            def with_empty_template_cache
+              subclass = Class.new(self) do
+                # Route compiled template methods (e.g. the shared `application`
+                # layout) through ONE shareable module so they are visible to
+                # every controller's view_context_class / worker Ractor. Without
+                # this, each controller compiles the layout onto its OWN class,
+                # and other controllers raise NoMethodError (ActionView looks up
+                # the compiled method on its own class only). The module is a
+                # plain Module (shareable WITHOUT freezing, so workers can still
+                # `module_eval` define_method onto it).
+                include RactorRailsShim::SHAREABLE_COMPILED_MODULE
+                def compiled_method_container
+                  RactorRailsShim::SHAREABLE_COMPILED_MODULE
+                end
+                def self.compiled_method_container
+                  RactorRailsShim::SHAREABLE_COMPILED_MODULE
+                end
+                def inspect
+                  "#<ActionView::Base:\#{'%#016x' % (object_id << 1)}>"
+                end
+              end
+              subclass
+            end
+          RUBY
+        end
 
-        # Populate the registry: call the ORIGINAL view_context_class for each
-        # loaded controller in main, capture the built class. Done BEFORE
-        # patching so ctrl.view_context_class hits the original.
+        # Build the per-controller view_context_class registry in main. We call
+        # the ORIGINAL build_view_context_class directly (bypassing Rails'
+        # inherit_view_context_class? short-circuit, which otherwise makes
+        # subclasses reuse ActionController::Base's class built with a nil
+        # `_routes` and thus NO route url_helpers). `routes` is forced to the
+        # shareable Rails.application.routes when the controller's own `_routes`
+        # is nil, so named helpers (new_post_path, etc.) are always present.
         if Ractor.main?
           registry = {}
           ::AbstractController::Base.descendants.each do |ctrl|
             begin
-              vc = orig_vcc.bind(ctrl).call
-              registry[ctrl] = vc
+              routes = ctrl.respond_to?(:_routes) ? ctrl._routes : nil
+              routes = ::Rails.application.routes if routes.nil? && ::Rails.respond_to?(:application) && ::Rails.application
+              vcc = rcm.instance_method(:build_view_context_class).bind(ctrl).call(
+                ::ActionView::LookupContext::DetailsKey.view_context_class,
+                ctrl.respond_to?(:supports_path?) ? ctrl.supports_path? : true,
+                routes,
+                ctrl.respond_to?(:_helpers) ? ctrl._helpers : nil
+              )
+              registry[ctrl] = vcc if vcc
             rescue => e
               # skip controllers that can't build (e.g. abstract)
             end
@@ -123,18 +179,39 @@ module RactorRailsShim
 
         rcm.module_eval <<-RUBY, __FILE__, __LINE__ + 1
           def view_context_class
-            reg = RactorRailsShim._view_context_registry
-            v = reg[self] if reg
-            return v if v
-            if Ractor.main? && instance_variable_defined?(:@view_context_class)
-              @view_context_class
-            else
-              # No registry entry (e.g. a controller loaded after prepare).
-              # Fall back to the DetailsKey view_context_class (the empty-cache
-              # base) — rendering may fail for controllers needing url_helpers,
-              # but simple render :plain works.
-              ActionView::LookupContext::DetailsKey.view_context_class
+            return @view_context_class if Ractor.main? && instance_variable_defined?(:@view_context_class) && @view_context_class
+
+            if Ractor.main?
+              @view_context_class ||= build_view_context_class(
+                ActionView::LookupContext::DetailsKey.view_context_class,
+                supports_path?,
+                _routes,
+                _helpers
+              )
+              return @view_context_class
             end
+
+            # Worker Ractor. The frozen shared controller class carries a
+            # memoized @view_context_class built in main (in the registry) with
+            # its proper route url_helpers + controller helpers. Look it up by
+            # controller class; fall back to the shareable fallback class (built
+            # in main with Rails.application.routes) for any controller not
+            # present in the registry at prepare time.
+            vcc = RactorRailsShim._view_context_registry[self]
+            return vcc if vcc
+            RactorRailsShim._view_context_fallback
+          end
+
+          # `inherit_view_context_class?` (action_view/rendering.rb:52) compares
+          # `superclass._helpers` — and `_helpers` is defined via a block
+          # (redefine_singleton_method) that cannot run in a worker Ractor
+          # ("defined with an un-shareable Proc in a different Ractor"). Return
+          # false so each controller builds its own view_context_class (the
+          # normal Rails behaviour whenever _routes/_helpers differ), avoiding
+          # the `_helpers` comparison entirely. Behaviour is identical in the
+          # main Ractor (the inherited class would be equivalent).
+          def inherit_view_context_class?
+            false
           end
         RUBY
       end
@@ -143,14 +220,21 @@ module RactorRailsShim
       CLASS_ATTRIBUTES << ["ActionView::LookupContext::DetailsKey", :view_context_class, vcc_key, nil]
       # Build it now in main and stash in IES so the fallback builder picks it up.
       if Ractor.main? && defined?(::ActionView::Base)
-        built = ::ActionView::LookupContext::DetailsKey.view_context_class
-        built.module_eval <<-RUBY, __FILE__, __LINE__ + 1
-          def compiled_method_container; self.class; end
-        RUBY
-        built.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
-          def compiled_method_container; self; end
-        RUBY
-        ActiveSupport::IsolatedExecutionState[vcc_key] = built
+        ActiveSupport::IsolatedExecutionState[vcc_key] = ::ActionView::LookupContext::DetailsKey.view_context_class
+        # Shareable fallback view_context_class for any controller not present in
+        # the registry at prepare time. Subclasses ActionView::Base, so it
+        # inherits the per-class compiled_method_container (self.class) and the
+        # route url_helpers. build_view_context_class is a ClassMethods method on
+        # controllers, so invoke it via the unbound method bound to
+        # ActionController::Base.
+        fallback = rcm.instance_method(:build_view_context_class).bind(::ActionController::Base).call(
+          ::ActionView::LookupContext::DetailsKey.view_context_class,
+          true,
+          (defined?(::Rails) && ::Rails.respond_to?(:application) && ::Rails.application) ? ::Rails.application.routes : nil,
+          nil
+        )
+        Ractor.make_shareable(fallback) rescue nil
+        self._view_context_fallback = fallback
       end
 
       dk = ::ActionView::LookupContext::DetailsKey

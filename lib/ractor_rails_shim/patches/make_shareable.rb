@@ -61,6 +61,14 @@ module RactorRailsShim
       # `@post`), that breaks rendering. We capture the symbolic filters here
       # (in main, before freeze) and the patched run_callbacks replays them.
       _capture_controller_callbacks!(app)
+      # Warm + cache the routes' @ast / @simulator on the live graph. This MUST
+      # run AFTER the route precompute above (which reloads/resets the routes)
+      # and BEFORE _replace_unshareable_procs! / Ractor.make_shareable below:
+      # the proc-replacement pass rewrites the Route constraint Procs held in
+      # the simulator's @memos, and the freeze then shares the whole thing so
+      # worker Ractors read the cached, frozen simulator via the original
+      # Routes#simulator (no per-worker rebuild). See action_dispatch.rb.
+      _warm_journey_routes!
       # Neutralize the app's logger IO so Ractor.make_shareable doesn't freeze
       # $stdout/$stderr (freezing STDOUT breaks the process's own output).
       # Workers build their own per-Ractor Rails.logger, so the app-instance
@@ -328,7 +336,7 @@ module RactorRailsShim
       end
       class RequestCallable
         def initialize(method_name); @method_name = method_name; end
-        def call(request); request.__send__(@method_name); end
+        def call(request, response = nil); request.__send__(@method_name); end
       end
       class DeviseMappingCallable
         def initialize(mapping); @mapping = mapping; end
@@ -363,6 +371,11 @@ module RactorRailsShim
           h = {}
           mapping.controllers.each { |k, v| h[k] = v } rescue nil
           @controllers = h.freeze
+          # failure_app is either Devise::FailureApp (a shareable class) or a
+          # lambda (when configured as a String) — keep only the shareable class.
+          fa = mapping.instance_variable_get(:@failure_app)
+          fa = ::Devise::FailureApp unless fa.is_a?(Class)
+          @failure_app = fa
           freeze
         end
 
@@ -380,6 +393,7 @@ module RactorRailsShim
         def routes; @routes; end
         def used_helpers; @used_helpers; end
         def controllers; @controllers; end
+        def failure_app; @failure_app; end
         def authenticatable?; @modules.any? { |m| m.to_s =~ /authenticatable/ }; end
         def no_input_strategies; @strategies & Devise::NO_INPUT; end
         def fullpath; "/#{@path_prefix}/#{@path}".squeeze("/"); end
@@ -671,14 +685,20 @@ module RactorRailsShim
           after  = (kind == :after)
           # The `only:`/`except:` action constraint lives in the
           # `ActionFilter` objects held by `@if`/`@unless` (NOT `@name`).
+          # In Rails 8.1, ActionFilter stores the constraint as the
+          # `@conditional_key` ivar (`:only`/`:except`) and `@actions` ivar
+          # (a Set of action names as STRINGS). Both are ivars, not methods,
+          # so read them via instance_variable_get and normalize the action
+          # names to Symbols for the comparison in the replayed run_callbacks.
           only = nil
           except = nil
           [cb.instance_variable_get(:@if), cb.instance_variable_get(:@unless)].each do |arr|
             next unless arr.is_a?(Array)
             arr.each do |af|
-              next unless af.respond_to?(:conditional_key) && af.respond_to?(:actions)
-              ck = af.conditional_key
-              acts = (af.actions rescue nil)
+              ck = af.instance_variable_get(:@conditional_key) rescue nil
+              acts = af.instance_variable_get(:@actions) rescue nil
+              next unless ck && acts
+              acts = acts.to_a.map(&:to_sym) if acts.respond_to?(:to_a)
               only = acts if ck == :only
               except = acts if ck == :except
             end

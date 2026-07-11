@@ -100,6 +100,7 @@ module RactorRailsShim
     # Hash at prepare_for_ractors! time.
     attr_accessor :_abstract_registry
     attr_accessor :_view_context_registry
+    attr_accessor :_view_context_fallback
 
     # Policy for version mismatches. One of :warn (default), :strict, :off.
     # Set before `install`:
@@ -125,9 +126,11 @@ module RactorRailsShim
       install_mattr_accessor
       install_class_attribute
       install_zeitwerk_registry
+      install_rubygems
       install_rails_module
       install_shareable_constants
       install_execution_wrapper
+      install_url_helpers_patch
       @installed = true
       true
     end
@@ -153,8 +156,11 @@ module RactorRailsShim
     # explicitly per worker, or use make_app_shareable!.
     def prepare_for_ractors!
       do_install_shareable_constants
+      snapshot_gem_paths!
+      snapshot_query_logs!
       _install_rack_request_patch
       _install_inflector_patch
+      _install_module_introspection_patch
       _install_parameter_encoding_patch
       _install_path_registry_patch
       _install_action_view_resolver_patch
@@ -163,18 +169,28 @@ module RactorRailsShim
       _install_action_view_safe_join_patch
       _install_abstract_controller_patch
       _install_action_controller_controller_name_patch
+      _install_flash_helpers_patch
       _install_active_support_error_reporter_patch
       _install_lookup_context_patch
       _install_i18n_patch
+      _install_i18n_backend_patch
+      _install_i18n_interpolation_patch
+      _install_messages_serializer_patch
       _install_template_handlers_patch
       _install_execution_context_patch
       _install_request_parameter_parsers_patch
+      _install_query_parser_patch
       _install_rack_utils_patch
       _install_log_subscriber_patch
+      _install_local_cache_patch
+      _install_reloader_patch
       _install_exception_wrapper_patch
       _install_action_dispatch_routing_patch
       _install_action_dispatch_mounted_helpers_patch
+      _install_journey_routes_patch
       _install_warden_hooks_patch
+      _install_warden_strategies_patch
+      _install_devise_failure_app_patch
       _install_activerecord_connection_handler_patch
       _install_activerecord_configurations_patch
       _install_activerecord_db_config_handlers_patch
@@ -192,12 +208,24 @@ module RactorRailsShim
       _install_activerecord_query_constraints_patch
       _install_activerecord_relation_delegate_cache_patch
       _install_activerecord_model_classes_patch
+      _install_active_model_naming_patch
+      _install_active_record_core_patch
+      _install_active_record_inheritance_patch
+      _install_active_record_model_schema_patch
       _install_activerecord_model_schema_patch
+      _install_activerecord_delegation_patch
+      _install_openssl_digest_patch
+      _install_caching_key_generator_patch
       _install_active_model_conversion_patch
       _install_activerecord_find_by_cache_patch
+      _install_activerecord_migration_patch
+      _install_activerecord_query_logs_patch
       _install_kaminari_config_patch
       _install_propshaft_patch
+      _install_messages_serializer_patch
       _install_devise_url_helpers_patch
+      _install_polymorphic_routes_patch
+      _install_json_encoding_patch
     end
 
     # Verify the runtime matches the versions the shim was developed against.
@@ -271,6 +299,101 @@ module RactorRailsShim
     def _register_patch(name, *tested_segments)
       existing = PATCH_VERSIONS[name] || []
       PATCH_VERSIONS[name] = (existing + tested_segments).uniq
+    end
+
+    # Capture a frozen name -> object map for every constant the application's
+    # Zeitwerk loaders manage. Runs in the MAIN Ractor, after eager load, where
+    # all app constants are defined. The map travels to worker Ractors, which
+    # use it to (re)bind the constant *names* into their own namespaces.
+    #
+    # Why this is needed: a Ractor boundary does NOT share top-level constant
+    # *names* — only the class/module *objects* reachable from the frozen shared
+    # app graph cross the boundary. A worker Ractor therefore sees
+    # `RactorRailsShim`, `ActiveRecord`, `ApplicationRecord`, the controllers,
+    # etc. (objects reachable from the app), but NOT the application's own
+    # model constants (e.g. `Post`): the object is in the graph, but its name
+    # is not bound in the worker, so `PostsController#index`'s `Post` reference
+    # raises NameError. Rebinding the captured names fixes it without
+    # re-running autoloading (which is itself impossible in a worker, since
+    # `Zeitwerk::Loader.new` raises IsolationError off the main Ractor).
+    def capture_app_constants
+      map = {}
+      return map unless defined?(::Rails) && Rails.respond_to?(:autoloaders)
+      [Rails.autoloaders.main, Rails.autoloaders.once].each do |loader|
+        next unless loader.respond_to?(:all_expected_cpaths)
+        begin
+          loader.all_expected_cpaths.values.each do |cpath|
+            obj = Object.const_get(cpath) rescue next
+            begin
+              Ractor.make_shareable(obj) unless Ractor.shareable?(obj)
+            rescue
+              next
+            end
+            map[cpath] = obj if Ractor.shareable?(obj)
+          end
+        rescue => e
+          warn "[ractor_rails_shim] capture_app_constants: #{e.class}: #{e.message}"
+        end
+      end
+      map.freeze
+    end
+
+    # Build the shareable Rack app handed to kino. Captures the application's
+    # constants in the main Ractor and wraps the frozen, shareable app in a
+    # WorkerApp that rebinds those constants (and initializes the worker's
+    # ActiveRecord connection) on the first request served by each worker
+    # Ractor. Returns a shareable WorkerApp instance.
+    def worker_app(frozen_app)
+      bindings = capture_app_constants
+      WorkerApp.new(frozen_app, bindings)
+    end
+  end
+
+  # A shareable Rack wrapper that performs per-worker initialization lazily,
+  # inside the worker Ractor's request path (kino's :ractor mode has no
+  # per-worker init hook). On the first request served by a worker it:
+  #
+  #   1. rebinds the captured application constants into that worker's
+  #      namespace (so bare `Post` etc. resolve), then
+  #   2. ensures the worker's ActiveRecord connection handler is initialized.
+  #
+  # The wrapper holds only shareable state (@app, @bindings), so the instance
+  # is Ractor.make_shareable. `Ractor.current` provides per-worker storage for
+  # the one-time guard, avoiding any top-level constant reference.
+  class WorkerApp
+    def initialize(app, bindings)
+      @app = app
+      @bindings = bindings
+    end
+
+    def call(env)
+      setup_once!
+      @app.call(env)
+    end
+
+    private
+
+    def setup_once!
+      return if Ractor.current[:rrs_worker_ready]
+      rebind_constants
+      RactorRailsShim.init_worker_ar_connections! if defined?(RactorRailsShim)
+      Ractor.current[:rrs_worker_ready] = true
+    end
+
+    def rebind_constants
+      @bindings.each do |cpath, obj|
+        parent = Object
+        parts = cpath.split("::")
+        parts[0...-1].each do |p|
+          parent = if parent.const_defined?(p, false)
+                     parent.const_get(p, false)
+                   else
+                     parent.const_set(p, Module.new)
+                   end
+        end
+        leaf = parts.last
+        parent.const_set(leaf, obj) unless parent.const_defined?(leaf, false)
+      end
     end
   end
 end

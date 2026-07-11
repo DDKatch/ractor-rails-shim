@@ -217,5 +217,25 @@ module RactorRailsShim
           end
         RUBY
       end
+
+      # Patch the flash-type helper methods (`notice`, `alert`, ...) defined by
+      # `ActionController::Metal::Flash#add_flash_types` via
+      # `define_method(type) { request.flash[type] }`. That block is compiled
+      # in the MAIN Ractor, so calling it from a worker Ractor raises
+      # "defined with an un-shareable Proc in a different Ractor". Redefine each
+      # flash type as a string-eval'd method (no captured binding) so it is
+      # callable from any Ractor. Called at prepare_for_ractors! time, after
+      # the controllers are loaded and the types are known.
+      def _install_flash_helpers_patch
+        return if @flash_helpers_patched
+        @flash_helpers_patched = true
+        _register_patch :flash_helpers, "8.1"
+        return unless defined?(::ActionController::Base)
+        types = ::ActionController::Base._flash_types rescue []
+        types.each do |type|
+          ::ActionController::Base.class_eval "def #{type}; request.flash[#{type.inspect}]; end"
+          ::ActionController::Base.send(:private, type) if ::ActionController::Base.private_method_defined?(type) rescue nil
+        end
+      end
   end
 end

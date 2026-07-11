@@ -284,6 +284,39 @@ module RactorRailsShim
       @ar_rdc_patched = true
       _register_patch :activerecord_relation_delegate_cache, "8.1"
       return unless defined?(::ActiveRecord::Base)
+
+      mod = ::ActiveRecord::Delegation::DelegateCache
+      mod.module_eval do
+        # The default implementation reads the delegate class from the
+        # `@relation_delegate_cache` *class instance variable* — an unshareable
+        # Hash populated lazily on the model class. From a worker Ractor that
+        # value is unreadable (Ractor::IsolationError: "can not get unshareable
+        # values from instance variables ... (@relation_delegate_cache from
+        # Post)"). `initialize_relation_delegate_cache` ALSO const_sets each
+        # delegate class onto the model (e.g. `Post::ActiveRecord_Relation`),
+        # and that constant is shareable. So read the delegate class via the
+        # constant instead of the class ivar — Ractor-safe with no per-worker
+        # rebuild.
+        def relation_delegate_class(klass)
+          const_get(klass.name.gsub("::", "_"))
+        end
+
+        # Keep building + const_setting the delegate classes (shareable), but
+        # stop stashing them in the unshareable `@relation_delegate_cache` ivar.
+        # The ivar is left a frozen empty Hash so any (now-unused) reader of it
+        # is still Ractor-safe.
+        def initialize_relation_delegate_cache
+          @relation_delegate_cache = {}.freeze
+          ::ActiveRecord::Delegation.delegated_classes.each do |k|
+            delegate = Class.new(k) { include ::ActiveRecord::Delegation::ClassSpecificRelation }
+            include_relation_methods(delegate)
+            mangled_name = k.name.gsub("::", "_")
+            const_set mangled_name, delegate
+            private_constant mangled_name
+          end
+        end
+      end
+
       _share_relation_delegate_caches! if Ractor.main?
     end
 
@@ -514,6 +547,161 @@ module RactorRailsShim
       _share_active_record_internals! if Ractor.main?
     end
 
+    # Patch ActiveRecord::ModelSchema::ClassMethods so worker Ractors do not
+    # write the `@table_name` (and related) class ivars on the shared model
+    # class. `table_name` memoizes via `reset_table_name unless
+    # defined?(@table_name)`, and `reset_table_name` calls `self.table_name =`
+    # which writes `@table_name`/`@arel_table`/etc. From a worker that write is
+    # Ractor::IsolationError. Route the value through IsolatedExecutionState
+    # (keyed by model object_id); main keeps the original class-ivar behavior.
+    def _install_active_record_model_schema_patch
+      return if @ar_model_schema_patched
+      @ar_model_schema_patched = true
+      _register_patch :active_record_model_schema, "8.1"
+      return unless defined?(::ActiveRecord::ModelSchema::ClassMethods)
+      mod = ::ActiveRecord::ModelSchema::ClassMethods
+      mod.module_eval do
+        def table_name
+          if Ractor.main?
+            reset_table_name unless defined?(@table_name)
+            @table_name
+          else
+            store = (ActiveSupport::IsolatedExecutionState[:rrs_table_names] ||= {})
+            store.fetch(object_id) { store[object_id] = compute_table_name }
+          end
+        end
+
+        def table_name=(value)
+          value = value && value.to_s
+          if Ractor.main?
+            if defined?(@table_name)
+              return if value == @table_name
+              reset_column_information if connected?
+            end
+            @table_name        = value
+            @arel_table        = nil
+            @sequence_name     = nil unless @explicit_sequence_name
+            @predicate_builder = nil
+          else
+            (ActiveSupport::IsolatedExecutionState[:rrs_table_names] ||= {})[object_id] = value
+          end
+        end
+
+        def reset_table_name
+          if Ractor.main?
+            super
+          else
+            table_name
+          end
+        end
+      end
+    end
+
+    # Patch ActiveRecord::Core::ClassMethods#arel_table / #predicate_builder /
+    # #type_caster. Each memoizes an unshareable value (@arel_table is an
+    # Arel::Table, @predicate_builder a PredicateBuilder) on the shared model
+    # class. From a worker Ractor the `||=` write raises Ractor::IsolationError,
+    # and reading the unshareable cached value also raises. Build + cache each
+    # per-Ractor via IsolatedExecutionState (keyed by model object_id); main
+    # keeps the original class-ivar behavior.
+    def _install_active_record_core_patch
+      return if @ar_core_patched
+      @ar_core_patched = true
+      _register_patch :active_record_core, "8.1"
+      return unless defined?(::ActiveRecord::Core::ClassMethods)
+      mod = ::ActiveRecord::Core::ClassMethods
+      mod.module_eval do
+        def arel_table
+          if Ractor.main?
+            @arel_table ||= ::Arel::Table.new(table_name, klass: self)
+          else
+            store = (ActiveSupport::IsolatedExecutionState[:rrs_arel_tables] ||= {})
+            store.fetch(object_id) { store[object_id] = ::Arel::Table.new(table_name, klass: self) }
+          end
+        end
+
+        def predicate_builder
+          if Ractor.main?
+            @predicate_builder ||= ::ActiveRecord::PredicateBuilder.new(
+              ::ActiveRecord::TableMetadata.new(self, arel_table))
+          else
+            store = (ActiveSupport::IsolatedExecutionState[:rrs_predicate_builders] ||= {})
+            store.fetch(object_id) do
+              store[object_id] = ::ActiveRecord::PredicateBuilder.new(
+                ::ActiveRecord::TableMetadata.new(self, arel_table))
+            end
+          end
+        end
+
+        def type_caster
+          if Ractor.main?
+            @type_caster ||= ::ActiveRecord::TypeCaster::Map.new(self)
+          else
+            store = (ActiveSupport::IsolatedExecutionState[:rrs_type_casters] ||= {})
+            store.fetch(object_id) { store[object_id] = ::ActiveRecord::TypeCaster::Map.new(self) }
+          end
+        end
+      end
+    end
+
+    # Patch ActiveRecord::Inheritance::ClassMethods#finder_needs_type_condition?.
+    # It memoizes `@finder_needs_type_condition` (a Symbol) on the shared model
+    # class via `@ivar ||=`. From a worker Ractor that write raises
+    # Ractor::IsolationError. Route the value through IsolatedExecutionState
+    # (keyed by model object_id); main keeps the original class-ivar behavior.
+    def _install_active_record_inheritance_patch
+      return if @ar_inheritance_patched
+      @ar_inheritance_patched = true
+      _register_patch :active_record_inheritance, "8.1"
+      return unless defined?(::ActiveRecord::Inheritance::ClassMethods)
+      mod = ::ActiveRecord::Inheritance::ClassMethods
+      mod.module_eval do
+        def finder_needs_type_condition?
+          if Ractor.main?
+            :true == (@finder_needs_type_condition ||= descends_from_active_record? ? :false : :true)
+          else
+            store = (ActiveSupport::IsolatedExecutionState[:rrs_finder_type_cond] ||= {})
+            store.fetch(object_id) do
+              store[object_id] = descends_from_active_record? ? false : true
+            end
+          end
+        end
+      end
+    end
+    # (an ActiveModel::Name holding unfrozen, unshareable Strings) on the model
+    # class. From a worker Ractor that write raises Ractor::IsolationError ("can
+    # not set instance variables of classes/modules by non-main Ractors") and
+    # reading the unshareable value raises too. Route the cache through
+    # IsolatedExecutionState (keyed by model object_id) so each Ractor builds
+    # and keeps its own ActiveModel::Name without touching the shared class
+    # ivar.
+    def _install_active_model_naming_patch
+      return if @am_naming_patched
+      @am_naming_patched = true
+      _register_patch :active_model_naming, "8.1"
+      return unless defined?(::ActiveModel::Naming)
+      mod = ::ActiveModel::Naming
+      mod.module_eval do
+        def model_name
+          if Ractor.main?
+            @_model_name ||= _rrs_compute_model_name
+          else
+            store = (ActiveSupport::IsolatedExecutionState[:rrs_model_names] ||= {})
+            store[object_id] ||= _rrs_compute_model_name
+          end
+        end
+
+        private
+
+        def _rrs_compute_model_name
+          namespace = module_parents.detect do |n|
+            n.respond_to?(:use_relative_model_naming?) && n.use_relative_model_naming?
+          end
+          ::ActiveModel::Name.new(self, namespace)
+        end
+      end
+    end
+
     # Patch ActiveRecord::ModelSchema::ClassMethods lazy class-ivar caches
     # (`symbol_column_to_string`, `content_columns`, `column_defaults`) to
     # route through IsolatedExecutionState. Each Ractor builds its own cache
@@ -524,8 +712,8 @@ module RactorRailsShim
     # variables of classes/modules by non-main Ractors`. Seen via Devise's
     # `clean_up_passwords` -> `respond_to?` -> `symbol_column_to_string`.
     def _install_activerecord_model_schema_patch
-      return if @ar_model_schema_patched
-      @ar_model_schema_patched = true
+      return if @ar_model_schema_symbol_patched
+      @ar_model_schema_symbol_patched = true
       _register_patch :activerecord_model_schema, "8.1"
       return unless defined?(::ActiveRecord::ModelSchema)
 
@@ -1346,6 +1534,167 @@ module RactorRailsShim
     # connections on first request. Returns a shareable wrapper.
     def worker_ar_init(app)
       ArWorkerInitWrapper.new(app)
+    end
+
+    # Patch ActiveRecord::QueryLogs#tag_content. It reads the `@handlers` and
+    # `@formatter` class ivars (populated from config.active_record.query_log_tags
+    # during boot) on every SQL statement, so a worker Ractor raises
+    # Ractor::IsolationError. `cached_comment` is a thread_mattr_accessor (already
+    # Ractor-safe), so only the handlers/formatter need handling. Capture a
+    # shareable snapshot in main (snapshot_query_logs!, post-boot) and have
+    # workers build the comment from it — query-log tags then work in workers
+    # exactly as in dev's main Ractor.
+    def _install_activerecord_query_logs_patch
+      return if @query_logs_patched
+      @query_logs_patched = true
+      _register_patch :query_logs, "8.1"
+      return unless defined?(::ActiveRecord::QueryLogs)
+      ql = ::ActiveRecord::QueryLogs
+      # tag_content is defined as a SINGLETON method on ActiveRecord::QueryLogs
+      # (not an instance method), so alias the singleton method (not an
+      # instance one) and fall back to it for the main Ractor / when the
+      # snapshot is unavailable.
+      ql.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        alias_method :__ractors_original_tag_content, :tag_content
+        def tag_content(connection)
+          return __ractors_original_tag_content(connection) if Ractor.main?
+          snap = ::RactorRailsShim::QUERY_LOGS_SNAPSHOT
+          return __ractors_original_tag_content(connection) unless snap
+          format = snap[:format]
+          formatter = case format
+            when :sqlcommenter then ::ActiveRecord::QueryLogs::SQLCommenter
+            else ::ActiveRecord::QueryLogs::LegacyFormatter
+          end
+          return nil unless formatter
+          context = ActiveSupport::ExecutionContext.to_h
+          context[:connection] ||= connection
+          pairs = snap[:handlers].filter_map do |(key, kind, data)|
+            val = case kind
+              when :get_key then context[key]
+              when :identity then data
+              else nil
+            end
+            formatter.format(key, val) unless val.nil?
+          end
+          formatter.join(pairs)
+        end
+      RUBY
+    end
+
+    # Capture the QueryLogs handlers/formatter as a shareable snapshot for
+    # workers (called post-boot, main Ractor, in prepare_for_ractors!).
+    #
+    # We deliberately do NOT use Ractor.make_shareable on the raw `@handlers`
+    # objects: a handler may be a ZeroArityHandler wrapping a Proc, a raw
+    # lambda/Proc tag, or an IdentityHandler whose value is unshareable — all of
+    # which make_shareable raises on, which (the original rescue swallowed) left
+    # QUERY_LOGS_SNAPSHOT unset and every worker falling through to the original
+    # tag_content -> @handlers read -> Ractor::IsolationError. Instead we build a
+    # fresh, guaranteed-shareable structure:
+    #   { format: :legacy|:sqlcommenter,
+    #     handlers: [[key, :get_key, nil] | [key, :identity, value], ...] }
+    # Only GetKeyHandler (context key lookup) and IdentityHandler (constant
+    # value, when that value itself is shareable) are captured. Proc/lambda
+    # handlers can't be expressed cross-Ractor and are dropped in workers (tags
+    # that depend on per-request Procs simply don't appear in worker query
+    # comments — acceptable; the main Ractor still logs them).
+    def snapshot_query_logs!
+      return unless defined?(::ActiveRecord::QueryLogs)
+      return if RactorRailsShim.const_defined?(:QUERY_LOGS_SNAPSHOT)
+      return unless Ractor.main?
+      begin
+        ql = ::ActiveRecord::QueryLogs
+        format = ql.tags_formatter
+        format = :legacy if format == false || format.nil?
+        raw_handlers = ql.instance_variable_get(:@handlers) || []
+        entries = []
+        raw_handlers.each do |key, handler|
+          if handler.is_a?(::ActiveRecord::QueryLogs::GetKeyHandler)
+            entries << [key, :get_key, nil]
+          elsif handler.is_a?(::ActiveRecord::QueryLogs::IdentityHandler)
+            value = handler.instance_variable_get(:@value)
+            next unless Ractor.shareable?(value)
+            entries << [key, :identity, value]
+          else
+            # ZeroArityHandler (wraps a Proc) or a raw Proc/lambda tag:
+            # intrinsically unshareable / depends on a closure; skip in workers.
+            next
+          end
+        end
+        snap = { format: format, handlers: entries.freeze }.freeze
+        Ractor.make_shareable(snap)
+        RactorRailsShim.const_set(:QUERY_LOGS_SNAPSHOT, snap)
+      rescue StandardError
+        nil
+      end
+    end
+
+    # Patch ActiveRecord::Migrator.migrations_paths (a singleton attr_accessor
+    # reading the `@migrations_paths` class ivar) and
+    # ActiveRecord::Migration::CheckPending (the dev pending-migration
+    # middleware) to be Ractor-safe. In dev, CheckPending runs on every request
+    # and reads Migrator.migrations_paths + mutates its own `@watcher` /
+    # `@needs_check` ivars on the (frozen, shared) middleware instance. Route
+    # the class ivar and the instance ivars through IsolatedExecutionState so
+    # each worker reads the main Ractor's migrations paths and builds its own
+    # watcher. This keeps the dev pending-migration guard working under kino
+    # :ractor instead of stripping the middleware.
+    def _install_activerecord_migration_patch
+      return if @activerecord_migration_patched
+      @activerecord_migration_patched = true
+      _register_patch :activerecord_migration, "8.1"
+      return unless defined?(::ActiveRecord::Migrator)
+
+      mig = ::ActiveRecord::Migrator
+      mp_key = :ractor_rails_shim_migrator_migrations_paths
+      mp_key_str = mp_key.inspect
+      mig.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def migrations_paths
+          v = ActiveSupport::IsolatedExecutionState[#{mp_key_str}]
+          return v unless v.nil?
+          if Ractor.main? && instance_variable_defined?(:@migrations_paths)
+            v = @migrations_paths
+            ActiveSupport::IsolatedExecutionState[#{mp_key_str}] = v
+            v
+          else
+            ["db/migrate"].freeze
+          end
+        end
+        def migrations_paths=(val)
+          ActiveSupport::IsolatedExecutionState[#{mp_key_str}] = val
+          @migrations_paths = val if Ractor.main?
+          val
+        end
+      RUBY
+
+      return unless defined?(::ActiveRecord::Migration::CheckPending)
+      cp = ::ActiveRecord::Migration::CheckPending
+      w_key = :ractor_rails_shim_check_pending_watcher
+      nc_key = :ractor_rails_shim_check_pending_needs_check
+      w_key_str = w_key.inspect
+      nc_key_str = nc_key.inspect
+      cp.class_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def call(env)
+          @mutex.synchronize do
+            watcher = ActiveSupport::IsolatedExecutionState[#{w_key_str}]
+            if watcher.nil?
+              watcher = ActiveSupport::IsolatedExecutionState[#{w_key_str}] = build_watcher do
+                ActiveSupport::IsolatedExecutionState[#{nc_key_str}] = true
+                ::ActiveRecord::Migration.check_pending_migrations
+                ActiveSupport::IsolatedExecutionState[#{nc_key_str}] = false
+              end
+            end
+            needs_check = ActiveSupport::IsolatedExecutionState[#{nc_key_str}]
+            needs_check = true if needs_check.nil?
+            if needs_check
+              watcher.execute
+            else
+              watcher.execute_if_updated
+            end
+          end
+          @app.call(env)
+        end
+      RUBY
     end
   end
 end

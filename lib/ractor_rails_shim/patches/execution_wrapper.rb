@@ -91,11 +91,21 @@ module RactorRailsShim
                     in_only && not_except
                   end
                   result = nil
+                  halted = false
                   entries.each do |e|
                     next unless e[:before] && applies.call(e)
                     begin; self.send(e[:filter]); rescue; end
+                    # A before-filter that renders/redirects performs — halt the
+                    # chain (as the real ActiveSupport::Callbacks machinery
+                    # does) so the action is NOT run. Otherwise an action that
+                    # depends on a performed before_action (e.g. Devise's
+                    # verify_signed_out_user redirect) would render twice.
+                    if respond_to?(:performed?) ? performed? : response_body
+                      halted = true
+                      break
+                    end
                   end
-                  result = (yield if block_given?)
+                  result = (yield if block_given?) unless halted
                   entries.each do |e|
                     next unless e[:after] && applies.call(e)
                     begin; self.send(e[:filter]); rescue; end

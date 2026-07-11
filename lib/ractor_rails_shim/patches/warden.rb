@@ -63,5 +63,37 @@ module RactorRailsShim
         end
       RUBY
     end
+
+    # Patch Warden::Strategies#_strategies. The strategy registry is a lazy
+    # class ivar (`@strategies ||= {}`) on the Warden::Strategies module; a
+    # worker Ractor reading it raises "can not get unshareable values from
+    # instance variables of classes/modules from non-main Ractors" (Devise's
+    # `current_user` / `user_signed_in?` in a layout hits
+    # Warden::Strategies[label] -> _strategies). Capture the (shareable)
+    # registry in main and expose it via a constant that workers read.
+    def _install_warden_strategies_patch
+      return if @warden_strategies_patched
+      @warden_strategies_patched = true
+      _register_patch :warden_strategies, "8.1"
+      return unless defined?(::Warden::Strategies)
+      ::Warden::Strategies.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def _strategies
+          if Ractor.main?
+            @strategies ||= {}
+          else
+            RactorRailsShim::SHAREABLE_WARDEN_STRATEGIES || {}
+          end
+        end
+      RUBY
+      if Ractor.main?
+        begin
+          strat = ::Warden::Strategies.instance_variable_get(:@strategies)
+          strat = Ractor.make_shareable(strat) if strat && !Ractor.shareable?(strat)
+          RactorRailsShim.const_set(:SHAREABLE_WARDEN_STRATEGIES, strat) unless RactorRailsShim.const_defined?(:SHAREABLE_WARDEN_STRATEGIES)
+        rescue
+          nil
+        end
+      end
+    end
   end
 end
