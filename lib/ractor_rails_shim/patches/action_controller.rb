@@ -11,6 +11,9 @@ module RactorRailsShim
     "ActionController::Rendering::RENDER_FORMATS_IN_PRIORITY",
     "ActionController::Base::PROTECTED_IVARS",
     "AbstractController::Rendering::DEFAULT_PROTECTED_INSTANCE_VARIABLES",
+    # Strong-parameters scalar allow-list, read by permitted_scalar? on every
+    # permit/require. An Array of classes -> not shareable by default.
+    "ActionController::Parameters::PERMITTED_SCALAR_TYPES",
   ])
 
   class << self

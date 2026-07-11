@@ -13,6 +13,7 @@ module RactorRailsShim
     "Rack::Utils::SYMBOL_TO_STATUS_CODE",
     "Rack::MethodOverride::ALLOWED_METHODS",
     "Rack::MethodOverride::METHOD_OVERRIDES",
+    "Rack::MethodOverride::HTTP_METHODS",
     "Rack::Headers::KNOWN_HEADERS",
     "Rack::Request::Helpers::FORM_DATA_MEDIA_TYPES",
     "Rack::Request::Helpers::PARSEABLE_DATA_MEDIA_TYPES",
@@ -21,6 +22,13 @@ module RactorRailsShim
     "Rack::Files::ALLOWED_VERBS",
     "Rack::Files::ALLOW_HEADER",
     "Rack::Response::STATUS_WITH_NO_ENTITY_BODY",
+    # Multipart file-upload parser constants, read by worker Ractors on every
+    # POST (Rack::Request#POST -> parse_multipart -> Parser.parse). TEMPFILE_FACTORY
+    # is a lambda; EMPTY is a MultipartInfo sentinel instance; REENCODE_DUMMY_
+    # ENCODINGS is a mutable Hash. None are shareable by default.
+    "Rack::Multipart::Parser::TEMPFILE_FACTORY",
+    "Rack::Multipart::Parser::EMPTY",
+    "Rack::Multipart::Parser::REENCODE_DUMMY_ENCODINGS",
   ])
 
   class << self

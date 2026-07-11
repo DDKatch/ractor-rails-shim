@@ -68,6 +68,13 @@ module RactorRailsShim
   # Each per-concern file concats its own constants into this array. Users
   # can add their own via RactorRailsShim.shareable_constants << "MyGem::LIST".
   SHAREABLE_CONSTANTS = []
+  # Registry of [ClassName, :ivar] pairs: class-level instance variables whose
+  # values are mutable (Hashes/Arrays/objects) and must be made Ractor-shareable
+  # (deep-frozen) at boot so worker Ractors can read them. Unlike
+  # SHAREABLE_CONSTANTS (top-level constants), these are class instance
+  # variables (e.g. ActiveSupport::Editor.@editors, Warden::Strategies.@strategies)
+  # that hold unshareable values and are read during request dispatch.
+  SHAREABLE_CLASS_IVARS = []
   # Shareable registry: controller class → its built view_context_class.
   # Populated at prepare_for_ractors! time by calling view_context_class on
   # each loaded controller in main (build_view_context_class uses
@@ -178,6 +185,7 @@ module RactorRailsShim
     # explicitly per worker, or use make_app_shareable!.
     def prepare_for_ractors!
       do_install_shareable_constants
+      RactorRailsShim._freeze_shareable_class_ivars! if RactorRailsShim.respond_to?(:_freeze_shareable_class_ivars!)
       snapshot_gem_paths!
       snapshot_query_logs!
       _install_rack_request_patch

@@ -13,6 +13,7 @@ module RactorRailsShim
       "ActionDispatch::Request::HTTP_METHODS",
       "ActionDispatch::Request::HTTP_METHOD_LOOKUP",
       "ActionDispatch::Request::LOCALHOST",
+    "ActionDispatch::DebugView::RESCUES_TEMPLATE_PATHS",
     "Mime::SET",
     "Mime::EXTENSION_LOOKUP",
     "Mime::LOOKUP",
@@ -551,6 +552,82 @@ module RactorRailsShim
           end
         RUBY
       end
+
+      # Make Routes#ast / #simulator tolerant of a FROZEN receiver. The shim
+      # warms + caches these ivars on the live (unfrozen) graph before freezing,
+      # but if the cache is missing on the frozen shared object (e.g. routes
+      # were re-drawn after warming, or warming was skipped), the original
+      # `@simulator ||= build` raise FrozenError in a worker Ractor. When frozen,
+      # build and RETURN the value without memoizing — the build is read-only
+      # over the frozen route nodes, so it's safe and stays worker-local.
+      routes = ::ActionDispatch::Journey::Routes
+      routes.class_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def ast
+          return @ast if defined?(@ast) && @ast
+          built = ::ActionDispatch::Journey::Nodes::Or.new(anchored_routes.map(&:ast))
+          frozen? ? built : (@ast ||= built)
+        end
+
+        def simulator
+          return @simulator if defined?(@simulator) && @simulator
+          gtg = ::ActionDispatch::Journey::GTG::Builder.new(ast).transition_table
+          built = ::ActionDispatch::Journey::GTG::Simulator.new(gtg)
+          frozen? ? built : (@simulator ||= built)
+        end
+      RUBY
+
+      # Path::Pattern memoizes several ivars via `||=` (@re, @offsets,
+      # @required_names, @optional_names, @requirements_for_missing_keys_check).
+      # On a frozen shared graph the `||=` assignment raises FrozenError in a
+      # worker Ractor. Make them frozen-tolerant: return the cached value if
+      # present, otherwise build and RETURN it without memoizing (the build is
+      # read-only over the frozen ast/requirements). This keeps workers correct
+      # even if warming skipped a pattern.
+      if defined?(::ActionDispatch::Journey::Path::Pattern)
+        ::ActionDispatch::Journey::Path::Pattern.class_eval <<-RUBY, __FILE__, __LINE__ + 1
+          def required_names
+            return @required_names if defined?(@required_names) && @required_names
+            built = names - optional_names
+            frozen? ? built : (@required_names ||= built)
+          end
+
+          def optional_names
+            return @optional_names if defined?(@optional_names) && @optional_names
+            built = spec.find_all(&:group?).flat_map { |g| g.find_all(&:symbol?) }.map(&:name).uniq
+            frozen? ? built : (@optional_names ||= built)
+          end
+
+          def to_regexp
+            return @re if defined?(@re) && @re
+            built = regexp_visitor.new(@separators, @requirements).accept(spec)
+            frozen? ? built : (@re ||= built)
+          end
+
+          def requirements_for_missing_keys_check
+            return @requirements_for_missing_keys_check if defined?(@requirements_for_missing_keys_check) && @requirements_for_missing_keys_check
+            built = requirements.transform_values { |regex| /\A#\{regex\}\Z/ }
+            frozen? ? built : (@requirements_for_missing_keys_check ||= built)
+          end
+
+          def offsets
+            return @offsets if defined?(@offsets) && @offsets
+            built = begin
+              offs = [0]
+              spec.find_all(&:symbol?).each do |node|
+                node = node.to_sym
+                if @requirements.key?(node)
+                  re = /#\{Regexp.union(@requirements[node])\}|/
+                  offs.push((re.match("").length - 1) + offs.last)
+                else
+                  offs << offs.last
+                end
+              end
+              offs
+            end
+            frozen? ? built : (@offsets ||= built)
+          end
+        RUBY
+      end
     end
 
     # Journey's routing visitors are stored as instance singletons in class
@@ -579,6 +656,17 @@ module RactorRailsShim
         next unless mod && mod.const_defined?(const)
         cache = mod.const_get(const)
         cache.freeze if cache.respond_to?(:freeze) && !cache.frozen?
+      end
+      # GTG::Builder::DUMMY_END_NODE is a non-shareable instance referenced when
+      # a worker Ractor rebuilds the route simulator (e.g. if the warmed
+      # @simulator cache is missing on the frozen graph). Make it Ractor-shareable
+      # (deep-freeze) so workers can read the constant without
+      # Ractor::IsolationError. It is a stateless dummy node, so this is
+      # behavior-preserving.
+      if defined?(::ActionDispatch::Journey::GTG::Builder) &&
+         ::ActionDispatch::Journey::GTG::Builder.const_defined?(:DUMMY_END_NODE)
+        node = ::ActionDispatch::Journey::GTG::Builder.const_get(:DUMMY_END_NODE)
+        Ractor.make_shareable(node) rescue nil
       end
     end
 
@@ -620,8 +708,21 @@ module RactorRailsShim
       _freeze_mime_negotiation!
       begin
         rs = ::Rails.application.routes rescue nil
-        routes = rs.respond_to?(:routes) ? rs.routes : nil
-        if routes
+        # Navigate to the ActionDispatch::Journey::Routes object — the one that
+        # is frozen into the shared graph and read (via Router#simulator) on
+        # every request. Rails wraps it in a RouteSet (and sometimes a
+        # LazyRouteSet), neither of which defines #simulator, so calling
+        # `rs.routes.simulator` would silently NoMethodError and leave @simulator
+        # uncached — forcing worker Ractors to rebuild the simulator (and hit
+        # Ractor::IsolationError on GTG constants). Descend through #routes until
+        # we reach the Journey::Routes instance.
+        routes = rs
+        while routes.respond_to?(:routes) && !routes.is_a?(::ActionDispatch::Journey::Routes)
+          nxt = routes.routes
+          break if nxt.equal?(routes)
+          routes = nxt
+        end
+        if routes.is_a?(::ActionDispatch::Journey::Routes)
           routes.ast
           routes.simulator
           _warm_path_patterns!(routes)

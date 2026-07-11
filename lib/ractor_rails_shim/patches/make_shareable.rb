@@ -21,6 +21,13 @@ module RactorRailsShim
       "Devise::NO_INPUT",
     ])
 
+    # Class instance variables holding unshareable values that workers read
+    # during request dispatch. Made Ractor-shareable (deep-frozen) at boot.
+    SHAREABLE_CLASS_IVARS.concat([
+      ["ActiveSupport::Editor", :@editors],
+      ["Warden::Strategies", :@strategies],
+    ])
+
     # Public API: make Rails.application shareable across Ractors. Replaces
     # every self-capturing Proc in the app graph with a callable object (no
     # captured binding), every Mutex/Monitor with a NoOpLock, and every
@@ -85,6 +92,7 @@ module RactorRailsShim
       # the simulator's @memos, and the freeze then shares the whole thing so
       # worker Ractors read the cached, frozen simulator via the original
       # Routes#simulator (no per-worker rebuild). See action_dispatch.rb.
+      _freeze_shareable_class_ivars!
       _warm_journey_routes!
       # Neutralize the app's logger IO so Ractor.make_shareable doesn't freeze
       # $stdout/$stderr (freezing STDOUT breaks the process's own output).
@@ -502,6 +510,15 @@ module RactorRailsShim
       end
     end
 
+    # BasicObject (and its subclasses) don't define respond_to?, so calling
+    # o.respond_to? on one raises NoMethodError. Use this to safely test
+    # whether an object can be introspected (is_a?, instance_variables, ...).
+    def _introspectable?(o)
+      o.respond_to?(:is_a?)
+    rescue NoMethodError
+      false
+    end
+
     def _collect_procs(app)
       seen = {}
       procs = []
@@ -512,7 +529,7 @@ module RactorRailsShim
         # Skip BasicObject subclasses that don't respond to is_a?/object_id
         # (e.g. ActiveSupport::Callbacks::CallTemplate internals). Must guard
         # BEFORE calling is_a? — BasicObject doesn't define it.
-        next unless o.respond_to?(:is_a?)
+        next unless _introspectable?(o)
         if o.is_a?(Proc)
           procs << [o, _path, parent, ivar]
           next
@@ -638,7 +655,7 @@ module RactorRailsShim
       until stack.empty?
         o, _p, _parent, _ivar = stack.pop
         next if o.equal?(nil)
-        next unless o.respond_to?(:is_a?)
+        next unless _introspectable?(o)
         next if seen[o.object_id]
         seen[o.object_id] = true
         next if o.is_a?(Mutex) || o.is_a?(Monitor)
@@ -690,6 +707,40 @@ module RactorRailsShim
     # / `:require_no_authentication`). Stored in
     # RactorRailsShim::SHAREABLE_DECLARED_CALLBACKS keyed by the controller
     # class object_id (stable across Ractors since classes are shared).
+    # Make Ractor-shareable the class instance variables listed in
+    # SHAREABLE_CLASS_IVARS (e.g. ActiveSupport::Editor.@editors,
+    # Warden::Strategies.@strategies). Worker Ractors read these during request
+    # dispatch; an unshareable value raises Ractor::IsolationError. We deep-freeze
+    # the value and write it back so workers read the shareable copy. Also
+    # pre-touch any memoizing accessor so workers don't try to write the ivar
+    # lazily (which would raise FrozenError on the frozen class).
+    def _freeze_shareable_class_ivars!
+      SHAREABLE_CLASS_IVARS.each do |(class_name, ivar)|
+        mod = class_name.split("::").inject(Object) { |ns, n| ns.const_get(n) } rescue nil
+        next unless mod && mod.instance_variable_defined?(ivar)
+        val = mod.instance_variable_get(ivar)
+        next if val.nil?
+        begin
+          Ractor.make_shareable(val)
+          mod.instance_variable_set(ivar, val) rescue nil
+        rescue
+          nil
+        end
+      end
+      # Pre-touch memoizing accessors so workers short-circuit instead of
+      # writing the (now frozen) ivar on first read.
+      begin
+        ::ActiveSupport::Editor.current if defined?(::ActiveSupport::Editor)
+      rescue
+        nil
+      end
+      begin
+        ::Warden::Strategies._strategies if defined?(::Warden::Strategies)
+      rescue
+        nil
+      end
+    end
+
     def _freeze_declared_callbacks!
       table = (@declared_callbacks || {})
       # Deep-freeze (make shareable) so worker Ractors can read the constant.
