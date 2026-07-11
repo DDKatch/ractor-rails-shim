@@ -256,6 +256,12 @@ module RactorRailsShim
       _install_devise_url_helpers_patch
       _install_polymorphic_routes_patch
       _install_json_encoding_patch
+      _install_active_model_attribute_patch
+      _install_hash_compute_if_absent_patch
+      _warm_active_record_class_caches!
+      _freeze_active_record_class_ivars!
+      _freeze_global_class_ivars!
+      _freeze_global_constants!
     end
 
     # Verify the runtime matches the versions the shim was developed against.
@@ -377,8 +383,184 @@ module RactorRailsShim
       bindings = capture_app_constants
       WorkerApp.new(frozen_app, bindings)
     end
-  end
 
+    # See patches/active_model_attribute.rb. When the frozen `:ractor` graph is
+    # built, each model class's `_default_attributes` template (and the
+    # FromDatabase instances within it) is deep-frozen. `Attribute#dup_or_share`
+    # returns `self` for immutable column types, so a worker's NEW record would
+    # share a frozen Attribute and raise FrozenError on first read/write. This
+    # patch makes a frozen receiver yield a fresh, mutable Attribute so writes
+    # (POST/create) work in workers. No-op in normal (unfrozen) Rails.
+    def _install_active_model_attribute_patch
+      return @am_attribute_patched if defined?(@am_attribute_patched) && @am_attribute_patched
+      @am_attribute_patched = true
+      return unless defined?(::ActiveModel::Attribute)
+      ::ActiveModel::Attribute.include(::RactorRailsShim::ActiveModelAttributePatch)
+      if defined?(::ActiveModel::AttributeRegistration) &&
+         ::ActiveModel::AttributeRegistration.const_defined?(:ClassMethods)
+        ::ActiveModel::AttributeRegistration::ClassMethods.prepend(
+          ::RactorRailsShim::ActiveModelAttributeRegistrationPatch
+        )
+      end
+      if defined?(::ActiveRecord::Attributes) &&
+         ::ActiveRecord::Attributes.const_defined?(:ClassMethods)
+        ::ActiveRecord::Attributes::ClassMethods.prepend(
+          ::RactorRailsShim::ActiveRecordAttributesPatch
+        )
+      end
+      if defined?(::ActiveRecord::ModelSchema) &&
+         ::ActiveRecord::ModelSchema.const_defined?(:ClassMethods)
+        ::ActiveRecord::ModelSchema::ClassMethods.prepend(
+          ::RactorRailsShim::ActiveRecordModelSchemaPatch
+        )
+      end
+    end
+
+    # The shim's make_app_shareable! replaces Concurrent::Map instance variables
+    # (which are not Ractor-shareable) with plain Hashes so workers can read
+    # them. But Rails code calls Concurrent::Map#compute_if_absent on these
+    # caches (e.g. ActiveModel::AttributeMethods' attribute_method_patterns_
+    # cache). Plain Hash lacks that method, so we add a compatible definition.
+    # For a MUTABLE cache the shim freezes the replaced Hash (so it is shareable
+    # across workers); mutating it would raise FrozenError. So when the receiver
+    # is frozen we route the store to per-Ractor IES keyed by the Hash identity
+    # and the key — giving each worker its own cache entry without mutating the
+    # shared object. Semantics otherwise match Concurrent::Map.
+    def _install_hash_compute_if_absent_patch
+      return @hash_compute_if_absent_patched if defined?(@hash_compute_if_absent_patched) && @hash_compute_if_absent_patched
+      @hash_compute_if_absent_patched = true
+      return if ::Hash.method_defined?(:compute_if_absent)
+      ::Hash.prepend(Module.new do
+        def compute_if_absent(key)
+          if frozen?
+            ies_key = :"rrs_cia_#{object_id}_#{key}"
+            ActiveSupport::IsolatedExecutionState[ies_key] ||= yield(key)
+          elsif key?(key)
+            self[key]
+          else
+            self[key] = yield(key)
+          end
+        end
+      end)
+    end
+
+    # Freeze (make Ractor-shareable) every instance variable on every ActiveRecord
+    # model class in the MAIN Ractor, before the graph is frozen. Many AR model
+    # classes cache unshareable values in class-level ivars (@pending_attribute_
+    # modifications, @column_defaults, @symbol_column_to_string_name_hash,
+    # @yaml_encoder, @dangerous_attribute_methods, ...). A worker Ractor cannot
+    # read an unshareable class-ivar value (Ractor::IsolationError) nor set one.
+    # Freezing them in main (where setting is allowed) yields shareable values
+    # that workers read without writing. AR Type objects freeze cleanly, so this
+    # is behavior-preserving; per-request code never mutates model class ivars.
+    def _freeze_active_record_class_ivars!
+      return unless defined?(::ActiveRecord::Base)
+      models = [::ActiveRecord::Base] + (::ActiveRecord::Base.descendants rescue [])
+      models.each do |klass|
+        # NOTE: do NOT skip abstract classes (e.g. a primary_abstract_class
+        # ApplicationRecord). Workers recurse into them via
+        # apply_pending_attribute_modifications, so their class ivars must also
+        # be shareable.
+        klass.instance_variables.each do |ivar|
+          val = klass.instance_variable_get(ivar)
+          next if val.nil? || Ractor.shareable?(val)
+          begin
+            Ractor.make_shareable(val)
+          rescue
+            nil
+          end
+        end
+      end
+    end
+
+    # Freeze (make Ractor-shareable) unshareable class-level ivars on GLOBAL
+    # classes (Time/Date timezone caches, I18n locale caches, ...) in the MAIN
+    # Ractor, before the graph is frozen. Unlike model classes, these are shared
+    # singletons whose class ivars (e.g. Time's @zone_default / @zone_cache) hold
+    # unshareable values that a worker Ractor would otherwise fail to read
+    # (Ractor::IsolationError). Freezing them in main yields shareable values.
+    def _freeze_global_class_ivars!
+      classes = %w[Time Date DateTime I18n].filter_map { |n| Object.const_get(n) rescue nil }
+      classes.each do |klass|
+        klass.instance_variables.each do |ivar|
+          val = klass.instance_variable_get(ivar)
+          next if val.nil? || Ractor.shareable?(val)
+          begin
+            Ractor.make_shareable(val)
+          rescue
+            nil
+          end
+        end
+      end
+    end
+
+    # Replace GLOBAL constants that hold non-shareable values (e.g.
+    # Time/Date/DateTime::DATE_FORMATS contain Proc values) with frozen,
+    # shareable equivalents so worker Ractors can read them. Proc-valued format
+    # entries are dropped (to_fs falls back to to_s for those formats). This is
+    # done in the MAIN Ractor, where const_set is allowed.
+    def _freeze_global_constants!
+      constants = %w[Time Date DateTime].filter_map do |n|
+        mod = Object.const_get(n) rescue nil
+        mod.is_a?(Module) ? [mod, :DATE_FORMATS] : nil
+      end
+      constants.each do |mod, name|
+        next unless mod.const_defined?(name, false)
+        val = mod.const_get(name, false)
+        next if Ractor.shareable?(val)
+        shareable = if val.is_a?(Hash)
+          h = {}
+          val.each { |k, v| h[k] = v if Ractor.shareable?(v) }
+          h.freeze
+        elsif val.is_a?(Array)
+          val.select { |v| Ractor.shareable?(v) }.freeze
+        else
+          val
+        end
+        begin
+          mod.const_set(name, shareable)
+        rescue
+          nil
+        end
+      end
+    end
+
+    # Warm ActiveRecord model classes' lazily-computed, shareable class-ivar
+    # memoizations in the MAIN Ractor, BEFORE the graph is frozen. Methods like
+    # the timestamp_attribute_* helpers cache frozen Arrays of strings (shareable
+    # once warmed), so pre-populating them here lets workers read via `||=`
+    # without ever setting the class ivar. (Class ivars holding unshareable
+    # values are handled by _freeze_active_record_class_ivars!.)
+    def _warm_active_record_class_caches!
+      return unless defined?(::ActiveRecord::Base)
+      models = [::ActiveRecord::Base] + (::ActiveRecord::Base.descendants rescue [])
+      warmers = %i[
+        timestamp_attributes_for_create_in_model
+        timestamp_attributes_for_update_in_model
+        all_timestamp_attributes_in_model
+        sequence_name
+        columns
+        column_names
+        attribute_names
+        column_defaults
+        symbol_column_to_string_name_hash
+        returning_columns_for_insert
+        yaml_encoder
+        attribute_types
+      ]
+      models.each do |klass|
+        next if klass.abstract_class?
+        warmers.each do |m|
+          next unless klass.respond_to?(m, true)
+          begin
+            klass.send(m)
+          rescue
+            nil
+          end
+        end
+      end
+    end
+  end
   # A shareable Rack wrapper that performs per-worker initialization lazily,
   # inside the worker Ractor's request path (kino's :ractor mode has no
   # per-worker init hook). On the first request served by a worker it:
