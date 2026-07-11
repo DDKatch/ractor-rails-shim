@@ -26,6 +26,42 @@ module RactorRailsShim
     ])
 
   class << self
+    # Patch `ActionView::Base.with_empty_template_cache` (action_view/base.rb:204)
+    # to a block-free `def`. The original defines `compiled_method_container`
+    # (instance + singleton) via `define_method(&block)` — an un-shareable Proc
+    # compiled in the main Ractor that raises "defined with an un-shareable Proc
+    # in a different Ractor" when a worker calls it. We also route compiled
+    # template methods through ONE shared `SHAREABLE_COMPILED_MODULE` so the
+    # `application` layout (and Devise shared partials) compile once and are
+    # visible to every controller / worker Ractor.
+    #
+    # Installed EARLY via ActiveSupport.on_load(:action_view) (see core.rb
+    # `install`) so it is in place before production eager load calls
+    # `DetailsKey.view_context_class` -> `with_empty_template_cache`. Idempotent.
+    def _install_with_empty_template_cache_patch
+      return if @with_empty_template_cache_patched
+      return unless defined?(::ActionView::Base) && Ractor.main?
+      @with_empty_template_cache_patched = true
+      _register_patch :with_empty_template_cache, "8.1"
+      ::ActionView::Base.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def with_empty_template_cache
+          subclass = Class.new(self) do
+            include RactorRailsShim::SHAREABLE_COMPILED_MODULE
+            def compiled_method_container
+              RactorRailsShim::SHAREABLE_COMPILED_MODULE
+            end
+            def self.compiled_method_container
+              RactorRailsShim::SHAREABLE_COMPILED_MODULE
+            end
+            def inspect
+              "#<ActionView::Base:\#{'%#016x' % (object_id << 1)}>"
+            end
+          end
+          subclass
+        end
+      RUBY
+    end
+
     def _install_lookup_context_patch
       return if @lookup_context_patched
       @lookup_context_patched = true
@@ -104,43 +140,16 @@ module RactorRailsShim
       if defined?(::ActionView::Rendering::ClassMethods)
         rcm = ::ActionView::Rendering::ClassMethods
 
-        # `ActionView::Base.with_empty_template_cache` (action_view/base.rb:204)
-        # builds the base view class and defines `compiled_method_container`
-        # (instance + singleton) via `define_method(&block)` — an un-shareable
-        # Proc compiled in the main Ractor. Every controller's view_context_class
-        # subclasses that class, so calling `compiled_method_container` from a
-        # worker Ractor raises "defined with an un-shareable Proc in a different
-        # Ractor". Redefine it as a plain `def` returning `self.class` (the
-        # original semantics) so there is no captured Proc to trip Ractor
-        # isolation. Must run in main before DetailsKey.view_context_class
-        # (which calls with_empty_template_cache) is first evaluated.
-        if Ractor.main? && defined?(::ActionView::Base)
-          ::ActionView::Base.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
-            def with_empty_template_cache
-              subclass = Class.new(self) do
-                # Route compiled template methods (e.g. the shared `application`
-                # layout) through ONE shareable module so they are visible to
-                # every controller's view_context_class / worker Ractor. Without
-                # this, each controller compiles the layout onto its OWN class,
-                # and other controllers raise NoMethodError (ActionView looks up
-                # the compiled method on its own class only). The module is a
-                # plain Module (shareable WITHOUT freezing, so workers can still
-                # `module_eval` define_method onto it).
-                include RactorRailsShim::SHAREABLE_COMPILED_MODULE
-                def compiled_method_container
-                  RactorRailsShim::SHAREABLE_COMPILED_MODULE
-                end
-                def self.compiled_method_container
-                  RactorRailsShim::SHAREABLE_COMPILED_MODULE
-                end
-                def inspect
-                  "#<ActionView::Base:\#{'%#016x' % (object_id << 1)}>"
-                end
-              end
-              subclass
-            end
-          RUBY
-        end
+        # `ActionView::Base.with_empty_template_cache` is patched separately and
+        # EARLY (see _install_with_empty_template_cache_patch, installed via
+        # ActiveSupport.on_load(:action_view) before eager load) because the
+        # framework's original uses `define_method(:compiled_method_container)
+        # { subclass }` — a block/Proc captured in the main Ractor that raises
+        # "defined with an un-shareable Proc in a different Ractor" when a
+        # worker calls it. In production `DetailsKey.view_context_class` calls
+        # with_empty_template_cache during eager load, so the patch MUST be in
+        # place before then.
+        _install_with_empty_template_cache_patch if defined?(::ActionView::Base)
 
         # Build the per-controller view_context_class registry in main. We call
         # the ORIGINAL build_view_context_class directly (bypassing Rails'

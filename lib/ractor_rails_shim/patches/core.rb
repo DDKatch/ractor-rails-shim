@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "active_support/lazy_load_hooks"
+
 # Core: module-level constants, the install entry point, prepare_for_ractors!,
 # version detection helpers, and the patch registry. All other patch files
 # reopen `class << self` to add their `_install_*` methods.
@@ -131,6 +133,15 @@ module RactorRailsShim
       install_shareable_constants
       install_execution_wrapper
       install_url_helpers_patch
+      # Patch ActionView::Base.with_empty_template_cache EARLY (before eager
+      # load) so production's DetailsKey.view_context_class uses the block-free
+      # version. The framework's original defines compiled_method_container via
+      # define_method(&block) — an un-shareable Proc that breaks worker
+      # Ractors. on_load fires as soon as ActionView is required, well before
+      # the app's eager_load.
+      ActiveSupport.on_load(:action_view) do
+        RactorRailsShim._install_with_empty_template_cache_patch
+      end
       @installed = true
       true
     end
