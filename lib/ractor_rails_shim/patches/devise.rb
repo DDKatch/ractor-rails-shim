@@ -19,6 +19,25 @@
 #    (skipping the main-ractor route reload).
 
 module RactorRailsShim
+  # Devise defines several top-level mutable Array/Hash constants
+  # (TRUE_VALUES, FALSE_VALUES, NO_INPUT, ALL, CONTROLLERS, ROUTES,
+  # STRATEGIES, URL_HELPERS) that are NOT frozen, hence non-shareable — a
+  # worker Ractor raises "can not access non-shareable objects in constant
+  # Devise::TRUE_VALUES ..." when it reads them (e.g. remember_me? ->
+  # TRUE_VALUES). These are populated during boot and never mutated in
+  # :ractor mode (frozen graph, no reloading), so deep-freeze + const_set
+  # them shareable at prepare time.
+  SHAREABLE_CONSTANTS.concat([
+    "Devise::TRUE_VALUES",
+    "Devise::FALSE_VALUES",
+    "Devise::NO_INPUT",
+    "Devise::ALL",
+    "Devise::CONTROLLERS",
+    "Devise::ROUTES",
+    "Devise::STRATEGIES",
+    "Devise::URL_HELPERS",
+  ])
+
   class << self
     # Devise::FailureApp.call memoizes its Rack endpoint in a class-level ivar
     # (`@respond ||= action(:respond)`). A worker Ractor cannot set instance
@@ -52,6 +71,32 @@ module RactorRailsShim
           end
         RUBY
       end
+    end
+
+    # Devise::Models::Authenticatable::ClassMethods#devise_parameter_filter
+    # memoizes `@devise_parameter_filter ||= Devise::ParameterFilter.new(...)`
+    # on the MODEL CLASS. A worker Ractor cannot set an instance variable on a
+    # shared class/module, so calling it raises "can not set instance variables
+    # of classes/modules by non-main Ractors". Route the memoized filter through
+    # IsolatedExecutionState (per-Ractor), keyed by the (shared, stable) class
+    # object_id. `case_insensitive_keys` / `strip_whitespace_keys` are
+    # class_attribute values the shim already routes through IES, so they read
+    # fine in a worker.
+    def _install_devise_authenticatable_patch
+      return if @devise_authenticatable_patched
+      @devise_authenticatable_patched = true
+      _register_patch :devise_authenticatable, "5.0"
+      return unless defined?(::Devise::Models::Authenticatable::ClassMethods)
+      ::Devise::Models::Authenticatable::ClassMethods.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def devise_parameter_filter
+          key = :"ractor_rails_shim_devise_param_filter_\#{object_id}"
+          v = ActiveSupport::IsolatedExecutionState[key]
+          return v unless v.nil?
+          f = Devise::ParameterFilter.new(case_insensitive_keys, strip_whitespace_keys)
+          ActiveSupport::IsolatedExecutionState[key] = f
+          f
+        end
+      RUBY
     end
 
     def _install_devise_url_helpers_patch

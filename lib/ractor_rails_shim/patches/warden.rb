@@ -95,5 +95,53 @@ module RactorRailsShim
         end
       end
     end
+
+    # Warden registers per-scope session serializers with
+    # `Warden::SessionSerializer.send(:define_method, method_name, &block)`
+    # (warden-1.2.9/lib/warden/manager.rb:71). The block is created while the
+    # app boots in the main Ractor, so the resulting method is Ractor-bound:
+    # invoking it (e.g. `user_serialize`) from a worker Ractor raises
+    # "defined with an un-shareable Proc in a different Ractor".
+    #
+    # Devise's block body is simply `mapping.to.serialize_into_session(record)`.
+    # We re-register the serializers as plain `def` methods (which are NOT
+    # Ractor-bound) that delegate to the model class's own
+    # `serialize_into_session` / `serialize_from_session` class methods — both
+    # worker-safe — so the chain is callable from any worker Ractor.
+    def _install_warden_serializer_patch
+      return if @warden_serializer_patched
+      @warden_serializer_patched = true
+      _register_patch :warden_serializer, "8.1"
+      return unless defined?(::Warden::SessionSerializer)
+
+      if defined?(::Devise) && ::Devise.respond_to?(:mappings)
+        ::Devise.mappings.each do |scope, mapping|
+          model = mapping.to
+          ::Warden::SessionSerializer.class_eval <<-RUBY, __FILE__, __LINE__ + 1
+            def #{scope}_serialize(record)
+              #{model}.serialize_into_session(record)
+            end
+
+            def #{scope}_deserialize(*keys)
+              #{model}.serialize_from_session(*keys)
+            end
+          RUBY
+        end
+      end
+
+      ::Warden::SessionSerializer.class_eval do
+        unless method_defined?(:serialize)
+          def serialize(user)
+            user
+          end
+        end
+
+        unless method_defined?(:deserialize)
+          def deserialize(key)
+            key
+          end
+        end
+      end
+    end
   end
 end

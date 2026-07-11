@@ -114,7 +114,11 @@ module RactorRailsShim
     # Policy for version mismatches. One of :warn (default), :strict, :off.
     # Set before `install`:
     #   RactorRailsShim.version_policy = :strict
-    attr_accessor :version_policy
+    # Defaults to :warn when never explicitly set.
+    def version_policy
+      @version_policy || :warn
+    end
+    attr_writer :version_policy
 
     SUPPORTED_RUBY = RactorRailsShim::Version::SUPPORTED_RUBY
     SUPPORTED_RAILS = "8.1"
@@ -255,7 +259,10 @@ module RactorRailsShim
       _install_propshaft_patch
       _install_messages_serializer_patch
       _install_devise_url_helpers_patch
+      _install_devise_authenticatable_patch
       _install_polymorphic_routes_patch
+      _install_orm_adapter_patch
+      _install_warden_serializer_patch
       _install_json_encoding_patch
       _install_active_model_attribute_patch
       _install_hash_compute_if_absent_patch
