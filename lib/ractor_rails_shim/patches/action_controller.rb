@@ -221,6 +221,29 @@ module RactorRailsShim
         RUBY
       end
 
+      # In the shared :ractor graph, Devise's engine controllers (e.g.
+      # Devise::SessionsController) end up with a nil `csrf_token_storage_strategy`
+      # at request time — the value is dropped when make_app_shareable! deep-freezes
+      # the app (RequestForgeryProtection sets it only on ActionController::Base.config,
+      # and the per-controller frozen config copy loses it). A worker then raises
+      # NoMethodError on `reset_csrf_token` during `reset_session` (logout /
+      # sign_out). Guard the reset so a missing strategy is a no-op — `reset_session`
+      # regenerates the session id anyway, discarding the CSRF token.
+      def _install_csrf_reset_patch
+        return if @csrf_reset_patched
+        @csrf_reset_patched = true
+        _register_patch :csrf_reset, "8.1"
+        return unless defined?(::ActionController::RequestForgeryProtection)
+        rfp = ::ActionController::RequestForgeryProtection
+        rfp.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+          def reset_csrf_token(request) # :doc:
+            request.env.delete(CSRF_TOKEN)
+            strat = csrf_token_storage_strategy
+            strat.reset(request) if strat
+          end
+        RUBY
+      end
+
       # Patch the flash-type helper methods (`notice`, `alert`, ...) defined by
       # `ActionController::Metal::Flash#add_flash_types` via
       # `define_method(type) { request.flash[type] }`. That block is compiled

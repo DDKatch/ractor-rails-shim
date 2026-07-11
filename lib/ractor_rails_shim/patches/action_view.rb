@@ -16,14 +16,16 @@ module RactorRailsShim
   SHAREABLE_COMPILED_MODULE = Module.new unless defined?(::RactorRailsShim::SHAREABLE_COMPILED_MODULE)
 
   # ActionView constants that need to be made shareable.
-    SHAREABLE_CONSTANTS.concat([
-      "ActionView::LookupContext::Accessors::DEFAULT_PROCS",
-      "ActionView::Template::NONE",
-      "ActionView::Template::Handlers::ERB::ENCODING_TAG",
-      "ActionView::AbstractRenderer::RenderedTemplate::EMPTY_SPACER",
-      "ActionView::Helpers::TagHelper::PRE_CONTENT_STRINGS",
-      "ActionView::Helpers::AssetUrlHelper::ASSET_EXTENSIONS",
-    ])
+  SHAREABLE_CONSTANTS.concat([
+    "ActionView::LookupContext::Accessors::DEFAULT_PROCS",
+    "ActionView::Template::NONE",
+    "ActionView::Template::Handlers::ERB::ENCODING_TAG",
+    "ActionView::AbstractRenderer::RenderedTemplate::EMPTY_SPACER",
+    "ActionView::Helpers::TagHelper::PRE_CONTENT_STRINGS",
+    "ActionView::Helpers::AssetUrlHelper::ASSET_EXTENSIONS",
+    "ActionView::Helpers::UrlHelper::BUTTON_TAG_METHOD_VERBS",
+    "ActionView::Helpers::UrlHelper::STRINGIFIED_COMMON_METHODS",
+  ])
 
   class << self
     # Patch `ActionView::Base.with_empty_template_cache` (action_view/base.rb:204)

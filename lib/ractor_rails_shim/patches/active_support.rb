@@ -833,6 +833,21 @@ module RactorRailsShim
           end
         end
       RUBY
+
+      # MessagePackWithFallback#available? lazily memoizes `@available` directly
+      # on the module. When a worker Ractor first deserializes a cookie,
+      # SerializerWithFallback#load -> detect_format -> MessagePackWithFallback
+      # .dumped? -> available? tries to SET that ivar, raising
+      #   Ractor::IsolationError: can not set instance variables of
+      #   classes/modules by non-main Ractors
+      # Replace the ivar memoization with a pure constant check. The module is
+      # shareable and ActiveSupport::MessagePack resolves to a shareable class,
+      # so this is safe from any Ractor.
+      ::ActiveSupport::Messages::SerializerWithFallback::MessagePackWithFallback.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def available?
+          defined?(::ActiveSupport::MessagePack)
+        end
+      RUBY
     end
 
     # Patch ActiveSupport::JSON::Encoding. The module memoizes two encoders in

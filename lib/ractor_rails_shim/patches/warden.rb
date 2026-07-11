@@ -123,7 +123,13 @@ module RactorRailsShim
             end
 
             def #{scope}_deserialize(*keys)
-              #{model}.serialize_from_session(*keys)
+              # Devise's serialize_into_session returns [[id], salt]. The key
+              # passed by Warden::SessionSerializer#fetch is that value, but in
+              # the kino :ractor worker the per-request session that Warden's
+              # serializer sees can hold an extra wrapping layer
+              # ([[[id], salt]]). Flatten so serialize_from_session(key, salt)
+              # always receives exactly two arguments.
+              #{model}.serialize_from_session(*keys.flatten)
             end
           RUBY
         end

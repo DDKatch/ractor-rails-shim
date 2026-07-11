@@ -1696,5 +1696,32 @@ module RactorRailsShim
         end
       RUBY
     end
+
+    # In the shared :ractor graph, ActiveRecord model classes can end up with a
+    # nil `__callbacks` (the class_attribute value can't be made shareable when
+    # it holds unshareable callback Procs, so the shim's shareable fallback
+    # returns nil). `has_transactional_callbacks?` calls the generated
+    # `_rollback_callbacks` / `_commit_callbacks` / `_before_commit_callbacks`
+    # readers, which do `__callbacks[:kind]` directly — bypassing the
+    # `run_callbacks_with_nil_safe` guard. With a nil `__callbacks` that raises
+    # `NoMethodError: undefined method '[]' for nil`, breaking every
+    # `save` / `update` / `destroy` (they run inside a transaction). Guard it:
+    # a nil / empty callback table means no transactional callbacks.
+    def _install_activerecord_transaction_callbacks_patch
+      return if @activerecord_transaction_callbacks_patched
+      @activerecord_transaction_callbacks_patched = true
+      _register_patch :activerecord_transaction_callbacks, "8.1"
+      return unless defined?(::ActiveRecord::Base)
+      ar = ::ActiveRecord::Base
+      ar.class_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def has_transactional_callbacks?
+          cb = __callbacks
+          return false unless cb
+          !((cb[:rollback] || []).empty?) ||
+            !((cb[:commit] || []).empty?) ||
+            !((cb[:before_commit] || []).empty?)
+        end
+      RUBY
+    end
   end
 end

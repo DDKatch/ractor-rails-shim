@@ -204,6 +204,7 @@ module RactorRailsShim
       _install_abstract_controller_patch
       _install_action_controller_controller_name_patch
       _install_flash_helpers_patch
+      _install_csrf_reset_patch
       _install_active_support_error_reporter_patch
       _install_lookup_context_patch
       _install_i18n_patch
@@ -226,6 +227,7 @@ module RactorRailsShim
       _install_warden_hooks_patch
       _install_warden_strategies_patch
       _install_devise_failure_app_patch
+      _install_csrf_reset_patch
       _install_activerecord_connection_handler_patch
       _install_activerecord_configurations_patch
       _install_activerecord_db_config_handlers_patch
@@ -254,6 +256,7 @@ module RactorRailsShim
       _install_active_model_conversion_patch
       _install_activerecord_find_by_cache_patch
       _install_activerecord_migration_patch
+      _install_activerecord_transaction_callbacks_patch
       _install_activerecord_query_logs_patch
       _install_kaminari_config_patch
       _install_propshaft_patch
@@ -271,9 +274,9 @@ module RactorRailsShim
       _freeze_global_class_ivars!
       _freeze_global_constants!
       _freeze_messages_constants!
-    end
+     end
 
-    # Verify the runtime matches the versions the shim was developed against.
+     # Verify the runtime matches the versions the shim was developed against.
     # The shim's patches target specific Rails 8.1 class layouts and Ruby 4.0
     # Ractor semantics. On other versions, the patches may silently miss or
     # break things. Behavior on mismatch is governed by `version_policy`:
@@ -542,6 +545,18 @@ module RactorRailsShim
     # frozen (their elements are Modules), so deep-freeze and const_set the
     # shareable copy back so workers read a shareable constant.
     def _freeze_messages_constants!
+      # Load ActiveSupport::MessagePack in the MAIN Ractor FIRST. metadata.rb
+      # registers an `ActiveSupport.on_load(:message_pack)` callback that mutates
+      # ENVELOPE_SERIALIZERS / TIMESTAMP_SERIALIZERS via `<<`. If that callback
+      # first fires inside a worker Ractor (which happens the first time a
+      # cookie's `detect_format` probes MessagePackWithFallback.dumped?, because
+      # it lazily requires "active_support/message_pack"), it runs against the
+      # already-frozen arrays below and raises
+      #   FrozenError: can't modify frozen Array
+      # Loading here makes the callback fire once, in main, against the
+      # non-frozen arrays; load hooks never fire again in workers.
+      require "active_support/message_pack" rescue nil
+
       mod = (Object.const_get(:ActiveSupport) rescue nil)&.const_get(:Messages, false) rescue nil
       mod = mod&.const_get(:Metadata, false) rescue nil
       return unless mod.is_a?(Module)
