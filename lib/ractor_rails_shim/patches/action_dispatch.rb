@@ -498,6 +498,7 @@ module RactorRailsShim
                 if req
                   opts[:host] = req.host if opts[:host].nil? && req.respond_to?(:host)
                   opts[:protocol] = req.protocol if opts[:protocol].nil? && req.respond_to?(:protocol)
+                  opts[:port] = req.port if opts[:port].nil? && req.respond_to?(:port)
                   opts[:_recall] = req.path_parameters if req.respond_to?(:path_parameters)
                 end
               rescue
