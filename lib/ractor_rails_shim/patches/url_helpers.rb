@@ -1,40 +1,26 @@
 # frozen_string_literal: true
 
-# Make Rails' named-route `_routes` accessors Ractor-safe.
+# Make Rails' URL generation Ractor-safe.
 #
-# `ActionDispatch::Routing::RouteSet#url_helpers` (actionpack
-# action_dispatch/routing/route_set.rb) builds an anonymous module that, when
-# included into a controller or view base, defines two `_routes` accessors
-# with BLOCKS that capture the main Ractor's `routes`:
+# Two distinct problems exist in Rails' URL helpers under a frozen, shared
+# (Ractor) graph:
 #
-#   included do
-#     redefine_singleton_method(:_routes) { routes }   # singleton (class) method
-#   end
-#   define_method(:_routes) { @_routes || routes }     # instance method
+# 1. Named route helpers, `_routes`, and `_generate_paths_by_default` are all
+#    defined with `define_method(&block)` / `redefine_method(&block)`, so their
+#    bodies are Procs created in the *main* Ractor. Any worker that calls them
+#    raises "defined with an un-shareable Proc in a different Ractor".
 #
-# Both blocks are compiled in the main Ractor. Calling either from a worker
-# Ractor raises "defined with an un-shareable Proc in a different Ractor".
-# The singleton one is what ActionView's `build_view_context_class`
-# (action_view/rendering.rb:85) reads to decide whether to mix in
-# `url_helpers` — when it raises, the `if routes` guard is skipped and every
-# named route helper (new_post_path, etc.) is missing in workers. The
-# instance one is what `url_for` / the helpers' `method_missing` calls.
+# 2. `RouteSet::PATH` / `RouteSet::UNKNOWN` are lambdas used as the
+#    `url_strategy` callable inside every helper; calling them from a worker is
+#    also un-shareable.
 #
-# Fix: intercept the `define_method(:_routes, &block)` calls — `redefine_
-# singleton_method` ultimately delegates to `define_method` (see
-# active_support/core_ext/module/redefine_method.rb), so overriding
-# `define_method` covers BOTH the singleton and instance accessors — and
-# replace the block body with a string-eval'd method that returns the
-# shareable RouteSet via `Rails.application.routes` (Rails is available in
-# every Ractor; the returned RouteSet is readable from workers — verified).
-# No captured binding, so the methods are callable from any Ractor.
-# Behaviour is identical in the main Ractor. Every other `define_method` call
-# passes through the (aliased) original.
+# These are addressed in `route_helpers.rb` (run *before* routes are drawn):
+# the helper methods are regenerated as compiled `def`s and `PATH`/`UNKNOWN`
+# are replaced with shareable `Method` objects.
 #
-# NOTE: we capture the original with `alias_method` rather than `super`,
-# because defining `def define_method` on `Module` *replaces* the core
-# method, leaving `super` with no chain (Module's parent Object has no
-# `define_method`).
+# This file adds a defensive safety net: if any residual un-shareable error
+# slips through, we re-dispatch the same call from this shim-defined method
+# (whose scope is the worker's own Ractor).
 
 module RactorRailsShim
   class << self
@@ -42,17 +28,43 @@ module RactorRailsShim
       return if @url_helpers_patched
       @url_helpers_patched = true
       _register_patch :url_helpers, "8.1"
-      return unless defined?(::Module)
+      return unless defined?(::ActiveRecord::Base)
 
-      ::Module.class_eval do
-        alias_method :_rrs_orig_define_method, :define_method
-        def define_method(name, *args, &block)
-          if name == :_routes && block
-            class_eval "def _routes; @_routes || ::Rails.application.routes; end"
-          else
-            _rrs_orig_define_method(name, *args, &block)
+      if defined?(::ActionView::RoutingUrlFor)
+        ::ActionView::RoutingUrlFor.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+          alias_method :_rrs_orig_view_url_for, :url_for
+          def url_for(options = nil)
+            _rrs_orig_view_url_for(options)
+          rescue => e
+            raise unless e.message.include?("un-shareable Proc")
+            if options.is_a?(Hash) || options.is_a?(ActionController::Parameters)
+              full_url_for(options)
+            else
+              meth = _generate_paths_by_default ? :path : :url
+              builder = ActionDispatch::Routing::PolymorphicRoutes::HelperMethodBuilder.public_send(meth)
+              builder.handle_model_call(self, options)
+            end
           end
-        end
+        RUBY
+      end
+
+      if defined?(::ActionDispatch::Routing::UrlFor)
+        ::ActionDispatch::Routing::UrlFor.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+          alias_method :_rrs_orig_full_url_for, :full_url_for
+          def full_url_for(options = nil)
+            _rrs_orig_full_url_for(options)
+          rescue => e
+            raise unless e.message.include?("un-shareable Proc")
+            if options.is_a?(Hash) || options.is_a?(ActionController::Parameters)
+              route_name = options.delete :use_route
+              merged = options.to_h.symbolize_keys.reverse_merge!(url_options)
+              _routes.url_for(merged, route_name)
+            else
+              builder = ActionDispatch::Routing::PolymorphicRoutes::HelperMethodBuilder.url
+              builder.handle_model_call(self, options)
+            end
+          end
+        RUBY
       end
     end
   end

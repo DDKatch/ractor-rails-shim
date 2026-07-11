@@ -143,7 +143,6 @@ module RactorRailsShim
       install_rails_module
       install_shareable_constants
       install_execution_wrapper
-      install_url_helpers_patch
       # Capture each controller's OWN declared before_action/after_action
       # filters at declaration time (during eager load) by intercepting
       # ActiveSupport::Callbacks.set_callback. This must be installed BEFORE
@@ -264,6 +263,8 @@ module RactorRailsShim
       _install_devise_url_helpers_patch
       _install_devise_authenticatable_patch
       _install_polymorphic_routes_patch
+      install_url_helpers_patch
+      fix_url_helpers_singleton_routes
       _install_orm_adapter_patch
       _install_warden_serializer_patch
       _install_json_encoding_patch
