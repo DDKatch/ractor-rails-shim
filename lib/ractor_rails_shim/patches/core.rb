@@ -133,6 +133,17 @@ module RactorRailsShim
       install_shareable_constants
       install_execution_wrapper
       install_url_helpers_patch
+      # Capture each controller's OWN declared before_action/after_action
+      # filters at declaration time (during eager load) by intercepting
+      # ActiveSupport::Callbacks.set_callback. This must be installed BEFORE
+      # eager load so declarations are captured as they happen — the
+      # class_attribute callback chain is corrupted by an eager-load leak
+      # under Ruby 4.0.5 + Rails 8.1.3 + Devise, so reading __callbacks later
+      # yields a wrong, unshareable chain. Install requires active_support/
+      # callbacks to be loaded, so require it first; install runs before the
+      # app's eager_load, so every controller declaration is captured.
+      require "active_support/callbacks" rescue nil
+      _install_callback_declaration_capture!
       # Patch ActionView::Base.with_empty_template_cache EARLY (before eager
       # load) so production's DetailsKey.view_context_class uses the block-free
       # version. The framework's original defines compiled_method_container via

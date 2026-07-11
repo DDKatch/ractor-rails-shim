@@ -75,17 +75,28 @@ module RactorRailsShim
               # are not captured (self-capturing, unshareable) and are
               # skipped — a known limitation.
               if !Ractor.main? && kind.to_sym == :process_action &&
-                 defined?(::RactorRailsShim::SHAREABLE_CALLBACKS)
-                entries = ::RactorRailsShim::SHAREABLE_CALLBACKS[self.class.object_id]
-                if entries
-                  action = (self.action_name rescue nil)
-                  action = action.to_sym if action
+                 defined?(::RactorRailsShim::SHAREABLE_DECLARED_CALLBACKS)
+                table = ::RactorRailsShim::SHAREABLE_DECLARED_CALLBACKS
+                action = (self.action_name rescue nil)
+                action = action.to_sym if action
+                # Reconstruct this controller's callback list by walking its
+                # ancestors (superclass-first). Each class recorded ONLY the
+                # filters IT declared (via the set_callback interceptor), which
+                # bypasses the eager-load class_attribute leak that otherwise
+                # pollutes __callbacks.
+                entries = []
+                k = self.class
+                while k && k <= ::ActionController::Base
+                  rec = table[k.object_id]
+                  entries = rec + entries if rec
+                  k = k.superclass
+                end
+                unless entries.empty?
                   # A captured symbolic filter applies to this action unless
-                  # constrained by `only:`/`except:` (stored as :only /
-                  # :except action arrays). `kind` (before/after) decides
-                  # whether it wraps the action pre- or post-yield.
+                  # constrained by `only:`/`except:`. `kind` (before/after)
+                  # decides whether it wraps the action pre- or post-yield.
                   applies = lambda do |e|
-                    next false unless (e[:before] || e[:after])
+                    next false unless (e[:kind] == :before || e[:kind] == :after)
                     in_only = e[:only].nil? || (action && e[:only].include?(action))
                     not_except = e[:except].nil? || !(action && e[:except].include?(action))
                     in_only && not_except
@@ -93,8 +104,8 @@ module RactorRailsShim
                   result = nil
                   halted = false
                   entries.each do |e|
-                    next unless e[:before] && applies.call(e)
-                    begin; self.send(e[:filter]); rescue; end
+                    next unless e[:kind] == :before && applies.call(e)
+                    send(e[:filter]) if respond_to?(e[:filter], true)
                     # A before-filter that renders/redirects performs — halt the
                     # chain (as the real ActiveSupport::Callbacks machinery
                     # does) so the action is NOT run. Otherwise an action that
@@ -107,8 +118,8 @@ module RactorRailsShim
                   end
                   result = (yield if block_given?) unless halted
                   entries.each do |e|
-                    next unless e[:after] && applies.call(e)
-                    begin; self.send(e[:filter]); rescue; end
+                    next unless e[:kind] == :after && applies.call(e)
+                    send(e[:filter]) if respond_to?(e[:filter], true)
                   end
                   return result
                 end
