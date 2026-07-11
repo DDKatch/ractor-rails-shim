@@ -20,15 +20,15 @@ module RactorRailsShim
       hmb.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def get(action, type)
           type = type.to_sym
-          cache[type].fetch(action) { build action, type }
+          cache[type][action] ||= build(action, type)
         end
 
         def url
-          cache[:url][nil]
+          cache[:url][nil] ||= build(nil, "url")
         end
 
         def path
-          cache[:path][nil]
+          cache[:path][nil] ||= build(nil, "path")
         end
 
         def cache

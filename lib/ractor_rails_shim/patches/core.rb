@@ -217,6 +217,7 @@ module RactorRailsShim
       _install_exception_wrapper_patch
       _install_action_dispatch_routing_patch
       _install_action_dispatch_mounted_helpers_patch
+      _install_action_dispatch_http_url_patch
       _install_journey_routes_patch
       _install_warden_hooks_patch
       _install_warden_strategies_patch
@@ -262,6 +263,7 @@ module RactorRailsShim
       _freeze_active_record_class_ivars!
       _freeze_global_class_ivars!
       _freeze_global_constants!
+      _freeze_messages_constants!
     end
 
     # Verify the runtime matches the versions the shim was developed against.
@@ -517,6 +519,30 @@ module RactorRailsShim
         else
           val
         end
+        begin
+          mod.const_set(name, shareable)
+        rescue
+          nil
+        end
+      end
+    end
+
+    # ActiveSupport::Messages::Metadata holds non-shareable Array constants
+    # (ENVELOPE_SERIALIZERS / TIMESTAMP_SERIALIZERS) of serializer Modules, used
+    # by MessageEncryptor during flash/session cookie serialization. A worker
+    # Ractor reading these constants (e.g. on `redirect_to`, which encrypts a
+    # flash message) raises Ractor::IsolationError. The Arrays are shareable once
+    # frozen (their elements are Modules), so deep-freeze and const_set the
+    # shareable copy back so workers read a shareable constant.
+    def _freeze_messages_constants!
+      mod = (Object.const_get(:ActiveSupport) rescue nil)&.const_get(:Messages, false) rescue nil
+      mod = mod&.const_get(:Metadata, false) rescue nil
+      return unless mod.is_a?(Module)
+      %i[ENVELOPE_SERIALIZERS TIMESTAMP_SERIALIZERS].each do |name|
+        next unless mod.const_defined?(name, false)
+        val = mod.const_get(name, false)
+        next if Ractor.shareable?(val)
+        shareable = Ractor.make_shareable(val) rescue val
         begin
           mod.const_set(name, shareable)
         rescue

@@ -491,7 +491,20 @@ module RactorRailsShim
         ::ActionController::UrlFor.module_eval <<-RUBY, __FILE__, __LINE__ + 1
           def url_options
             return super if Ractor.main?
-            @_url_options ||= RactorRailsShim::URL_OPTIONS_DEFAULTS || {}
+            @_url_options ||= begin
+              opts = (RactorRailsShim::URL_OPTIONS_DEFAULTS || {}).dup
+              begin
+                req = request if respond_to?(:request)
+                if req
+                  opts[:host] = req.host if opts[:host].nil? && req.respond_to?(:host)
+                  opts[:protocol] = req.protocol if opts[:protocol].nil? && req.respond_to?(:protocol)
+                  opts[:_recall] = req.path_parameters if req.respond_to?(:path_parameters)
+                end
+              rescue
+                nil
+              end
+              opts.freeze
+            end
           end
         RUBY
       end
@@ -752,6 +765,61 @@ module RactorRailsShim
       end
     rescue => e
       warn "[ractor-rails-shim] _freeze_mime_negotiation!: #{e.class}: #{e.message}"
+    end
+
+    # ActionDispatch::Http::URL reads the `tld_length` class variable
+    # DIRECTLY (`@@tld_length`) in `normalize_host` and in the default-parameter
+    # of `domain`/`subdomains`/`subdomain`. Class variables are not readable from
+    # a non-main Ractor, so a worker raises
+    # "Ractor::IsolationError: can not access class variables ... @@tld_length".
+    # The shim routes the `mattr_accessor :tld_length` READER through IES, but the
+    # literal `@@tld_length` references bypass that reader. Replace them with the
+    # accessor method (which the shim's mattr_accessor rewrite makes
+    # worker-safe). `domain`/`subdomains`/`subdomain` live in the `Url` module
+    # mixed into ActionDispatch::Request, so patch that module too.
+    def _install_action_dispatch_http_url_patch
+      return if @action_dispatch_http_url_patched
+      @action_dispatch_http_url_patched = true
+      _register_patch :action_dispatch_http_url, "8.1"
+      return unless defined?(::ActionDispatch::Http::URL)
+
+      url = ::ActionDispatch::Http::URL
+      # normalize_host is a module_function: build_host_url calls the
+      # MODULE-LEVEL copy, so redefining the instance method alone leaves the
+      # original (@@tld_length-reading) one in place. Patch the singleton
+      # (module-level) method instead.
+      url.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def normalize_host(_host, options)
+          return _host unless named_host?(_host)
+          tld_length = options[:tld_length] || tld_length()
+          subdomain  = options.fetch :subdomain, true
+          domain     = options[:domain]
+          host = +""
+          if subdomain == true
+            return _host if domain.nil?
+            host << extract_subdomains_from(_host, tld_length).join(".")
+          elsif subdomain
+            host << subdomain.to_param
+          end
+          host << "." unless host.empty?
+          host << (domain || extract_domain_from(_host, tld_length))
+          host
+        end
+      RUBY
+
+      if defined?(::ActionDispatch::Http::URL::Url)
+        ::ActionDispatch::Http::URL::Url.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+          def domain(tld_length = tld_length())
+            ActionDispatch::Http::URL.extract_domain(host, tld_length)
+          end
+          def subdomains(tld_length = tld_length())
+            ActionDispatch::Http::URL.extract_subdomains(host, tld_length)
+          end
+          def subdomain(tld_length = tld_length())
+            ActionDispatch::Http::URL.extract_subdomain(host, tld_length)
+          end
+        RUBY
+      end
     end
   end
 end
