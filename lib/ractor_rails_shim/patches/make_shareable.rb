@@ -208,14 +208,24 @@ module RactorRailsShim
       return if @fallback_built
       @fallback_built = true
 
-      fallback = {}
-      CLASS_ATTRIBUTES.each do |(owner_name, attr_name, ies_key, default_val)|
-        # Skip the Rails logger — it's intrinsically unshareable (IO + Mutex +
-        # mutable formatter) and workers build their own per-Ractor logger
-        # via the patched reader. Trying to make it shareable would freeze the
-        # IO, breaking logging in main too.
-        next if owner_name == "Rails" && attr_name == :logger
-        val = ActiveSupport::IsolatedExecutionState[ies_key]
+        fallback = {}
+        CLASS_ATTRIBUTES.each do |(owner_name, attr_name, ies_key, default_val)|
+          # Skip the Rails logger — it's intrinsically unshareable (IO + Mutex +
+          # mutable formatter) and workers build their own per-Ractor logger
+          # via the patched reader. Trying to make it shareable would freeze the
+          # IO, breaking logging in main too.
+          next if owner_name == "Rails" && attr_name == :logger
+          val = ActiveSupport::IsolatedExecutionState[ies_key]
+          # For class_attribute values whose IES slot was never written but
+          # whose definition-time DEFAULT was mutated in place during boot
+          # (e.g. AbstractController::Base's `config`, whose default
+          # ActiveSupport::OrderedOptions is filled with the real nested config
+          # by railties), the live value lives in the main-Ractor
+          # CLASS_ATTR_VALUES store, NOT in IES. Read it there so workers get
+          # the real value instead of the empty definition-time default.
+          if val.nil? && Ractor.main?
+            val = RactorRailsShim::CLASS_ATTR_VALUES[ies_key]
+          end
         # For mattr_accessor: the value may have been written to @@sym after
         # define-time (e.g. by an initializer). Read it from there if the IES
         # slot is nil (the seed only set the default; the live value may differ).

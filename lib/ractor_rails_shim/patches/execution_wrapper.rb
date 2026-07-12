@@ -62,7 +62,50 @@ module RactorRailsShim
       if defined?(::ActiveSupport::Callbacks)
         ::ActiveSupport::Callbacks.module_eval <<-RUBY, __FILE__, __LINE__ + 1
           def run_callbacks_with_nil_safe(kind, type = nil)
-            callbacks = __callbacks[kind.to_sym] if __callbacks
+            kind = kind.to_sym
+            if RactorRailsShim.thread_mode? && kind == :process_action &&
+               defined?(::RactorRailsShim::SHAREABLE_DECLARED_CALLBACKS)
+              # Thread (Puma/Falcon) mode: the eager-load class_attribute leak
+              # corrupts __callbacks, so ALWAYS replay the captured symbolic
+              # filters (ignoring __callbacks entirely). Serving happens in the
+              # main Ractor, where the worker-style empty-__callbacks path
+              # below never triggers.
+              table = ::RactorRailsShim::SHAREABLE_DECLARED_CALLBACKS
+              action = (self.action_name rescue nil)
+              action = action.to_sym if action
+              entries = []
+              k = self.class
+              while k && k <= ::ActionController::Base
+                rec = table[k.object_id]
+                entries = rec + entries if rec
+                k = k.superclass
+              end
+              unless entries.empty?
+                applies = lambda do |e|
+                  next false unless (e[:kind] == :before || e[:kind] == :after)
+                  in_only = e[:only].nil? || (action && e[:only].include?(action))
+                  not_except = e[:except].nil? || !(action && e[:except].include?(action))
+                  in_only && not_except
+                end
+                result = nil
+                halted = false
+                entries.each do |e|
+                  next unless e[:kind] == :before && applies.call(e)
+                  send(e[:filter]) if respond_to?(e[:filter], true)
+                  if respond_to?(:performed?) ? performed? : response_body
+                    halted = true
+                    break
+                  end
+                end
+                result = (yield if block_given?) unless halted
+                entries.each do |e|
+                  next unless e[:kind] == :after && applies.call(e)
+                  send(e[:filter]) if respond_to?(e[:filter], true)
+                end
+                return result
+              end
+            end
+            callbacks = __callbacks[kind] if __callbacks
             if callbacks.nil? || callbacks.empty?
               # In a worker Ractor, class_attribute-backed `__callbacks`
               # falls back to the empty default (see class_attribute.rb /
@@ -74,7 +117,7 @@ module RactorRailsShim
               # loading `@post`) render correctly. Proc/lambda filters
               # are not captured (self-capturing, unshareable) and are
               # skipped — a known limitation.
-              if !Ractor.main? && kind.to_sym == :process_action &&
+              if (RactorRailsShim.thread_mode? || !Ractor.main?) && kind.to_sym == :process_action &&
                  defined?(::RactorRailsShim::SHAREABLE_DECLARED_CALLBACKS)
                 table = ::RactorRailsShim::SHAREABLE_DECLARED_CALLBACKS
                 action = (self.action_name rescue nil)

@@ -96,41 +96,88 @@ module RactorRailsShim
           # need their own mutable value call the writer, which writes their
           # IES slot and shadows the fallback.
           target = owner.singleton_class? ? owner : owner.singleton_class
-          target.module_eval <<-RUBY, __FILE__, __LINE__ + 1
-            def #{namespaced_name}
-              v = ActiveSupport::IsolatedExecutionState[#{key_str}]
-              return v unless v.nil?
-              fb = RactorRailsShim::SHAREABLE_FALLBACK[#{key_str}]
-              return fb unless fb.nil?
-              RactorRailsShim::CLASS_ATTR_VALUES[#{key_str}] if Ractor.main?
-            end
+          if RactorRailsShim.thread_mode?
+            # Thread (Puma/Falcon) mode: route through a SHARED (process-wide)
+            # store keyed by the actual class's object_id, walking ancestors
+            # for copy-on-write fallback. This restores per-subclass isolation
+            # (lost by the IES-routed variant) without thread-local IES, which
+            # is empty on Puma's request threads.
+            target.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+              def #{namespaced_name}
+                self.ancestors.each do |anc|
+                  v = RactorRailsShim::CLASS_ATTR_VALUES[:"ractor_rails_shim_class_attr_\#{anc.object_id}_#{namespaced_name}"]
+                  return v unless v.nil?
+                end
+                #{namespaced_name.inspect} == :__callbacks ? {} : nil
+              end
 
-            def #{namespaced_name}=(new_value)
-              ActiveSupport::IsolatedExecutionState[#{key_str}] = new_value
-              RactorRailsShim::CLASS_ATTR_VALUES[#{key_str}] = new_value if Ractor.main?
-              new_value
-            end
-          RUBY
+              def #{namespaced_name}=(new_value)
+                RactorRailsShim::CLASS_ATTR_VALUES[:"ractor_rails_shim_class_attr_\#{self.object_id}_#{namespaced_name}"] = new_value
+                new_value
+              end
+            RUBY
 
-          # When owner is a module's singleton class, the original also
-          # defines a public reader `def #{name} { value }` on owner directly
-          # (block-based). Override it with the IES-routed version + fallback.
-          if owner.singleton_class? && owner.attached_object.is_a?(Module)
-            owner.module_eval <<-RUBY, __FILE__, __LINE__ + 1
-              def #{name}
-                v = ActiveSupport::IsolatedExecutionState[#{key_str}]
-                return v unless v.nil?
-                fb = RactorRailsShim::SHAREABLE_FALLBACK[#{key_str}]
-                return fb unless fb.nil?
+            # When owner is a module's singleton class, also override the
+            # public reader `def #{name}` with the shared-store version.
+            if owner.singleton_class? && owner.attached_object.is_a?(Module)
+              owner.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+                def #{name}
+                  self.ancestors.each do |anc|
+                    v = RactorRailsShim::CLASS_ATTR_VALUES[:"ractor_rails_shim_class_attr_\#{anc.object_id}_#{namespaced_name}"]
+                    return v unless v.nil?
+                  end
+                  #{namespaced_name.inspect} == :__callbacks ? {} : nil
+                end
+
+                def #{name}=(new_value)
+                  RactorRailsShim::CLASS_ATTR_VALUES[:"ractor_rails_shim_class_attr_\#{self.object_id}_#{namespaced_name}"] = new_value
+                  new_value
+                end
+              RUBY
+            end
+           else
+            target.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+              def #{namespaced_name}
+                self.ancestors.each do |anc|
+                  k = :"ractor_rails_shim_class_attr_\#{anc.object_id}_#{namespaced_name}"
+                  v = ActiveSupport::IsolatedExecutionState[k]
+                  return v unless v.nil?
+                  fb = RactorRailsShim::SHAREABLE_FALLBACK[k]
+                  return fb unless fb.nil?
+                end
                 RactorRailsShim::CLASS_ATTR_VALUES[#{key_str}] if Ractor.main?
               end
 
-              def #{name}=(new_value)
+              def #{namespaced_name}=(new_value)
                 ActiveSupport::IsolatedExecutionState[#{key_str}] = new_value
                 RactorRailsShim::CLASS_ATTR_VALUES[#{key_str}] = new_value if Ractor.main?
                 new_value
               end
             RUBY
+
+            # When owner is a module's singleton class, the original also
+            # defines a public reader `def #{name} { value }` on owner directly
+            # (block-based). Override it with the IES-routed version + fallback.
+            if owner.singleton_class? && owner.attached_object.is_a?(Module)
+              owner.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+                def #{name}
+                  self.ancestors.each do |anc|
+                    k = :"ractor_rails_shim_class_attr_\#{anc.object_id}_#{namespaced_name}"
+                    v = ActiveSupport::IsolatedExecutionState[k]
+                    return v unless v.nil?
+                    fb = RactorRailsShim::SHAREABLE_FALLBACK[k]
+                    return fb unless fb.nil?
+                  end
+                  RactorRailsShim::CLASS_ATTR_VALUES[#{key_str}] if Ractor.main?
+                end
+
+                def #{name}=(new_value)
+                  ActiveSupport::IsolatedExecutionState[#{key_str}] = new_value
+                  RactorRailsShim::CLASS_ATTR_VALUES[#{key_str}] = new_value if Ractor.main?
+                  new_value
+                end
+              RUBY
+            end
           end
         end
 
