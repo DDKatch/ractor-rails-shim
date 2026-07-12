@@ -369,17 +369,6 @@ module RactorRailsShim
         def initialize(value); @value = value; end
         def call(*_); @value; end
       end
-      class RequestCallable
-        def initialize(method_name); @method_name = method_name; end
-        def call(request, response = nil); request.__send__(@method_name); end
-      end
-      class DeviseMappingCallable
-        def initialize(mapping); @mapping = mapping; end
-        def call(request)
-          request.env["devise.mapping"] = @mapping
-          true
-        end
-      end
       # Shareable snapshot of a Devise::Mapping. The real Mapping holds an
       # unshareable lambda (failure_app) plus a default-proc Hash (controllers),
       # so it can't be Ractor.make_shareable'd. Request-time code only reads a
@@ -455,12 +444,8 @@ module RactorRailsShim
       rescue
         nil
       end
-      class StrategyServe
-        def call(app, req); app.serve(req); end
-      end
-      class StrategyCall
-        def call(app, req); app.call(req.env); end
-      end
+      # StrategyServe / StrategyCall moved to action_dispatch.rb (ActionDispatch
+      # routing mapper strategy procs).
       class NoOpLock
         def synchronize; yield; end
         def mon_synchronize; yield; end
@@ -473,6 +458,12 @@ module RactorRailsShim
         def try_lock; true; end
         def new_cond; Struct.new(:wait, :signal, :broadcast).new(-> {}, -> {}, -> {}); end
       end
+      # NOTE: StrategyServe / StrategyCall (ActionDispatch::Routing::Mapper
+      # strategy procs) and RequestCallable (CookieStore) are now defined in
+      # action_dispatch.rb. DeviseMappingCallable + _devise_mapping_replacement
+      # are in warden.rb; FILES_LOC + _find_files_server are in rack.rb. The
+      # source-location constants (SSL_LOC / COOKIE_LOC / MAPPER_LOC /
+      # DEVISE_SCOPE_LOC / FILES_LOC) live alongside their callables.
       # No-op log device sink: a frozen, shareable stand-in for an IO, swapped
       # in for $stdout/$stderr in the app's logger before make_shareable so
       # the real IOs aren't frozen. Responds to the write methods a
@@ -490,12 +481,6 @@ module RactorRailsShim
         def closed?; false; end
       end
     RUBY
-
-    SSL_LOC = "/active_dispatch/middleware/ssl.rb".freeze
-    FILES_LOC = "/rack/files.rb".freeze
-    COOKIE_LOC = "/session/cookie_store.rb".freeze
-    DEVISE_SCOPE_LOC = "/devise/rails/routes.rb".freeze
-    MAPPER_LOC = "/action_dispatch/routing/mapper.rb".freeze
 
     # --- graph traversal helpers ---
 
@@ -623,41 +608,9 @@ module RactorRailsShim
       end
     end
 
-    # Build a shareable replacement for a Devise scope constraint.
-    # The original Proc (devise/rails/routes.rb:363) does:
-    #   request.env["devise.mapping"] = Devise.mappings[scope]
-    #   true
-    # The scope is captured in the Proc's binding. We call the original
-    # Proc once in main with a mock request to capture the mapping, then
-    # make it shareable and wrap it in a DeviseMappingCallable.
-    def _devise_mapping_replacement(proc_obj, parent)
-      mock_env = { "devise.mapping" => nil }
-      mock_req = Struct.new(:env).new(mock_env)
-      begin
-        proc_obj.call(mock_req)
-      rescue
-      end
-      mapping = mock_env["devise.mapping"]
-      if mapping
-        mapping = _devise_mapping_snapshot(mapping)
-      end
-      if mapping
-        DeviseMappingCallable.new(mapping)
-      else
-        CallableConst.new(true)
-      end
-    end
-
-    def _find_files_server(mw)
-      cur = mw
-      while cur
-        if cur.class.name == "ActionDispatch::Static"
-          return cur.instance_variable_get(:@file_server)
-        end
-        cur = cur.instance_variable_get(:@app) rescue nil
-      end
-      nil
-    end
+    # NOTE: `_devise_mapping_replacement` (Devise scope constraint →
+    # DeviseMappingCallable) now lives in warden.rb; `_find_files_server`
+    # (Rack::Files target for the asset stack) now lives in rack.rb.
 
     def _replace_locks_and_concurrent_maps!(app)
       seen = {}

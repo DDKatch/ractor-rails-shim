@@ -28,7 +28,32 @@ module RactorRailsShim
         "ActionView::Helpers::ControllerHelper::CONTROLLER_DELEGATES",
       ])
 
+  # Source-location constants used by make_app_shareable!'s proc-replacement
+  # graph traversal (moved here from make_shareable.rb so each concern's pieces
+  # live together).
+  SSL_LOC = "/active_dispatch/middleware/ssl.rb".freeze
+  COOKIE_LOC = "/session/cookie_store.rb".freeze
+  MAPPER_LOC = "/action_dispatch/routing/mapper.rb".freeze
+
   class << self
+    # Shareable callable replacements for ActionDispatch/ActionController
+    # self-capturing Procs (moved here from make_shareable.rb). Defined via
+    # string eval on the singleton class so they're referenced the same way the
+    # original code did (the engine resolves them as RactorRailsShim singleton
+    # class constants; specs access via RactorRailsShim.singleton_class.const_get).
+    module_eval <<-RUBY, __FILE__, __LINE__ + 1
+      class RequestCallable
+        def initialize(method_name); @method_name = method_name; end
+        def call(request, response = nil); request.__send__(@method_name); end
+      end
+      class StrategyServe
+        def call(app, req); app.serve(req); end
+      end
+      class StrategyCall
+        def call(app, req); app.call(req.env); end
+      end
+    RUBY
+
     # Patch ActionDispatch::ExceptionWrapper instance methods that read
     # @@rescue_responses / @@rescue_templates class variables directly
     # (bypassing the mattr_accessor reader the shim already reroutes through

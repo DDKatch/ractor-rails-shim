@@ -28,8 +28,13 @@ module RactorRailsShim
     # ENCODINGS is a mutable Hash. None are shareable by default.
     "Rack::Multipart::Parser::TEMPFILE_FACTORY",
     "Rack::Multipart::Parser::EMPTY",
-    "Rack::Multipart::Parser::REENCODE_DUMMY_ENCODINGS",
+      "Rack::Multipart::Parser::REENCODE_DUMMY_ENCODINGS",
   ])
+
+  # Source-location constant used by make_app_shareable!'s proc-replacement
+  # graph traversal (moved here from make_shareable.rb so the Rack concern's
+  # pieces live together).
+  FILES_LOC = "/rack/files.rb".freeze
 
   class << self
     # Patch Rack::Request's class-level attr_accessors (forwarded_priority,
@@ -135,6 +140,21 @@ module RactorRailsShim
       CLASS_ATTRIBUTES << ["Rack::Utils", :default_query_parser, dqp_key, nil]
       CLASS_ATTRIBUTES << ["Rack::Utils", :multipart_total_part_limit, mtp_key, nil]
       CLASS_ATTRIBUTES << ["Rack::Utils", :multipart_file_limit, mfl_key, nil]
+    end
+
+    # Find the Rack::Files (asset) server in the middleware chain, used by
+    # make_app_shareable! when replacing the Rack::Head#@app lambda (whose
+    # binding receiver is the Rack::Files instance). Moved here from
+    # make_shareable.rb so the Rack concern's pieces live together.
+    def _find_files_server(mw)
+      cur = mw
+      while cur
+        if cur.class.name == "ActionDispatch::Static"
+          return cur.instance_variable_get(:@file_server)
+        end
+        cur = cur.instance_variable_get(:@app) rescue nil
+      end
+      nil
     end
   end
 end

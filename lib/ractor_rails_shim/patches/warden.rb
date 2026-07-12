@@ -19,6 +19,10 @@ module RactorRailsShim
     "Devise::MODULES",
   ])
 
+  # Source-location constant for the Devise scope constraint Proc (moved from
+  # make_shareable.rb so the Devise-related callable lives with the Devise patch).
+  DEVISE_SCOPE_LOC = "/devise/rails/routes.rb".freeze
+
   class << self
     def _install_warden_hooks_patch
       return if @warden_patched
@@ -147,6 +151,44 @@ module RactorRailsShim
             key
           end
         end
+      end
+    end
+
+    # --- Devise scope-constraint callable (moved from make_shareable.rb) ---
+    # Defined via string eval on the singleton class so it's referenced the same
+    # way the original code did (RactorRailsShim.singleton_class.const_get).
+    module_eval <<-RUBY, __FILE__, __LINE__ + 1
+      class DeviseMappingCallable
+        def initialize(mapping); @mapping = mapping; end
+        def call(request)
+          request.env["devise.mapping"] = @mapping
+          true
+        end
+      end
+    RUBY
+
+    # Build a shareable replacement for a Devise scope constraint.
+    # The original Proc (devise/rails/routes.rb:363) does:
+    #   request.env["devise.mapping"] = Devise.mappings[scope]
+    #   true
+    # The scope is captured in the Proc's binding. We call the original
+    # Proc once in main with a mock request to capture the mapping, then
+    # make it shareable and wrap it in a DeviseMappingCallable.
+    def _devise_mapping_replacement(proc_obj, _parent)
+      mock_env = { "devise.mapping" => nil }
+      mock_req = Struct.new(:env).new(mock_env)
+      begin
+        proc_obj.call(mock_req)
+      rescue
+      end
+      mapping = mock_env["devise.mapping"]
+      if mapping
+        mapping = _devise_mapping_snapshot(mapping)
+      end
+      if mapping
+        DeviseMappingCallable.new(mapping)
+      else
+        CallableConst.new(true)
       end
     end
   end
