@@ -588,7 +588,13 @@ module RactorRailsShim
       #   FrozenError: can't modify frozen Array
       # Loading here makes the callback fire once, in main, against the
       # non-frozen arrays; load hooks never fire again in workers.
-      require "active_support/message_pack" rescue nil
+      # Gem::LoadError is a ScriptError (not StandardError), so a bare
+      # `rescue nil` on the require would NOT catch a missing msgpack gem.
+      begin
+        require "active_support/message_pack"
+      rescue LoadError
+        return
+      end
 
       mod = (Object.const_get(:ActiveSupport) rescue nil)&.const_get(:Messages, false) rescue nil
       mod = mod&.const_get(:Metadata, false) rescue nil

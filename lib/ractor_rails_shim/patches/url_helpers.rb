@@ -58,7 +58,14 @@ module RactorRailsShim
             if options.is_a?(Hash) || options.is_a?(ActionController::Parameters)
               route_name = options.delete :use_route
               merged = options.to_h.symbolize_keys.reverse_merge!(url_options)
-              _routes.url_for(merged, route_name)
+              # `self._routes` is an un-shareable `define_method` block in a
+              # worker Ractor, so calling it re-raises the same error. Route the
+              # fallback through the worker-safe shareable RouteSet instead.
+              if RactorRailsShim.const_defined?(:SHAREABLE_ROUTES)
+                RactorRailsShim::SHAREABLE_ROUTES.url_for(merged, route_name)
+              else
+                _routes.url_for(merged, route_name)
+              end
             else
               builder = ActionDispatch::Routing::PolymorphicRoutes::HelperMethodBuilder.url
               builder.handle_model_call(self, options)

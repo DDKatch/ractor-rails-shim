@@ -48,6 +48,68 @@ module RactorRailsShim
           end
         end
       RUBY
+
+      # The module-level `polymorphic_path` / `polymorphic_url` (called by
+      # `form_with` when it infers the URL from a model) invoke
+      # `mapping.call` directly. A custom `resolve` mapping Proc is built in
+      # the main Ractor and is un-shareable, so calling it from a worker
+      # Ractor raises "defined with an un-shareable Proc in a different
+      # Ractor". Rescue that and fall through to the (worker-safe)
+      # HelperMethodBuilder path, which derives the route from the record's
+      # model name — the same fallback the original code uses when no mapping
+      # is registered at all.
+      pm = ::ActionDispatch::Routing::PolymorphicRoutes
+      pm.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def polymorphic_path(record_or_hash_or_array, options = {})
+          if ::Hash === record_or_hash_or_array
+            options = record_or_hash_or_array.merge(options)
+            record  = options.delete :id
+            return polymorphic_path record, options
+          end
+
+          if mapping = (polymorphic_mapping(record_or_hash_or_array) rescue nil)
+            begin
+              return mapping.call(self, [record_or_hash_or_array, options], true)
+            rescue ::Ractor::Error
+            end
+          end
+
+          opts   = options.dup
+          action = opts.delete :action
+          type   = :path
+
+          HelperMethodBuilder.polymorphic_method self,
+                                                 record_or_hash_or_array,
+                                                 action,
+                                                 type,
+                                                 opts
+        end
+
+        def polymorphic_url(record_or_hash_or_array, options = {})
+          if ::Hash === record_or_hash_or_array
+            options = record_or_hash_or_array.merge(options)
+            record  = options.delete :id
+            return polymorphic_url record, options
+          end
+
+          if mapping = (polymorphic_mapping(record_or_hash_or_array) rescue nil)
+            begin
+              return mapping.call(self, [record_or_hash_or_array, options], false)
+            rescue ::Ractor::Error
+            end
+          end
+
+          opts   = options.dup
+          action = opts.delete :action
+          type   = opts.delete(:routing_type) || :url
+
+          HelperMethodBuilder.polymorphic_method self,
+                                                 record_or_hash_or_array,
+                                                 action,
+                                                 type,
+                                                 opts
+        end
+      RUBY
     end
   end
 end

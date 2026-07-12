@@ -242,6 +242,40 @@ module RactorRailsShim
             strat.reset(request) if strat
           end
         RUBY
+
+        # `csrf_token_storage_strategy` and `forgery_protection_strategy` are
+        # both delegated to the controller `config` (a class_attribute). In the
+        # shared :ractor graph the per-controller frozen `config` copy loses
+        # them, so a worker reads nil and CSRF token handling raises
+        # ("undefined method 'fetch' for nil" / "undefined method 'new' for
+        # nil"). Default to the standard SessionStore / Exception strategies so
+        # token ISSUANCE and VALIDATION work in workers.
+        #
+        # NOTE: prepending to RequestForgeryProtection (a module) would NOT
+        # reach the controllers, because ActionController::Base already
+        # *included* it before this patch runs. Prepend to the BASE CLASS so
+        # every controller (incl. Devise subclasses) picks up the default.
+        # The defaults are referenced via their constant paths (not captured
+        # locals) because `def` bodies do not close over enclosing locals.
+        ::ActionController::Base.prepend(Module.new do
+          def csrf_token_storage_strategy
+            super || ::ActionController::RequestForgeryProtection::SessionStore.new
+          end
+
+          def forgery_protection_strategy
+            super || ::ActionController::RequestForgeryProtection::ProtectionMethods::Exception
+          end
+
+          # Delegated to `config` (a class_attribute) which loses its value when
+          # make_app_shareable! deep-freezes the shared graph, so a worker reads
+          # nil. With a nil param key, form_authenticity_param reads params[nil]
+          # and CSRF VALIDATION rejects every POST (even with a valid token),
+          # because the token is carried under the real key (:authenticity_token).
+          # Default to the standard param name so validation can find the token.
+          def request_forgery_protection_token
+            super || :authenticity_token
+          end
+        end)
       end
 
       # Patch the flash-type helper methods (`notice`, `alert`, ...) defined by
