@@ -316,11 +316,16 @@ module RactorRailsShim
     # make_app_shareable!), worker Ractors will see nil for framework config
     # values that couldn't be shared without freezing the app — set them
     # explicitly per worker, or use make_app_shareable!.
-    def prepare_for_ractors!
-      do_install_shareable_constants
-      RactorRailsShim._freeze_shareable_class_ivars! if RactorRailsShim.respond_to?(:_freeze_shareable_class_ivars!)
-      snapshot_gem_paths!
-      snapshot_query_logs!
+    # Shared list of every framework patch install method. Both
+    # `prepare_for_ractors!` (pre-worker boot) and `make_app_shareable!`
+    # (post-boot, pre-freeze) call this, so the two no longer duplicate the
+    # literal `_install_*` list. Each `_install_*` is idempotent (guarded by
+    # its own @*_patched flag), so calling the full set at either point is a
+    # no-op for already-applied patches. Duplicates from the original
+    # prepare_for_ractors! list (_install_csrf_reset_patch,
+    # _install_messages_serializer_patch, _install_activerecord_delegation_patch)
+    # are collapsed here.
+    def _install_all_framework_patches
       _install_rack_request_patch
       _install_inflector_patch
       _install_module_introspection_patch
@@ -356,7 +361,6 @@ module RactorRailsShim
       _install_warden_hooks_patch
       _install_warden_strategies_patch
       _install_devise_failure_app_patch
-      _install_csrf_reset_patch
       _install_activerecord_connection_handler_patch
       _install_activerecord_configurations_patch
       _install_activerecord_db_config_handlers_patch
@@ -379,7 +383,6 @@ module RactorRailsShim
       _install_active_record_inheritance_patch
       _install_active_record_model_schema_patch
       _install_activerecord_model_schema_patch
-      _install_activerecord_delegation_patch
       _install_openssl_digest_patch
       _install_caching_key_generator_patch
       _install_active_model_conversion_patch
@@ -389,17 +392,24 @@ module RactorRailsShim
       _install_activerecord_query_logs_patch
       _install_kaminari_config_patch
       _install_propshaft_patch
-      _install_messages_serializer_patch
       _install_devise_url_helpers_patch
       _install_devise_authenticatable_patch
       _install_polymorphic_routes_patch
-      install_url_helpers_patch
-      fix_url_helpers_singleton_routes
       _install_orm_adapter_patch
       _install_warden_serializer_patch
       _install_json_encoding_patch
       _install_active_model_attribute_patch
       _install_hash_compute_if_absent_patch
+    end
+
+    def prepare_for_ractors!
+      do_install_shareable_constants
+      RactorRailsShim._freeze_shareable_class_ivars! if RactorRailsShim.respond_to?(:_freeze_shareable_class_ivars!)
+      snapshot_gem_paths!
+      snapshot_query_logs!
+      _install_all_framework_patches
+      install_url_helpers_patch
+      fix_url_helpers_singleton_routes
       _warm_active_record_class_caches!
       _freeze_active_record_class_ivars!
       _freeze_global_class_ivars!

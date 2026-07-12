@@ -47,30 +47,11 @@ module RactorRailsShim
       # PathRegistry + AbstractController + error_reporter + LookupContext +
       # I18n + Template::Handlers + ExecutionContext + Request param parsers.
       do_install_shareable_constants unless @shareable_constants_done
-      _install_rack_request_patch
-      _install_inflector_patch
-      _install_parameter_encoding_patch
-      _install_path_registry_patch
-      _install_abstract_controller_patch
-      _install_active_support_error_reporter_patch
-      _install_lookup_context_patch
-      _install_i18n_patch
-      _install_template_handlers_patch
-      _install_execution_context_patch
-      _install_request_parameter_parsers_patch
-      _install_rack_utils_patch
-      _install_log_subscriber_patch
-      _install_exception_wrapper_patch
-      _install_warden_hooks_patch
-      _install_action_dispatch_mounted_helpers_patch
-      _install_activerecord_connection_handler_patch
-      _install_activerecord_configurations_patch
-      _install_activerecord_db_config_handlers_patch
-      _install_activerecord_relation_delegate_cache_patch
-      _install_activerecord_model_classes_patch
-      _install_kaminari_config_patch
-      _install_propshaft_patch
-      _install_devise_url_helpers_patch
+      # Install (or re-run, idempotently) the full framework-patch set. Most
+      # are already applied by prepare_for_ractors!; this guarantees every
+      # patch is present after full boot even if prepare_for_ractors! ran
+      # before some classes were loaded.
+      _install_all_framework_patches
       # Pre-compute lazy ivars BEFORE freezing (they mutate the app).
       _precompute_lazy_ivars(app)
       _precompute_propshaft!(app)
