@@ -3,7 +3,7 @@
 > Reference/design document. For the task-oriented "what to do next", see
 > `README.md`. This file captures *why* the shim is built the way it is,
 > the dev/prod tradeoffs, and the conclusions reached while getting the
-> `full_test_app` dummy app to serve under [kino](https://github.com/yaroslav/kino) `-m ractor`.
+> `ractor-rails-shim-test-app` dummy app to serve under [kino](https://github.com/yaroslav/kino) `-m ractor`.
 
 ## 1. The core model: one frozen, shared app graph
 
@@ -218,7 +218,7 @@ main** that swaps worker pools; workers are always non-main.
 - Shim: `ractor-rails-shim` @ `60e978d` — early `with_empty_template_cache`
   install via `on_load`; shared `SHAREABLE_COMPILED_MODULE`; JSON const
   deep-freeze; callback `only`/`except` capture; removed debug probes.
-- Test app: `full_test_app` @ `ad44763` — `config_ractor.ru` cleaned of debug
+- Test app: `ractor-rails-shim-test-app` @ `ad44763` — `config_ractor.ru` cleaned of debug
   probes.
 - Both dev and prod verified 200 under `kino -m ractor` after `60e978d`.
 - **Callback-leak fix (subsequent commit):** `make_shareable.rb` now intercepts

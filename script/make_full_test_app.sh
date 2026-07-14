@@ -20,7 +20,7 @@
 set -euo pipefail
 
 SHIM_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-DEST="${1:-$(mktemp -d)/full_test_app}"
+DEST="${1:-$(mktemp -d)/ractor-rails-shim-test-app}"
 
 echo "Creating full-stack Rails app at: $DEST"
 mkdir -p "$(dirname "$DEST")"
@@ -89,15 +89,15 @@ default: &default
 
 development:
   <<: *default
-  database: full_test_app_dev
+  database: ractor-rails-shim-test-app_dev
 
 test:
   <<: *default
-  database: full_test_app_test
+  database: ractor-rails-shim-test-app_test
 
 production:
   <<: *default
-  database: full_test_app_prod
+  database: ractor-rails-shim-test-app_prod
 YAML
 
 # Production needs a secret_key_base. Generate one and stash in a credentials

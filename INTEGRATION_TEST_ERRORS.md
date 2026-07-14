@@ -1,4 +1,4 @@
-# Integration Test Errors — `full_test_app`
+# Integration Test Errors — `ractor-rails-shim-test-app`
 
 > Collected by running the dummy app's test suite. Updated whenever the
 > integration tests are run. Companion to `README.md` (RESUME HERE →
@@ -6,7 +6,7 @@
 >
 > Run the route-coverage test with:
 > ```sh
-> cd full_test_app && bin/rails test test/integration/all_routes_test.rb
+> cd ractor-rails-shim-test-app && bin/rails test test/integration/all_routes_test.rb
 > ```
 
 ## Current status
