@@ -15,6 +15,16 @@ module RactorRailsShim
       Finding = Data.define(:owner, :ivar, :value_class, :shareable, :source, :kind)
 
       class << self
+        # Safely derive a value's class name. BasicObject (and its subclasses)
+        # don't define `.class`, so calling it raises NoMethodError — fall back
+        # to "BasicObject" in that case.
+        def safe_class(val)
+          val.class.name || val.class.to_s
+        rescue NoMethodError
+          "BasicObject"
+        end
+        private :safe_class
+
         # Scan all loaded classes/modules and report class ivars AND class
         # variables holding unshareable values. Returns an array of Finding.
         def scan
@@ -49,7 +59,7 @@ module RactorRailsShim
               findings << Finding.new(
                 owner: mod.name,
                 ivar: ivar.to_s,
-                value_class: val.class.name || val.class.to_s,
+                value_class: safe_class(val),
                 shareable: shareable,
                 source: source,
                 kind: :ivar
@@ -82,7 +92,7 @@ module RactorRailsShim
                 findings << Finding.new(
                   owner: mod.name,
                   ivar: cvar.to_s,
-                  value_class: val.class.name || val.class.to_s,
+                  value_class: safe_class(val),
                   shareable: shareable,
                   source: source,
                   kind: :cvar
