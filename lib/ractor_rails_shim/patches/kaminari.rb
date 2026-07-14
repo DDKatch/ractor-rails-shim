@@ -3,7 +3,7 @@
 # Patch Kaminari::config to not read the @_config class ivar from a worker
 # Ractor.
 #
-# Blocker 2 (from NEXT_STEPS.md):
+# Blocker 2:
 #   Kaminari.config reads @_config directly at kaminari/config.rb:14:
 #     def self.config; @_config ||= Kaminari::Configuration.new end
 #   Not mattr_accessor-backed, so the shim's mattr rewrite doesn't catch it.

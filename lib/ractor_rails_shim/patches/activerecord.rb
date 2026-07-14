@@ -2,7 +2,7 @@
 
 # Patch ActiveRecord's connection handler to work in per-Ractor mode.
 #
-# Blocker 1 (from NEXT_STEPS.md):
+# Blocker 1:
 #   ActiveRecord::Base.connection_pool calls
 #   default_connection_handler.retrieve_connection_pool(...)
 #   at connection_handling.rb:346. The default_connection_handler
