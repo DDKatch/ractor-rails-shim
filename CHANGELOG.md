@@ -47,7 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `TYPE_MAP` (Procs) and `QUOTED_*` `Concurrent::Map` quoting caches.
   These are intrinsically unshareable and require upstream Rails changes
   (shareable callables instead of Procs; per-Ractor quoting caches). See
-  `NEXT_STEPS.md` "The wall — deep AR ractor-unsafety".
+  the "deep AR ractor-unsafety" wall in the project notes.
 
 ## [0.2.0] - 2026-07-09
 
