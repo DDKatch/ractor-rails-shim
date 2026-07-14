@@ -72,4 +72,4 @@ jobs:
           SECRET_KEY_BASE: dummy
         run: |
           bundle exec ruby -I${{ github.workspace }}/lib \
-            -e 'require "ractor_rails_shim"; require "config/boot"; require "config/application"; Bundler.require(*Rails.groups); Rails.application.initialize!; RactorRailsShim::Check.report(print: true)'
+            -e 'require "ractor_rails_shim"; require File.expand_path("config/boot"); require File.expand_path("config/application"); Bundler.require(*Rails.groups); Rails.application.initialize!; RactorRailsShim::Check.report(print: true)'
