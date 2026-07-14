@@ -55,6 +55,22 @@ module RactorRailsShim
       # Pre-compute lazy ivars BEFORE freezing (they mutate the app).
       _precompute_lazy_ivars(app)
       _precompute_propshaft!(app)
+      # Force ActiveRecord attribute-method generation in the MAIN Ractor for
+      # every loaded model. AR defines these lazily on first instantiation; if
+      # left undone, a worker Ractor's first `Post.new` / record load re-enters
+      # `define_attribute_methods`, which locks
+      # `GeneratedAttributeMethods::LOCK` — a `Monitor` created in the main
+      # Ractor and therefore non-shareable — raising Ractor::IsolationError.
+      # Generating here (where the Monitor is reachable) sets
+      # `@attribute_methods_generated = true` on the shared, frozen classes so
+      # workers skip the lock entirely.
+      _generate_ar_attribute_methods!
+      # Warm + freeze ActiveModel's per-class `attribute_method_patterns_cache`
+      # (and `attribute_method_matchers`) in MAIN for every loaded model. See
+      # `_warm_attribute_method_patterns!` for why: a worker Ractor reading these
+      # lazy class ivars (Array of [Regexp, Symbol], but mutable => unshareable)
+      # during `redirect_to @post` -> `respond_to?` raises Ractor::IsolationError.
+      _warm_attribute_method_patterns!
       # Capture each controller's OWN declared `process_action` symbol filters
       # (before_action / after_action) into a shareable table so worker
       # Ractors can replay them. The shim routes class_attribute-backed
@@ -471,6 +487,50 @@ module RactorRailsShim
       app.routes.url_helpers rescue nil
       app.routes.named_routes rescue nil
       app.routes.helpers rescue nil
+    end
+
+    # Force AR attribute-method generation for every loaded model in the MAIN
+    # Ractor. See the call site in make_app_shareable! for why; without this a
+    # worker Ractor dies with Ractor::IsolationError on the first model
+    # instantiation (GeneratedAttributeMethods::LOCK is a non-shareable Monitor).
+    def _generate_ar_attribute_methods!
+      return unless defined?(::ActiveRecord::Base)
+      ::ActiveRecord::Base.descendants.each do |klass|
+        next unless klass.respond_to?(:define_attribute_methods)
+        klass.define_attribute_methods
+      rescue StandardError
+        nil
+      end
+    end
+
+    # Build + freeze ActiveModel's per-class `attribute_method_patterns_cache`
+    # (and `attribute_method_matchers`) in the MAIN Ractor for every loaded
+    # model. These are lazy class ivars populated on the first `respond_to?`
+    # call; they hold an Array of `[Regexp, Symbol]` pairs (shareable elements)
+    # but the Array itself is mutable and therefore NOT Ractor-shareable. A
+    # worker Ractor reading the ivar raises
+    # `Ractor::IsolationError: can not get unshareable values from instance
+    # variables of classes/modules`. `redirect_to @post` calls
+    # `Post#respond_to?(:to_model)` in the worker, which reads this cache, so
+    # the write-path 302 redirect dies. Building it in MAIN (where it is
+    # reachable) and freezing the Array makes it shareable; the cache is never
+    # mutated after build (`attribute_method_patterns_matching` only does
+    # `.select` on it), so freezing is safe.
+    def _warm_attribute_method_patterns!
+      return unless defined?(::ActiveRecord::Base)
+      ::ActiveRecord::Base.descendants.each do |klass|
+        next unless klass.respond_to?(:attribute_method_patterns_cache, true)
+        begin
+          cache = klass.send(:attribute_method_patterns_cache)
+          cache.freeze if cache
+          if klass.respond_to?(:attribute_method_matchers, true)
+            matchers = klass.send(:attribute_method_matchers)
+            matchers.freeze if matchers
+          end
+        rescue StandardError
+          nil
+        end
+      end
     end
 
     # Replace every Proc in the app graph with a callable/no-op object.
