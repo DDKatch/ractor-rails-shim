@@ -44,6 +44,10 @@ sustained writes. The patch is published at
 check out that branch, then `asdf local rust 1.85.0 && cargo build --release`
 (the native extension is compiled by the Rails app's `bundle install`).
 
+**Benchmarks:** throughput/latency/memory of this shim + the test app under
+kino `:ractor` vs Puma vs Falcon are documented in
+[ractor-rails-shim-test-app/BENCHMARKS.md](https://github.com/DDKatch/ractor-rails-shim-test-app/blob/main/BENCHMARKS.md).
+
 ## Why
 
 Rails stores global state in class-level instance variables:
