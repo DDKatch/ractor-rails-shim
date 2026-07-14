@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Improved the published gem summary and description (gemspec). Metadata-only
+  release — no code changes.
+
 ### Added — ActiveRecord query-path ractor-safety (Blocker 1 deep work)
 - `RactorRailsShim.worker_ar_init(app)` — a shareable Rack middleware that
   calls `init_worker_ar_connections!` on each worker's first request. Kino's

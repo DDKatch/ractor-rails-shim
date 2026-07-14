@@ -8,17 +8,25 @@ Gem::Specification.new do |spec|
   spec.authors = ["dev"]
   spec.email = ["kachur.daniil@gmail.com"]
 
-  spec.summary = "Monkey-patch Rails class-level globals to be Ractor-safe"
+  spec.summary = "Make Rails apps Ractor-safe so they can run in Ractor mode (e.g. under the kino web server)."
   spec.description = <<~DESC
-    Rails stores global state (Rails.application, Rails.cache, Rails.logger,
-    config set via mattr_accessor) in class-level instance variables, which
-    are illegal to read or write from non-main Ractors. This shim reroutes
-    those accessors through ActiveSupport::IsolatedExecutionState (which is
-    already Ractor-safe, being thread-local with per-ractor threads) or
-    Ractor.store_if_absent, so a Rails app can run in Ractor mode.
+    ractor-rails-shim makes a Rails application Ractor-safe, so it can run in
+    Ractor mode — serving requests from worker Ractors that share one frozen
+    app graph, instead of forking N separate processes.
 
-    This is a stopgap: the goal is for Rails to do this upstream, at which
-    point the shim becomes a no-op and can be removed.
+    Rails keeps global state (Rails.application, Rails.cache, Rails.logger,
+    and every config value set via mattr_accessor / class_attribute) in
+    class-level instance variables, which Ruby forbids reading or writing from
+    a non-main Ractor. The shim reroutes those accessors through Ractor-safe
+    storage (ActiveSupport::IsolatedExecutionState, or Ractor.store_if_absent)
+    and patches the handful of raw class-ivar accessors Rails reads
+    per-request.
+
+    It is verified against a real Rails 8.1 app (Devise, Propshaft, Kaminari,
+    PostgreSQL) served by the kino web server in `kino -m ractor` mode.
+
+    This is a stopgap: once Rails supports Ractor mode upstream, this gem
+    becomes a no-op and can be removed.
   DESC
 
   # Canonical repo URL. Update this (and the metadata below) before
