@@ -4,24 +4,21 @@ A monkey-patch shim that reroutes Rails' class-level instance variable accessors
 
 **Status:** proof-of-concept / stopgap. The goal is for Rails to do this upstream, at which point this gem becomes a no-op and can be removed.
 
-**Current milestone:** on a full Rails 8.1 app (Devise 5, Propshaft, Kaminari,
-PG) under Ruby 4.0.5, worker Ractors dispatched by `kino -m ractor` serve
-**every** routable action — `GET /up`, full ERB view rendering, Devise
-sign-in/sign-out (CSRF issuance **and** validation), and authenticated
-Devise **writes** (`POST /posts` → 302, row persisted). A worker Ractor
-dispatches `GET /up` → **HTTP 200** via `RactorRailsShim.make_app_shareable!`.
-The shim builds a shareable fallback table for framework class config
-(`class_attribute` / `mattr_accessor` values) and patches the raw class-ivar
-accessors Rails reads per-request (`ExecutionWrapper.active_key`,
-`Notifications.notifier`, `Inflections`, `PathRegistry`, `I18n`,
-`AbstractController` lazy ivars, `Rack::Request`/`Utils`, `ExecutionContext`,
-etc.). See `NEXT_STEPS.md` for the full blocker map, the kino `:ractor` vs
-Puma/Falcon benchmark, and the kino source patch (per-ractor env-string
-cache).
+**Current status:** on a full Rails 8.1 app (Devise 5, Propshaft, Kaminari,
+PG) under Ruby 4.0.5, worker Ractors serve **every** routable action —
+`GET /up`, full ERB view rendering, Devise sign-in/sign-out (CSRF issuance
+**and** validation), and authenticated Devise **writes** (`POST /posts` → 302,
+row persisted). A worker Ractor dispatches `GET /up` → **HTTP 200** via
+`RactorRailsShim.make_app_shareable!`. The shim builds a shareable fallback
+table for framework class config (`class_attribute` / `mattr_accessor` values)
+and patches the raw class-ivar accessors Rails reads per-request
+(`ExecutionWrapper.active_key`, `Notifications.notifier`, `Inflections`,
+`PathRegistry`, `I18n`, `AbstractController` lazy ivars, `Rack::Request`/`Utils`,
+`ExecutionContext`, etc.).
 
-**Known limitation:** sustained *concurrent* writes in `kino -ractor` still
-crash a worker Ractor with a frozen-iseq SIGBUS (Ruby 4.0's ractor model;
-reads and single writes are stable). Tracked as "class #2" in `NEXT_STEPS.md`.
+**Known limitation:** sustained *concurrent* writes in a worker Ractor can still
+crash with a frozen-iseq SIGBUS (a Ruby 4.0 Ractor-model issue); reads and
+single writes are stable.
 
 ## Why
 
@@ -219,11 +216,11 @@ natively supports Ractor mode — i.e. when **all** of these land upstream:
 2. The `Zeitwerk::Registry` class ivars route through ractor-safe storage.
 3. Unshareable constants (`EnvironmentInquirer::DEFAULT_ENVIRONMENTS`, etc.)
    are made shareable (deep-frozen) at boot.
-4. The **7 self-capturing Procs** in the app graph (see `NEXT_STEPS.md`
-   Phase 3) are restructured to not capture `self` — e.g. the `Rack::Files`
-   head lambda, `ActionDispatch::SSL` exclude proc, `CookieStore` same-site
-   proc, the message-verifier secret generator, and the routes-reloader
-   blocks. These block `Ractor.make_shareable(Rails.application)` today.
+ 4. The **7 self-capturing Procs** in the app graph are restructured to not
+    capture `self` — e.g. the `Rack::Files` head lambda, `ActionDispatch::SSL`
+    exclude proc, `CookieStore` same-site proc, the message-verifier secret
+    generator, and the routes-reloader blocks. These block
+    `Ractor.make_shareable(Rails.application)` today.
 5. Initializer blocks (`Rails::Initializable::Initializer#block`) are
    shareable (defined as methods, not closures) so per-Ractor boot works.
 

@@ -1,7 +1,7 @@
 # Draft Rails Issue — Ractor support roadmap
 
 > **Status:** draft (not yet submitted). This is the writeable deliverable for
-> `NEXT_STEPS.md` Phase 5. It compiles the shim's findings into a
+> `README.md` Phase 5. It compiles the shim's findings into a
 > submission-ready Rails issue. When the maintainer is ready to engage
 > upstream, paste the body below into a `rails/rails` issue and link the
 > `ractor-rails-shim` repo as the reference implementation.

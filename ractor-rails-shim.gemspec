@@ -23,7 +23,7 @@ Gem::Specification.new do |spec|
 
   # Canonical repo URL. Update this (and the metadata below) before
   # publishing — rubygems.org displays these links on the gem page.
-  REPO_URL = "https://github.com/anomalyco/ractor-rails-shim"
+  REPO_URL = "https://github.com/DDKatch/ractor-rails-shim"
 
   spec.homepage = REPO_URL
   spec.license = "MIT"

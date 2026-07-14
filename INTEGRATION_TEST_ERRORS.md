@@ -1,7 +1,7 @@
 # Integration Test Errors — `full_test_app`
 
 > Collected by running the dummy app's test suite. Updated whenever the
-> integration tests are run. Companion to `NEXT_STEPS.md` (RESUME HERE →
+> integration tests are run. Companion to `README.md` (RESUME HERE →
 > "Route-coverage integration test").
 >
 > Run the route-coverage test with:
@@ -103,6 +103,6 @@
   process), so it catches ordinary route/controller/view errors (500s,
   exceptions) but **not** Ractor-isolation errors. To catch isolation errors in
   a worker Ractor, use `verify_blockers.rb` / `kino -m ractor` per
-  `NEXT_STEPS.md` (RESUME HERE → "How to reproduce").
+  `README.md` (RESUME HERE → "How to reproduce").
 - 19 controller-backed routes are exercised per run (verified by counting
   `Rails.application.routes.routes` entries with `defaults[:controller]`).

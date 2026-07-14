@@ -98,4 +98,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Ractor.make_shareable(app)`. A worker Ractor dispatches `GET /up` → 200.
 - `ractor-rails-check` CLI audit tool.
 - Minimal unit specs (8) + an integration spec (self-skips without a test app).
-- `NEXT_STEPS.md`, `VALIDATION.md`, `README.md`.
+- `VALIDATION.md`, `README.md`.

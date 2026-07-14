@@ -10,3 +10,16 @@
 *.gem
 Gemfile.lock
 .rspec_status
+
+# Scratch / probe files (not for publication)
+/phase2_probe.rb
+/phase2_probe_results.txt
+/phase3_probe.rb
+/phase3_probe_b.rb
+/phase3_probe_c.rb
+/phase3_probe_d.rb
+/phase3_probe_e.rb
+/kino_check_results.txt
+
+# Internal working notes (kept locally, not published)
+/NEXT_STEPS.md

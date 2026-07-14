@@ -1,7 +1,7 @@
 # Ractor-Rails-Shim — Architecture, Environment Model & Findings
 
 > Reference/design document. For the task-oriented "what to do next", see
-> `NEXT_STEPS.md`. This file captures *why* the shim is built the way it is,
+> `README.md`. This file captures *why* the shim is built the way it is,
 > the dev/prod tradeoffs, and the conclusions reached while getting the
 > `full_test_app` dummy app to serve under `kino -m ractor`.
 
@@ -31,7 +31,7 @@ Hence the frozen **shared** graph: one graph, made `Ractor.shareable`,
 referenced by all workers. No COW is needed because the graph is genuinely
 shared. This is the Ractor-appropriate alternative to the process COW trick.
 
-See `NEXT_STEPS.md` ("Kino status" / env analysis) and the dev/prod discussion
+See `README.md` ("Kino status" / env analysis) and the dev/prod discussion
 in chat history for the full COW explanation.
 
 ## 3. Ractor isolation restrictions the shim addresses
