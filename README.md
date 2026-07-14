@@ -35,6 +35,15 @@ run a Rails app in Ractor mode is
 developed and tested against a real Rails 8.1 app **served by kino**; that is
 the configuration it is verified against.
 
+**Patched kino:** the shim was validated against a kino build carrying a
+per-ractor env-string cache fix that removes a cross-ractor SIGBUS during
+sustained writes. The patch is published at
+[DDKatch/kino](https://github.com/DDKatch/kino) on the
+`ractor-per-ractor-env-cache` branch. Use that fork (rather than upstream
+`yaroslav/kino`) if you hit write-path crashes. To build it: clone the fork,
+check out that branch, then `asdf local rust 1.85.0 && cargo build --release`
+(the native extension is compiled by the Rails app's `bundle install`).
+
 ## Why
 
 Rails stores global state in class-level instance variables:
