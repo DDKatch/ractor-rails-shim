@@ -4,9 +4,10 @@
 > integration tests are run. Companion to `README.md` (RESUME HERE →
 > "Route-coverage integration test").
 >
-> Run the route-coverage test with:
+> Run the route-coverage test with (from a clone of the test app at
+> [DDKatch/ractor-rails-shim-test-app](https://github.com/DDKatch/ractor-rails-shim-test-app)):
 > ```sh
-> cd ractor-rails-shim-test-app && bin/rails test test/integration/all_routes_test.rb
+> bin/rails test test/integration/all_routes_test.rb
 > ```
 
 ## Current status
