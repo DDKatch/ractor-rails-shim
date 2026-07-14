@@ -20,6 +20,14 @@ and patches the raw class-ivar accessors Rails reads per-request
 crash with a frozen-iseq SIGBUS (a Ruby 4.0 Ractor-model issue); reads and
 single writes are stable.
 
+## Requirements
+
+- **Ruby >= 4.0** — the shim relies on Ruby 4.0's Ractor semantics and
+  `Ractor.make_shareable`. It will not work (and refuses to install) on
+  earlier Ruby versions.
+- **Rails ~> 8.1** — tested against Rails 8.1.x class layouts. Other versions
+  are not yet supported (see Version compatibility below).
+
 ## Why
 
 Rails stores global state in class-level instance variables:
