@@ -4,14 +4,24 @@ A monkey-patch shim that reroutes Rails' class-level instance variable accessors
 
 **Status:** proof-of-concept / stopgap. The goal is for Rails to do this upstream, at which point this gem becomes a no-op and can be removed.
 
-**Current milestone:** on a minimal Rails 8.1 app (Ruby 4.0.5), a worker
-Ractor dispatches `GET /up` → **HTTP 200** via `RactorRailsShim.make_app_shareable!`.
+**Current milestone:** on a full Rails 8.1 app (Devise 5, Propshaft, Kaminari,
+PG) under Ruby 4.0.5, worker Ractors dispatched by `kino -m ractor` serve
+**every** routable action — `GET /up`, full ERB view rendering, Devise
+sign-in/sign-out (CSRF issuance **and** validation), and authenticated
+Devise **writes** (`POST /posts` → 302, row persisted). A worker Ractor
+dispatches `GET /up` → **HTTP 200** via `RactorRailsShim.make_app_shareable!`.
 The shim builds a shareable fallback table for framework class config
 (`class_attribute` / `mattr_accessor` values) and patches the raw class-ivar
 accessors Rails reads per-request (`ExecutionWrapper.active_key`,
 `Notifications.notifier`, `Inflections`, `PathRegistry`, `I18n`,
 `AbstractController` lazy ivars, `Rack::Request`/`Utils`, `ExecutionContext`,
-etc.). See `NEXT_STEPS.md` for the full blocker map.
+etc.). See `NEXT_STEPS.md` for the full blocker map, the kino `:ractor` vs
+Puma/Falcon benchmark, and the kino source patch (per-ractor env-string
+cache).
+
+**Known limitation:** sustained *concurrent* writes in `kino -ractor` still
+crash a worker Ractor with a frozen-iseq SIGBUS (Ruby 4.0's ractor model;
+reads and single writes are stable). Tracked as "class #2" in `NEXT_STEPS.md`.
 
 ## Why
 
