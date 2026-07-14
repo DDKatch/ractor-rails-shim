@@ -3,7 +3,7 @@
 > Reference/design document. For the task-oriented "what to do next", see
 > `README.md`. This file captures *why* the shim is built the way it is,
 > the dev/prod tradeoffs, and the conclusions reached while getting the
-> `full_test_app` dummy app to serve under `kino -m ractor`.
+> `full_test_app` dummy app to serve under [kino](https://github.com/yaroslav/kino) `-m ractor`.
 
 ## 1. The core model: one frozen, shared app graph
 

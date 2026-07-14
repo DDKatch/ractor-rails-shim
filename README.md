@@ -28,6 +28,13 @@ single writes are stable.
 - **Rails ~> 8.1** — tested against Rails 8.1.x class layouts. Other versions
   are not yet supported (see Version compatibility below).
 
+**Ractor-mode server:** as of this writing, the only Ruby web server that can
+run a Rails app in Ractor mode is
+[kino](https://github.com/yaroslav/kino) (`kino -m ractor`). Other servers
+(Puma, Falcon, …) run Rails in processes or threads, not Ractors. This shim was
+developed and tested against a real Rails 8.1 app **served by kino**; that is
+the configuration it is verified against.
+
 ## Why
 
 Rails stores global state in class-level instance variables:
@@ -48,7 +55,7 @@ can not get unshareable values from instance variables of classes/modules
 from non-main Ractors
 ```
 
-This is the primary blocker preventing Rails from running in Ractor mode (see `kino/doc/rails-on-ractors.md` for the full diagnosis). The same pattern blocks Hanami, Padrino, Sinatra, and most Ruby web frameworks.
+This is the primary blocker preventing Rails from running in Ractor mode (see the [kino](https://github.com/yaroslav/kino) project's `doc/rails-on-ractors.md` for the full diagnosis). The same pattern blocks Hanami, Padrino, Sinatra, and most Ruby web frameworks.
 
 ## How it works
 
