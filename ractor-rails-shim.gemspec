@@ -6,7 +6,7 @@ Gem::Specification.new do |spec|
   spec.name = "ractor-rails-shim"
   spec.version = RactorRailsShim::VERSION
   spec.authors = ["dev"]
-  spec.email = ["dev@example.com"]
+  spec.email = ["kachur.daniil@gmail.com"]
 
   spec.summary = "Monkey-patch Rails class-level globals to be Ractor-safe"
   spec.description = <<~DESC
