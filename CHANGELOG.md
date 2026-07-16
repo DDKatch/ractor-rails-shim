@@ -11,6 +11,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Improved the published gem summary and description (gemspec). Metadata-only
   release — no code changes.
 
+## [0.2.4]
+
+### Performance
+- **class_attribute reader (ractor mode) is now allocation-free.** The
+  generated `__class_attr_*` accessors previously walked `self.ancestors` and
+  built a fresh `Symbol` via string interpolation for *every* ancestor on
+  *every* read — the dominant allocation source for GET requests (a Rails class
+  has 20–40 ancestors, and class_attribute is read constantly: controller
+  filters, view partial paths, AR `strict_loading`, form builder, logger, …).
+  In ractor mode the writer already collapses every write to the defining
+  owner's single key, so the ancestor walk was dead code. The reader now does a
+  single literal-symbol lookup against `IsolatedExecutionState[key]` then
+  `SHAREABLE_FALLBACK[key]`, eliminating the per-read `Array` + `Symbol`
+  churn. This cuts request allocations substantially and, with them, the
+  garbage-collection share of CPU time (was ~33% of CPU on `GET /posts`).
+
 ## [0.2.3]
 
 ### Fixed
