@@ -258,4 +258,29 @@ class ShimSpec < Minitest::Spec
   ensure
     Object.send(:remove_const, :ShimTestAttrClass) if defined?(ShimTestAttrClass)
   end
+
+  it "class_attribute reader allocates ~0 per read (ractor mode)" do
+    skip "ActiveSupport::ClassAttribute not loaded" unless defined?(ActiveSupport::ClassAttribute)
+    klass = Class.new do
+      class_attribute :leak_probe, default: "default-value"
+    end
+    Object.const_set(:ShimLeakProbe, klass)
+
+    # Warm up: the first read may lazily allocate (IES slot, fallback table).
+    klass.leak_probe
+
+    n = 5000
+    before = GC.stat[:total_allocated_objects]
+    n.times { klass.leak_probe }
+    after = GC.stat[:total_allocated_objects]
+    delta = after - before
+
+    # Regression guard for 0.2.4: the ractor-mode reader was rewritten to a
+    # direct literal-key IES lookup (zero per-read allocation). The pre-0.2.4
+    # reader did `self.ancestors.each` + per-ancestor Symbol interpolation on
+    # EVERY read (~2-4 allocs/read). Allow generous headroom for harness noise.
+    assert delta < n, "class_attribute reader allocated #{delta} objects for #{n} reads (regression: expected ~0)"
+  ensure
+    Object.send(:remove_const, :ShimLeakProbe) if defined?(ShimLeakProbe)
+  end
 end
