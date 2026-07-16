@@ -93,6 +93,27 @@ module RactorRailsShim
           mod = _rrs_orig_generate_url_helpers(supports_path)
           mod.module_eval("def _routes\n  @_routes || ::Rails.application.routes\nend", __FILE__, __LINE__ + 1)
           mod.module_eval("def _generate_paths_by_default\n  " + supports_path.inspect + "\nend", __FILE__, __LINE__ + 1)
+
+          # Bound the stock `self.included` reinclude (actionpack
+          # action_dispatch/routing/route_set.rb). That hook re-dups the module
+          # and re-includes it while `!base._routes.equal?(@_proxy._routes)`.
+          # Under the frozen, Ractor-shareable app graph a worker Ractor's
+          # controller can report `_routes` as nil, so the equality never holds
+          # and the reinclude loops forever (SystemStackError on the very first
+          # request, e.g. GET /up -> Rails::HealthController). The intent is to
+          # re-align `_routes` per base exactly once; bound it to one reinclude
+          # per base so the loop can never happen while preserving that intent.
+          seen = ::Set.new
+          mod.instance_variable_set(:@_rrs_reinclude_seen, seen)
+          mod.singleton_class.class_eval do
+            alias_method :_rrs_orig_self_included, :included
+            def included(base)
+              seen = instance_variable_get(:@_rrs_reinclude_seen)
+              return if seen.include?(base.object_id)
+              seen << base.object_id
+              _rrs_orig_self_included(base)
+            end
+          end
           mod
         end
       RUBY
