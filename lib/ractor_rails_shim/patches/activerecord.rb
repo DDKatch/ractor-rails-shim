@@ -229,7 +229,14 @@ module RactorRailsShim
       return unless defined?(::ActiveRecord::Base)
 
       key = :active_record_connection_handler
-      existing = ActiveSupport::IsolatedExecutionState[key]
+      # Store the handler in Ractor-local storage (Ractor.current), NOT in
+      # ActiveSupport::IsolatedExecutionState. IES is per-THREAD (it is a
+      # Thread.attr_accessor), so a value set on the init thread is invisible
+      # to the other worker threads in the same worker Ractor ->
+      # ConnectionNotEstablished ("No connection handler for Ractor X").
+      # Ractor.current storage is per-Ractor and shared by every thread of the
+      # worker, so connection_handler resolves the same handler for all threads.
+      existing = Ractor.current[key]
       return if existing
 
       # Establish a fresh, per-Ractor connection handler + pool from the
@@ -256,7 +263,7 @@ module RactorRailsShim
           end
         end
 
-        ActiveSupport::IsolatedExecutionState[key] = handler
+        Ractor.current[key] = handler
       end
     end
 
@@ -318,6 +325,35 @@ module RactorRailsShim
       end
 
       _share_relation_delegate_caches! if Ractor.main?
+    end
+
+    # ActiveModel::AttributeMethods::ClassMethods#attribute_method_patterns_cache
+    # stores a mutable Concurrent::Map in a CLASS instance variable
+    # (@attribute_method_patterns_cache). That ivar is unshareable, so reading
+    # it from a worker Ractor raises Ractor::IsolationError ("can not get
+    # unshareable values from instance variables of classes/modules from
+    # non-main Ractors") — hit on the write path via redirect_to @post ->
+    # respond_to? -> matched_attribute_method -> attribute_method_patterns_cache.
+    #
+    # Unlike @relation_delegate_cache (populated once, freezable), this map is
+    # mutated lazily per method_name (compute_if_absent) during request handling,
+    # so it cannot be frozen. Instead route it through Ractor-local storage:
+    # each Ractor gets its own Concurrent::Map, shared by all of its threads.
+    # The cache content is deterministic (a pure function of the class's
+    # attribute_method_patterns), so per-Ractor recomputation is correct.
+    def _install_active_model_attribute_method_patterns_patch
+      return if @am_amp_patched
+      @am_amp_patched = true
+      _register_patch :active_model_attribute_method_patterns, "8.1"
+      return unless defined?(::ActiveModel::AttributeMethods)
+
+      mod = ::ActiveModel::AttributeMethods::ClassMethods
+      mod.module_eval do
+        def attribute_method_patterns_cache
+          store = Ractor.current[:__am_attribute_method_patterns_cache__] ||= {}
+          store[object_id] ||= Concurrent::Map.new(initial_capacity: 4)
+        end
+      end
     end
 
     # Make every loaded AR model class's @relation_delegate_cache shareable.
@@ -1309,6 +1345,19 @@ module RactorRailsShim
         end
         def default_connection_handler=(val)
           ActiveSupport::IsolatedExecutionState[#{dch_key_str}] = val
+        end
+        # Route the per-Ractor handler through Ractor-local storage. IES is
+        # per-thread, so a handler stored on the init thread is invisible to the
+        # worker's other threads; Ractor.current is per-Ractor and shared by all
+        # threads of the worker. Falls back to IES (legacy) then
+        # default_connection_handler (main Ractor only).
+        def connection_handler
+          v = Ractor.current[:active_record_connection_handler]
+          return v unless v.nil?
+          ActiveSupport::IsolatedExecutionState[:active_record_connection_handler] || default_connection_handler
+        end
+        def connection_handler=(handler)
+          Ractor.current[:active_record_connection_handler] = handler
         end
       RUBY
 

@@ -377,6 +377,7 @@ module RactorRailsShim
       _install_activerecord_primary_key_patch
       _install_activerecord_query_constraints_patch
       _install_activerecord_relation_delegate_cache_patch
+      _install_active_model_attribute_method_patterns_patch
       _install_activerecord_model_classes_patch
       _install_active_model_naming_patch
       _install_active_record_core_patch
@@ -781,10 +782,18 @@ module RactorRailsShim
     private
 
     def setup_once!
-      return if Ractor.current[:rrs_worker_ready]
-      rebind_constants
-      RactorRailsShim.init_worker_ar_connections! if defined?(RactorRailsShim)
-      Ractor.current[:rrs_worker_ready] = true
+      # All threads inside a worker Ractor share Ractor.current, so a single
+      # per-Ractor mutex serializes the one-time init across the worker's
+      # threads. (The mutex is created under ||= which is racy under extreme
+      # contention, but both init steps below are themselves idempotent, so a
+      # rare double-init is harmless.)
+      m = Ractor.current[:rrs_worker_mutex] ||= Thread::Mutex.new
+      m.synchronize do
+        return if Ractor.current[:rrs_worker_ready]
+        rebind_constants
+        RactorRailsShim.init_worker_ar_connections! if defined?(RactorRailsShim)
+        Ractor.current[:rrs_worker_ready] = true
+      end
     end
 
     def rebind_constants
@@ -792,6 +801,9 @@ module RactorRailsShim
         parent = Object
         parts = cpath.split("::")
         parts[0...-1].each do |p|
+          # Re-fetch the parent each iteration so concurrent setup (multiple
+          # threads racing through setup_once! on the same worker) cannot
+          # clobber a namespace module out from under us.
           parent = if parent.const_defined?(p, false)
                      parent.const_get(p, false)
                    else
