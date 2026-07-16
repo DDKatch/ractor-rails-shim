@@ -11,6 +11,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Improved the published gem summary and description (gemspec). Metadata-only
   release — no code changes.
 
+## [0.2.3]
+
+### Fixed
+- **Cold `GET /up` `SystemStackError` in worker Ractors (kino `:ractor`).**
+  Rails' `ActionDispatch::Routing::RouteSet#generate_url_helpers` builds a
+  module whose `self.included(base)` hook re-dups the module and re-includes
+  it while `!base._routes.equal?(@_proxy._routes)`. Under the frozen,
+  Ractor-shareable app graph a worker Ractor's controller reports
+  `base._routes` as `nil`, so the equality never holds and the hook
+  re-includes forever (empty Ruby backtrace, first request only; respawns and
+  later requests are fine). The shim's `route_helpers.rb` `generate_url_helpers`
+  override now bounds the reinclude to once per base, preserving the
+  route-alignment intent without the infinite loop. Verified: cold `GET /up`
+  returns 200 in `kino -m ractor`; both `:ractor` and `:threaded` modes clean.
+
 ## [0.2.2]
 
 ### Fixed
