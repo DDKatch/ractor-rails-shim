@@ -617,7 +617,7 @@ module RactorRailsShim
         # be shareable.
         klass.instance_variables.each do |ivar|
           val = klass.instance_variable_get(ivar)
-          next if val.nil? || Ractor.shareable?(val)
+          next if Ractor.shareable?(val)
           begin
             Ractor.make_shareable(val)
           rescue
@@ -638,7 +638,7 @@ module RactorRailsShim
       classes.each do |klass|
         klass.instance_variables.each do |ivar|
           val = klass.instance_variable_get(ivar)
-          next if val.nil? || Ractor.shareable?(val)
+          next if Ractor.shareable?(val)
           begin
             Ractor.make_shareable(val)
           rescue
