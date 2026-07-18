@@ -5,7 +5,7 @@ A monkey-patch shim that reroutes Rails' class-level instance variable accessors
 **Status:** proof-of-concept / stopgap. The goal is for Rails to do this upstream, at which point this gem becomes a no-op and can be removed.
 
 **Current status:** on a full Rails 8.1 app (Devise 5, Propshaft, Kaminari,
-PG) under Ruby 4.0.5, worker Ractors serve **every** routable action —
+PG) under **official Ruby 4.0.6**, worker Ractors serve **every** routable action —
 `GET /up`, full ERB view rendering, Devise sign-in/sign-out (CSRF issuance
 **and** validation), and authenticated Devise **writes** (`POST /posts` → 302,
 row persisted). A worker Ractor dispatches `GET /up` → **HTTP 200** via
@@ -16,9 +16,13 @@ and patches the raw class-ivar accessors Rails reads per-request
 `PathRegistry`, `I18n`, `AbstractController` lazy ivars, `Rack::Request`/`Utils`,
 `ExecutionContext`, etc.).
 
-**Known limitation:** sustained *concurrent* writes in a worker Ractor can still
-crash with a frozen-iseq SIGBUS (a Ruby 4.0 Ractor-model issue); reads and
-single writes are stable.
+**No patched Ruby or kino required.** Official Ruby 4.0.6 ships the frozen-iseq
+call-cache fix (#22075) and the cross-ractor env-string fix, so the SIGBUS crashes
+that previously required the DDKatch patched Ruby/kino forks are resolved in core.
+Both SIGBUS classes were the only reason a patched build was ever needed; on 4.0.6
+the shim runs `kino -m ractor` on the official `kino` gem under sustained read
+**and** write load (verified: 0 transport failures / 0 server errors across
+`/up`, `GET /posts`, `POST /posts` in the benchmark matrix).
 
 ## Requirements
 
@@ -35,14 +39,11 @@ run a Rails app in Ractor mode is
 developed and tested against a real Rails 8.1 app **served by kino**; that is
 the configuration it is verified against.
 
-**Patched kino:** the shim was validated against a kino build carrying a
-per-ractor env-string cache fix that removes a cross-ractor SIGBUS during
-sustained writes. The patch is published at
-[DDKatch/kino](https://github.com/DDKatch/kino) on the
-`ractor-per-ractor-env-cache` branch. Use that fork (rather than upstream
-`yaroslav/kino`) if you hit write-path crashes. To build it: clone the fork,
-check out that branch, then `asdf local rust 1.85.0 && cargo build --release`
-(the native extension is compiled by the Rails app's `bundle install`).
+**kino:** the Ractor-mode server is
+[kino](https://github.com/yaroslav/kino) (`kino -m ractor`). On official Ruby
+4.0.6 the **upstream `kino` gem (0.1.3) works as-is** — no fork or patch is
+required. (Historically a DDKatch/kino fork carried a per-ractor env-string
+cache fix; that fix is in official 4.0.6, so the fork is obsolete.)
 
 **Benchmarks:** throughput/latency/memory of this shim + the test app under
 kino `:ractor` vs Puma vs Falcon are documented in
@@ -72,7 +73,7 @@ This is the primary blocker preventing Rails from running in Ractor mode (see th
 
 ## How it works
 
-The shim reroutes the accessor methods through `ActiveSupport::IsolatedExecutionState`, which is thread-local storage (`Thread.current[:key]`). Each Ractor has its own threads, so each Ractor gets its own slot automatically — verified on Ruby 4.0.5. Rails already uses this primitive for `ActiveRecord::ConnectionHandling.connection_handler` (for thread safety), so the pattern is proven in production.
+The shim reroutes the accessor methods through `ActiveSupport::IsolatedExecutionState`, which is thread-local storage (`Thread.current[:key]`). Each Ractor has its own threads, so each Ractor gets its own slot automatically — verified on Ruby 4.0.6. Rails already uses this primitive for `ActiveRecord::ConnectionHandling.connection_handler` (for thread safety), so the pattern is proven in production.
 
 Two storage paths, depending on the state's shape:
 

@@ -1,7 +1,7 @@
 # Validation against a real Rails app (Phase 1)
 
 Results of validating `ractor-rails-shim` against a minimal Rails 8.1.3 app
-(`rails new test_app --minimal`) on Ruby 4.0.5.
+(`rails new test_app --minimal`) on Ruby 4.0.6.
 
 ## Setup
 

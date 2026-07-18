@@ -3,7 +3,7 @@
 > Reference/design document. For the task-oriented "what to do next", see
 > `README.md`. This file captures *why* the shim is built the way it is,
 > the dev/prod tradeoffs, and the conclusions reached while getting the
-> `ractor-rails-shim-test-app` dummy app to serve under [kino](https://github.com/DDKatch/kino) `-m ractor` — a fork of [yaroslav/kino](https://github.com/yaroslav/kino) carrying the per-ractor env-string cache patch.
+> `ractor-rails-shim-test-app` dummy app to serve under [kino](https://github.com/yaroslav/kino) `-m ractor`. On official Ruby 4.0.6 the upstream `kino` gem (0.1.3) works as-is — the per-ractor env-string cache fix now ships in 4.0.6, so the earlier DDKatch/kino fork is obsolete.
 
 ## 1. The core model: one frozen, shared app graph
 
