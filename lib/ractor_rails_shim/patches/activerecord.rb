@@ -795,7 +795,72 @@ module RactorRailsShim
         # and therefore sits in front of this module_eval heredoc in the
         # method lookup chain. A second definition here would be dead code and
         # a maintenance trap.
+
+        # `reload_schema_from_cache` (called by `load_schema`/`reload_schema!`)
+        # writes a batch of class ivars to `nil` to invalidate schema caches:
+        #   @_returning_columns_for_insert, @arel_table, @column_names,
+        #   @symbol_column_to_string_name_hash, @content_columns, @column_defaults
+        # (ModelSchema) plus @timestamp_attributes_for_create_in_model,
+        # @timestamp_attributes_for_update_in_model,
+        # @all_timestamp_attributes_in_model (Timestamp#reload_schema_from_cache
+        # via super). In a worker Ractor those writes raise
+        # Ractor::IsolationError ("can not set instance variables of
+        # classes/modules by non-main Ractors"). The shim already routes the
+        # *readers* for these caches through IES, so in a worker we only need
+        # to clear the IES slots — the next read rebuilds lazily. In main we
+        # keep the original class-ivar-clearing behavior.
+        def reload_schema_from_cache(recursive = true)
+          if Ractor.main?
+            super
+          else
+            # Clear this Ractor's IES slots for the IES-routed schema caches.
+            # Use `next` over an explicit list (not `IES.clear`) to avoid
+            # wiping unrelated slots. Keys mirror the readers above + the
+            # prepended ActiveRecordModelSchemaPatch (active_record_model_schema.rb)
+            # + ActiveModelAttributeRegistrationPatch (active_model_attribute.rb).
+            name_str = self.name
+            [
+              :"ractor_rails_shim_symbol_column_to_string_\#{name_str}",
+              :"ractor_rails_shim_content_columns_\#{name_str}",
+              :"rrs_column_defaults_\#{object_id}",
+              :"rrs_attributes_builder_\#{object_id}",
+              :"rrs_yaml_encoder_\#{object_id}",
+              :"rrs_returning_cols_\#{object_id}",
+              :"rrs_default_attributes_\#{object_id}",
+              :"rrs_attribute_types_\#{object_id}",
+              :"rrs_table_names",
+              :"rrs_arel_tables",
+              :"rrs_predicate_builders",
+              :"rrs_type_casters",
+            ].each do |k| ActiveSupport::IsolatedExecutionState.delete(k) end
+            # The Timestamp subclass override calls `super` (this method); it
+            # has already run by the time we get here via the super chain, so
+            # its ivar-clears were intercepted by the worker branch of THIS
+            # override (no-op). No further action needed.
+          end
+        end
       RUBY
+
+      # Patch ActiveRecord::Timestamp::ClassMethods#reload_schema_from_cache
+      # the same way: in main, keep the original ivar-clearing; in a worker,
+      # skip the class-ivar writes (the IES slots are cleared by the
+      # ModelSchema#reload_schema_from_cache override above via super).
+      if defined?(::ActiveRecord::Timestamp::ClassMethods)
+        ::ActiveRecord::Timestamp::ClassMethods.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+          def reload_schema_from_cache(recursive = true)
+            if Ractor.main?
+              @timestamp_attributes_for_create_in_model = nil
+              @timestamp_attributes_for_update_in_model = nil
+              @all_timestamp_attributes_in_model = nil
+              super
+            else
+              # Worker: skip the class-ivar writes (would raise
+              # IsolationError). The ModelSchema super clears the IES slots.
+              super
+            end
+          end
+        RUBY
+      end
     end
 
     # Patch ActiveModel::Conversion::ClassMethods#_to_partial_path to route its

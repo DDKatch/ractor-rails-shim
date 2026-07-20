@@ -64,6 +64,23 @@ module RactorRailsShim
           types
         end
       end
+
+      # `reset_default_attributes!` (called by `reload_schema_from_cache` via
+      # the Attributes → Timestamp → ModelSchema super chain) writes
+      # `@default_attributes = nil` and `@attribute_types = nil` class ivars.
+      # In a worker Ractor those writes raise Ractor::IsolationError. The
+      # shim routes the *readers* above through IES, so in a worker we clear
+      # the IES slots instead (the next read rebuilds lazily). In main we keep
+      # the original class-ivar-clearing behavior.
+      def reset_default_attributes!
+        if Ractor.main?
+          @default_attributes = nil
+          @attribute_types = nil
+        else
+          ActiveSupport::IsolatedExecutionState.delete(:"rrs_default_attributes_#{object_id}")
+          ActiveSupport::IsolatedExecutionState.delete(:"rrs_attribute_types_#{object_id}")
+        end
+      end
     end
   end
 
