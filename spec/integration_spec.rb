@@ -24,10 +24,13 @@ require_relative "../lib/ractor_rails_shim/fallback_ies"
 require_relative "../lib/ractor_rails_shim/patches"
 
 class IntegrationSpec < Minitest::Spec
-  # Resolve the test app directory. Allow override via env var.
+  # Resolve the test app directory. Allow override via env var; default to a
+  # platform-appropriate tmp location (NOT the author's machine-specific macOS
+  # path). `Dir.tmpdir` requires the `tmpdir` stdlib.
+  require "tmpdir"
   DEFAULT_APP_DIR = ENV.fetch(
     "RAILS_SHIM_TEST_APP",
-    "/var/folders/lt/w0mc05l524z5f7ynwtvdzrnc0000gn/T/opencode/test_app"
+    File.join(Dir.tmpdir, "ractor-rails-shim-test-app")
   )
 
   def self.test_order
@@ -62,6 +65,22 @@ class IntegrationSpec < Minitest::Spec
            "require \"<shim>/spec/integration_spec.rb\"`"
     end
     @app_dir = app_dir
+    # Capture pre-test process state so we can restore it in teardown. Note
+    # that `Rails.application.initialize!` is irreversible within a process,
+    # so this spec can only run once per Ruby process — re-running the suite
+    # in the same process will skip/fail on the second `initialize!`. That is
+    # a documented limitation of in-process Rails boot, not a spec bug.
+    @orig_dir = Dir.pwd
+    @orig_rails_env = ENV["RAILS_ENV"]
+  end
+
+  def teardown
+    # Restore CWD + RAILS_ENV. We deliberately do NOT attempt to un-initialize
+    # Rails.application (impossible) — see the note in #setup.
+    ENV.delete("RAILS_ENV") if @orig_rails_env.nil?
+    ENV["RAILS_ENV"] = @orig_rails_env if @orig_rails_env
+    Dir.chdir(@orig_dir) if @orig_dir && @app_dir
+    super
   end
 
   it "a worker Ractor dispatches GET /up and returns HTTP 200" do
@@ -69,8 +88,16 @@ class IntegrationSpec < Minitest::Spec
     ENV["RAILS_ENV"] = "production"
     ENV["SECRET_KEY_BASE"] ||= "dummy"
 
-    # Boot the app exactly the way config/environment.rb would, but in-process
-    # so we can hand the app to make_app_shareable!.
+    # Boot the app the way config_ractor.ru does: install the shim BEFORE
+    # Rails loads so the framework patches are in place before any unshareable
+    # Procs are captured. `make_app_shareable!` re-runs `_install_all_framework
+    # _patches` idempotently, but it runs AFTER `initialize!` — too late for
+    # classes that captured bindings during boot. The rackup files install the
+    # shim at this same phase (before `require_relative "config/application"`);
+    # this spec mirrors that sequence so it exercises the real boot path
+    # rather than the (now-removed) config/boot.rb auto-install hook.
+    require "ractor_rails_shim"
+    RactorRailsShim.install
     require File.expand_path("config/boot", @app_dir)
     require File.expand_path("config/application", @app_dir)
     Bundler.require(*Rails.groups)

@@ -349,8 +349,16 @@ module RactorRailsShim
         # calls `#to_proc` and then requires the result to be a real Proc.
         # Return a frozen no-op lambda so the implicit conversion succeeds and
         # the (side-effect-free) call is a true no-op, matching `#call`.
+        #
+        # The lambda is a shareable constant (frozen at class load), NOT
+        # memoized on `@_to_proc`: NoOpProc instances are deep-frozen by
+        # `Ractor.make_shareable` during `make_app_shareable!`, so an
+        # `@_to_proc ||= ...` write would raise FrozenError on the frozen
+        # instance. A constant avoids the write entirely and is safe to share.
+        NO_OP_LAMBDA = ->(*) { nil }.freeze
+        Ractor.make_shareable(NO_OP_LAMBDA)
         def to_proc
-          @_to_proc ||= ->(*) { nil }.freeze
+          NO_OP_LAMBDA
         end
       end
       class Callable

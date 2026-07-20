@@ -23,6 +23,13 @@ module RactorRailsShim
       else
         # Defer until Zeitwerk loads. A TracePoint(:class) fires when
         # `module Registry` opens. One-shot.
+        #
+        # Two flags guard different things (mirrors `rails_module.rb`):
+        #   @zeitwerk_patched          — `install_zeitwerk_registry` ran
+        #                                 (so we don't arm a second TracePoint).
+        #   @zeitwerk_registry_patched — the actual patch was applied (checked
+        #                                 again inside the TracePoint block and
+        #                                 in `patch_zeitwerk_registry!`).
         @zw_tp = TracePoint.new(:class) do |trace|
           if defined?(::Zeitwerk::Registry) && !@zeitwerk_registry_patched
             @zw_tp.disable

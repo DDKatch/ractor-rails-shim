@@ -36,6 +36,13 @@ module RactorRailsShim
     # :class fires when `rails.rb` opens `module Rails` (module bodies fire
     # as :class); once the constant is assigned, we patch once and disable
     # the hook.
+    #
+    # Two flags are intentional and guard *different* things:
+    #   @rails_load_hook_installed — the TracePoint one-shot is armed (so we
+    #     don't stack multiple TracePoints on repeated `install` calls).
+    #   @rails_module_patched — the patch itself has been applied (checked
+    #     again inside the TracePoint block and in `patch_rails_module!`
+    #     because the immediate-path caller also goes through that method).
     def install_rails_load_hook
       return if @rails_load_hook_installed
       @rails_load_hook_installed = true

@@ -13,7 +13,7 @@
 Ruby 4.0 ships Ractors as the path to true parallelism without the GIL, but a
 stock Rails app cannot run in Ractor mode (`Ractor.make_shareable(app)` /
 `Ractor.new(app)` fails, and per-Ractor boot fails). The
-[`ractor-rails-shim`](https://github.com/anomalyco/ractor-rails-shim) gem
+[`ractor-rails-shim`](https://github.com/DDKatch/ractor-rails-shim) gem
 proves the app **can** run in Ractor mode on Ruby 4.0.6 + Rails 8.1.3 — a
 worker Ractor dispatches `GET /up` → HTTP 200 — by rerouting class-level
 global state and restructuring unshareable Procs. This issue maps every

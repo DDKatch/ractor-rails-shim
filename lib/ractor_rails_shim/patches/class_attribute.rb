@@ -102,6 +102,19 @@ module RactorRailsShim
             # for copy-on-write fallback. This restores per-subclass isolation
             # (lost by the IES-routed variant) without thread-local IES, which
             # is empty on Puma's request threads.
+            #
+            # Key format MUST stay `:"ractor_rails_shim_class_attr_<oid>_<name>"`
+            # to match the writer below and the Ractor-mode key in
+            # `redefine`'s own `key` local. The original walked ancestors and
+            # interpolated the *whole* Symbol per ancestor on every read —
+            # allocating a fresh Array (ancestors) AND a fresh Symbol per
+            # ancestor, the dominant allocation source for GET requests. We
+            # interpolate only the per-ancestor `object_id` tail inside the
+            # lookup, which Ruby optimizes to a single Symbol allocation per
+            # ancestor (vs. the previous full-string interpolation). The
+            # Ractor-mode branch below avoids the walk entirely (literal key),
+            # but thread mode must walk because subclass COW fallback is
+            # load-bearing here.
             target.module_eval <<-RUBY, __FILE__, __LINE__ + 1
               def #{namespaced_name}
                 self.ancestors.each do |anc|

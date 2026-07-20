@@ -98,7 +98,7 @@ module RactorRailsShim
             # In a worker Ractor, class_attribute-backed `__callbacks`
             # falls back to the empty default (see class_attribute.rb /
             # make_shareable.rb), so controller `before_action` /
-            # `after_action` filters are normally SKIPED. For
+            # `after_action` filters are normally SKIPPED. For
             # `:process_action` we replay the captured SYMBOL filters
             # (see make_shareable!#_capture_controller_callbacks!)
             # so actions that depend on a before_action (e.g. `set_post`

@@ -118,8 +118,17 @@ module RactorRailsShim
         # (Hash class→bool) built at prepare_for_ractors! time. Workers read
         # the registry; main reads its live @abstract ivar (set by abstract!
         # / inherited). `internal_methods` loops on abstract?.
+        #
+        # The registry is frozen with `Ractor.make_shareable` at install time so
+        # it can travel the shared app graph. Mutating a frozen Hash raises
+        # FrozenError, so `abstract!` only writes the live ivar (main) and
+        # guards the registry write behind a mutability check. `abstract!`
+        # after install in main is a no-op on the registry (already captured);
+        # callers that need to flip a class to abstract post-install should
+        # rebuild the registry (rare — abstract! is a boot-time declaration).
         def abstract!
-          RactorRailsShim._abstract_registry[self] = true if Ractor.main?
+          reg = RactorRailsShim._abstract_registry
+          reg[self] = true if reg && !reg.frozen? && Ractor.main?
           @abstract = true if Ractor.main?
         end
 

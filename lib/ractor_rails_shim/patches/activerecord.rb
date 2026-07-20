@@ -590,6 +590,18 @@ module RactorRailsShim
     # which writes `@table_name`/`@arel_table`/etc. From a worker that write is
     # Ractor::IsolationError. Route the value through IsolatedExecutionState
     # (keyed by model object_id); main keeps the original class-ivar behavior.
+    #
+    # NOTE on naming: there are TWO ModelSchema-related install methods, with
+    # deliberately different scopes:
+    #   * `_install_active_record_model_schema_patch`  (this method) — patches
+    #     `table_name` / `table_name=` / `reset_table_name` only.
+    #   * `_install_activerecord_model_schema_patch`  (below) — patches the
+    #     *column-derived* lazy caches `symbol_column_to_string`,
+    #     `content_columns` (and previously `column_defaults`, now provided
+    #     by the prepended `ActiveRecordModelSchemaPatch`).
+    # Both target `ActiveRecord::ModelSchema::ClassMethods` but patch
+    # disjoint method sets; do not collapse them without auditing every
+    # caller.
     def _install_active_record_model_schema_patch
       return if @ar_model_schema_patched
       @ar_model_schema_patched = true
@@ -776,14 +788,13 @@ module RactorRailsShim
           cols
         end
 
-        def column_defaults
-          key = :"ractor_rails_shim_column_defaults_\#{self.name}"
-          v = ActiveSupport::IsolatedExecutionState[key]
-          return v if v
-          defaults = _default_attributes.deep_dup.to_hash.freeze
-          ActiveSupport::IsolatedExecutionState[key] = defaults
-          defaults
-        end
+        # NOTE: `column_defaults` is intentionally NOT redefined here. It is
+        # installed by the prepended `ActiveRecordModelSchemaPatch` (see
+        # `active_record_model_schema.rb`), which is prepended onto
+        # `ModelSchema::ClassMethods` by `_install_active_model_attribute_patch`
+        # and therefore sits in front of this module_eval heredoc in the
+        # method lookup chain. A second definition here would be dead code and
+        # a maintenance trap.
       RUBY
     end
 
