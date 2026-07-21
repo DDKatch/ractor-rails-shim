@@ -699,11 +699,14 @@ module RactorRailsShim
       # non-frozen arrays; load hooks never fire again in workers.
       # Gem::LoadError is a ScriptError (not StandardError), so a bare
       # `rescue nil` on the require would NOT catch a missing msgpack gem.
-      begin
-        require "active_support/message_pack"
-      rescue LoadError
-        return
-      end
+      # Pre-check for the msgpack gem: active_support/message_pack loads
+      # without it but prints a "requires the msgpack gem" warning to $stderr
+      # before raising LoadError. Checking first avoids the warning entirely
+      # (no stderr suppression needed) and skips the freeze step cleanly when
+      # the C extension isn't installed (e.g. in the gem's no-Rails unit specs).
+      return unless Gem::Specification.find_all_by_name("msgpack").any?
+
+      require "active_support/message_pack"
 
       mod = (Object.const_get(:ActiveSupport) rescue nil)&.const_get(:Messages, false) rescue nil
       mod = mod&.const_get(:Metadata, false) rescue nil
