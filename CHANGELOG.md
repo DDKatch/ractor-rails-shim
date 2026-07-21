@@ -7,9 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-- Improved the published gem summary and description (gemspec). Metadata-only
-  release — no code changes.
+## [0.2.5]
+
+### Fixed
+- **Nil-sentinel storage bug in IES-routed accessors.** The shim's
+  `mattr_accessor` / `class_attribute` / Rails-module / AR / Rack / Devise /
+  Kaminari / I18n / Inflector / ActionView / ActionController /
+  ActionDispatch / Zeitwerk / ExecutionWrapper readers used
+  `return v unless v.nil?` to detect "no per-Ractor override has been set."
+  That made `Foo.x = nil` (or `= false`) indistinguishable from "never set,"
+  so the reader silently fell through to the default/fallback instead of the
+  user's explicit `nil`/`false` — a divergence from threaded Rails, where
+  class variables distinguish "undefined" (`class_variable_defined?` is
+  false) from "set to nil." Replaced the nil-sentinel with `<storage>.key?`
+  at every IES / `CLASS_ATTR_VALUES` / `SHAREABLE_FALLBACK` reader so any
+  explicit assignment — including `nil` and `false` — wins over the
+  fallback. The single `Ractor.current[:active_record_connection_handler]`
+  reader keeps the nil-sentinel (with an explanatory comment) because
+  `Ractor#[]` has no `key?` method and `connection_handler=` is never called
+  with nil in practice. 58 sites transformed across 13 patch files.
+  Regression specs in `spec/sentinel_spec.rb` cover the
+  `mattr_accessor :flag, default: true; Flag = nil; Flag # => nil` and
+  `class_attribute :setting, default: :on; Setting = nil; Setting # => nil`
+  cases.
+
+- **`Ractor::IsolationError` in worker schema reload.** When a worker Ractor
+  hit a cold schema (e.g. first request after boot, or after
+  `ActiveRecord::Base.connection_handler.clear_all_connections!`),
+  `ModelSchema::ClassMethods#reload_schema_from_cache` and
+  `Timestamp::ClassMethods#reload_schema_from_cache` wrote to class instance
+  variables (`@columns`, `@columns_hash`, …) on the shared model classes,
+  raising `Ractor::IsolationError: can not set instance variables of
+  classes/modules by non-main Ractors`. Patched both methods (plus
+  `AttributeRegistration::ClassMethods#reset_default_attributes!`) to clear
+  the worker's IES slots instead of writing class ivars, so the next read
+  re-derives the schema in the worker's own IES. Without this, any worker
+  that reloaded its schema crashed the first request after the reload.
 
 ## [0.2.4]
 

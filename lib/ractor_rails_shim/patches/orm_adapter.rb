@@ -21,7 +21,7 @@ module RactorRailsShim
         def to_adapter
           key = :"ractor_rails_shim_orm_adapter_\#{object_id}"
           v = ActiveSupport::IsolatedExecutionState[key]
-          return v unless v.nil?
+          return v if ActiveSupport::IsolatedExecutionState.key?(key)
           adapter = self::OrmAdapter.new(self)
           ActiveSupport::IsolatedExecutionState[key] = adapter
           adapter

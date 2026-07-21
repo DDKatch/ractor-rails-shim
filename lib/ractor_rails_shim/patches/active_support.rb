@@ -186,7 +186,7 @@ module RactorRailsShim
       notif.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def notifier
           v = ActiveSupport::IsolatedExecutionState[#{nkey_str}]
-          return v unless v.nil?
+          return v if ActiveSupport::IsolatedExecutionState.key?(#{nkey_str})
           if Ractor.main? && instance_variable_defined?(:@notifier)
             @notifier
           else
@@ -212,7 +212,7 @@ module RactorRailsShim
         def instance(locale = :en)
           if locale == :en
             v = ActiveSupport::IsolatedExecutionState[#{en_key_str}]
-            return v unless v.nil?
+            return v if ActiveSupport::IsolatedExecutionState.key?(#{en_key_str})
             if Ractor.main?
               existing = instance_variable_get(:@__en_instance__) if instance_variable_defined?(:@__en_instance__)
               ActiveSupport::IsolatedExecutionState[#{en_key_str}] = existing
@@ -302,7 +302,7 @@ module RactorRailsShim
       ::ActiveSupport.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def error_reporter
           v = ActiveSupport::IsolatedExecutionState[#{er_key_str}]
-          return v unless v.nil?
+          return v if ActiveSupport::IsolatedExecutionState.key?(#{er_key_str})
           if Ractor.main? && instance_variable_defined?(:@error_reporter)
             @error_reporter
           else
@@ -343,7 +343,7 @@ module RactorRailsShim
       cfg.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def default_locale
           v = ActiveSupport::IsolatedExecutionState[#{dl_key_str}]
-          return v unless v.nil?
+          return v if ActiveSupport::IsolatedExecutionState.key?(#{dl_key_str})
           if Ractor.main? && defined?(@@default_locale)
             cv = @@default_locale
             ActiveSupport::IsolatedExecutionState[#{dl_key_str}] = cv
@@ -360,7 +360,7 @@ module RactorRailsShim
         end
         def locale
           v = ActiveSupport::IsolatedExecutionState[#{l_key_str}]
-          return v unless v.nil?
+          return v if ActiveSupport::IsolatedExecutionState.key?(#{l_key_str})
           default_locale
         end
         def locale=(locale)
@@ -380,7 +380,7 @@ module RactorRailsShim
         # set config.i18n.available_locales explicitly.
         def available_locales
           v = ActiveSupport::IsolatedExecutionState[#{av_key_str}]
-          return v unless v.nil?
+          return v if ActiveSupport::IsolatedExecutionState.key?(#{av_key_str})
           if Ractor.main?
             if defined?(@@available_locales) && (cv = @@available_locales)
               ActiveSupport::IsolatedExecutionState[#{av_key_str}] = cv
@@ -404,7 +404,7 @@ module RactorRailsShim
         end
         def available_locales_set
           v = ActiveSupport::IsolatedExecutionState[#{avs_key_str}]
-          return v unless v.nil?
+          return v if ActiveSupport::IsolatedExecutionState.key?(#{avs_key_str})
           if Ractor.main? && defined?(@@available_locales_set) && (cv = @@available_locales_set)
             ActiveSupport::IsolatedExecutionState[#{avs_key_str}] = cv
             return cv
@@ -424,7 +424,7 @@ module RactorRailsShim
         # documented I18n default).
         def enforce_available_locales
           v = ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_enforce]
-          return v unless v.nil?
+          return v if ActiveSupport::IsolatedExecutionState.key?(:ractor_rails_shim_i18n_enforce)
           if Ractor.main? && defined?(@@enforce_available_locales)
             cv = @@enforce_available_locales
             ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_enforce] = cv
@@ -469,7 +469,7 @@ module RactorRailsShim
         # main; workers reload translations from disk via these paths.
         def load_path
           v = ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_load_path]
-          return v unless v.nil?
+          return v if ActiveSupport::IsolatedExecutionState.key?(:ractor_rails_shim_i18n_load_path)
           if Ractor.main?
             lp = (defined?(@@load_path) && @@load_path) || []
             lp = lp.dup.freeze if lp.respond_to?(:freeze) && !lp.frozen?
@@ -493,7 +493,7 @@ module RactorRailsShim
         # DEFAULT_INTERPOLATION_PATTERNS constant).
         def default_separator
           v = ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_sep]
-          return v unless v.nil?
+          return v if ActiveSupport::IsolatedExecutionState.key?(:ractor_rails_shim_i18n_sep)
           if Ractor.main?
             cv = defined?(@@default_separator) ? @@default_separator : "."
             ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_sep] = cv
@@ -509,7 +509,7 @@ module RactorRailsShim
         end
         def exception_handler
           v = ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_exc]
-          return v unless v.nil?
+          return v if ActiveSupport::IsolatedExecutionState.key?(:ractor_rails_shim_i18n_exc)
           if Ractor.main?
             cv = defined?(@@exception_handler) ? @@exception_handler : ::I18n::ExceptionHandler.new
             ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_exc] = cv
@@ -525,7 +525,7 @@ module RactorRailsShim
         end
         def missing_interpolation_argument_handler
           v = ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_miss]
-          return v unless v.nil?
+          return v if ActiveSupport::IsolatedExecutionState.key?(:ractor_rails_shim_i18n_miss)
           if Ractor.main?
             cv = defined?(@@missing_interpolation_argument_handler) ? @@missing_interpolation_argument_handler : lambda do |missing_key, provided_hash, string|
                 raise ::I18n::MissingInterpolationArgument.new(missing_key, provided_hash, string)
@@ -545,7 +545,7 @@ module RactorRailsShim
         end
         def interpolation_patterns
           v = ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_ip]
-          return v unless v.nil?
+          return v if ActiveSupport::IsolatedExecutionState.key?(:ractor_rails_shim_i18n_ip)
           if Ractor.main?
             cv = defined?(@@interpolation_patterns) ? @@interpolation_patterns : ::I18n::DEFAULT_INTERPOLATION_PATTERNS.dup
             ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_ip] = cv
@@ -599,7 +599,7 @@ module RactorRailsShim
         i18n.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
           def fallbacks
             v = ActiveSupport::IsolatedExecutionState[#{fb_key_str}]
-            return v unless v.nil?
+            return v if ActiveSupport::IsolatedExecutionState.key?(#{fb_key_str})
             if Ractor.main? && defined?(@@fallbacks)
               cv = @@fallbacks
               if cv
@@ -622,7 +622,7 @@ module RactorRailsShim
           tag.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
             def implementation
               v = ActiveSupport::IsolatedExecutionState[#{tag_key_str}]
-              return v unless v.nil?
+              return v if ActiveSupport::IsolatedExecutionState.key?(#{tag_key_str})
               if Ractor.main? && defined?(@@implementation)
                 cv = @@implementation
                 ActiveSupport::IsolatedExecutionState[#{tag_key_str}] = cv
@@ -781,7 +781,7 @@ module RactorRailsShim
       ec.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def after_change_callbacks
           v = ActiveSupport::IsolatedExecutionState[#{acb_key_str}]
-          return v unless v.nil?
+          return v if ActiveSupport::IsolatedExecutionState.key?(#{acb_key_str})
           if Ractor.main? && instance_variable_defined?(:@after_change_callbacks)
             v = @after_change_callbacks
             ActiveSupport::IsolatedExecutionState[#{acb_key_str}] = v
@@ -797,7 +797,7 @@ module RactorRailsShim
         end
         def nestable
           v = ActiveSupport::IsolatedExecutionState[#{nest_key_str}]
-          return v unless v.nil?
+          return v if ActiveSupport::IsolatedExecutionState.key?(#{nest_key_str})
           if Ractor.main? && instance_variable_defined?(:@nestable)
             v = @nestable
             ActiveSupport::IsolatedExecutionState[#{nest_key_str}] = v
@@ -855,7 +855,7 @@ module RactorRailsShim
       ls.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def logger
           v = ActiveSupport::IsolatedExecutionState[#{key_str}]
-          return v unless v.nil?
+          return v if ActiveSupport::IsolatedExecutionState.key?(#{key_str})
           if Ractor.main? && instance_variable_defined?(:@logger)
             @logger
           elsif defined?(::Rails) && ::Rails.respond_to?(:logger)
@@ -890,7 +890,7 @@ module RactorRailsShim
       rl.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def check!
           v = ActiveSupport::IsolatedExecutionState[#{key_str}]
-          return v unless v.nil?
+          return v if ActiveSupport::IsolatedExecutionState.key?(#{key_str})
           result = check.call
           ActiveSupport::IsolatedExecutionState[#{key_str}] = result
           result

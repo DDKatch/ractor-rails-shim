@@ -119,7 +119,7 @@ module RactorRailsShim
               def #{namespaced_name}
                 self.ancestors.each do |anc|
                   v = RactorRailsShim::CLASS_ATTR_VALUES[:"ractor_rails_shim_class_attr_\#{anc.object_id}_#{namespaced_name}"]
-                  return v unless v.nil?
+                  return v if RactorRailsShim::CLASS_ATTR_VALUES.key?(:"ractor_rails_shim_class_attr_\#{anc.object_id}_#{namespaced_name}")
                 end
                 #{namespaced_name.inspect} == :__callbacks ? {} : nil
               end
@@ -137,7 +137,7 @@ module RactorRailsShim
                 def #{name}
                   self.ancestors.each do |anc|
                     v = RactorRailsShim::CLASS_ATTR_VALUES[:"ractor_rails_shim_class_attr_\#{anc.object_id}_#{namespaced_name}"]
-                    return v unless v.nil?
+                    return v if RactorRailsShim::CLASS_ATTR_VALUES.key?(:"ractor_rails_shim_class_attr_\#{anc.object_id}_#{namespaced_name}")
                   end
                   #{namespaced_name.inspect} == :__callbacks ? {} : nil
                 end
@@ -161,7 +161,7 @@ module RactorRailsShim
              target.module_eval <<-RUBY, __FILE__, __LINE__ + 1
                def #{namespaced_name}
                  v = ActiveSupport::IsolatedExecutionState[#{key_str}]
-                 return v unless v.nil?
+                 return v if ActiveSupport::IsolatedExecutionState.key?(#{key_str})
                  fb = RactorRailsShim::SHAREABLE_FALLBACK[#{key_str}]
                  return fb unless fb.nil?
                  RactorRailsShim::CLASS_ATTR_VALUES[#{key_str}] if Ractor.main?
@@ -181,7 +181,7 @@ module RactorRailsShim
                owner.module_eval <<-RUBY, __FILE__, __LINE__ + 1
                  def #{name}
                    v = ActiveSupport::IsolatedExecutionState[#{key_str}]
-                   return v unless v.nil?
+                   return v if ActiveSupport::IsolatedExecutionState.key?(#{key_str})
                    fb = RactorRailsShim::SHAREABLE_FALLBACK[#{key_str}]
                    return fb unless fb.nil?
                    RactorRailsShim::CLASS_ATTR_VALUES[#{key_str}] if Ractor.main?

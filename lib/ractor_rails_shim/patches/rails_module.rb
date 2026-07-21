@@ -96,7 +96,7 @@ module RactorRailsShim
         # slot is empty until they boot their own app).
         def application
           v = ActiveSupport::IsolatedExecutionState[#{k[:application].inspect}]
-          return v unless v.nil?
+          return v if ActiveSupport::IsolatedExecutionState.key?(#{k[:application].inspect})
           if Ractor.main?
             super
           else
@@ -115,7 +115,7 @@ module RactorRailsShim
         # value at make_app_shareable! time) when their own IES slot is empty.
         def app_class
           v = ActiveSupport::IsolatedExecutionState[#{k[:app_class].inspect}]
-          return v unless v.nil?
+          return v if ActiveSupport::IsolatedExecutionState.key?(#{k[:app_class].inspect})
           return super if Ractor.main?
           RactorRailsShim::SHAREABLE_FALLBACK[#{k[:app_class].inspect}]
         end
@@ -127,7 +127,7 @@ module RactorRailsShim
 
         def cache
           v = ActiveSupport::IsolatedExecutionState[#{k[:cache].inspect}]
-          return v unless v.nil?
+          return v if ActiveSupport::IsolatedExecutionState.key?(#{k[:cache].inspect})
           return super if Ractor.main?
           RactorRailsShim::SHAREABLE_FALLBACK[#{k[:cache].inspect}]
         end
@@ -139,7 +139,7 @@ module RactorRailsShim
 
         def logger
           v = ActiveSupport::IsolatedExecutionState[#{k[:logger].inspect}]
-          return v unless v.nil?
+          return v if ActiveSupport::IsolatedExecutionState.key?(#{k[:logger].inspect})
           return super if Ractor.main?
           # Loggers are intrinsically mutable (formatters hold tag stacks,
           # logdevs hold IO + Mutex) and can't be shared read-only. Build a
@@ -159,7 +159,7 @@ module RactorRailsShim
 
         def backtrace_cleaner
           v = ActiveSupport::IsolatedExecutionState[#{k[:backtrace_cleaner].inspect}]
-          return v unless v.nil?
+          return v if ActiveSupport::IsolatedExecutionState.key?(#{k[:backtrace_cleaner].inspect})
           return super if Ractor.main?
           RactorRailsShim::SHAREABLE_FALLBACK[#{k[:backtrace_cleaner].inspect}]
         end
@@ -174,7 +174,7 @@ module RactorRailsShim
         # lazily builds and caches in @_env.
         def env
           v = ActiveSupport::IsolatedExecutionState[#{k[:env].inspect}]
-          return v unless v.nil?
+          return v if ActiveSupport::IsolatedExecutionState.key?(#{k[:env].inspect})
           if Ractor.main?
             super
           else

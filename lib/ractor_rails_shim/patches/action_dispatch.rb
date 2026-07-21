@@ -101,7 +101,7 @@ module RactorRailsShim
       req.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def parameter_parsers
           v = ActiveSupport::IsolatedExecutionState[#{pp_key_str}]
-          return v unless v.nil?
+          return v if ActiveSupport::IsolatedExecutionState.key?(#{pp_key_str})
           if Ractor.main? && instance_variable_defined?(:@parameter_parsers)
             v = @parameter_parsers
             ActiveSupport::IsolatedExecutionState[#{pp_key_str}] = v

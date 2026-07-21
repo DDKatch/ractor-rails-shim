@@ -91,7 +91,7 @@ module RactorRailsShim
         def devise_parameter_filter
           key = :"ractor_rails_shim_devise_param_filter_\#{object_id}"
           v = ActiveSupport::IsolatedExecutionState[key]
-          return v unless v.nil?
+          return v if ActiveSupport::IsolatedExecutionState.key?(key)
           f = Devise::ParameterFilter.new(case_insensitive_keys, strip_whitespace_keys)
           ActiveSupport::IsolatedExecutionState[key] = f
           f

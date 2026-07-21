@@ -81,7 +81,7 @@ module RactorRailsShim
             singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
               def #{sym}
                 v = ActiveSupport::IsolatedExecutionState[#{key_str}]
-                return v unless v.nil?
+                return v if ActiveSupport::IsolatedExecutionState.key?(#{key_str})
 
                 if #{!!shareable}
                   if class_variable_defined?(#{cv_str})
@@ -128,7 +128,7 @@ module RactorRailsShim
               module_eval <<-RUBY, __FILE__, __LINE__ + 1
                 def #{sym}
                   v = ActiveSupport::IsolatedExecutionState[#{key_str}]
-                  return v unless v.nil?
+                  return v if ActiveSupport::IsolatedExecutionState.key?(#{key_str})
                   if Ractor.main?
                     self.class.class_variable_defined?(#{cv_str}) ? self.class.class_variable_get(#{cv_str}) : nil
                   else

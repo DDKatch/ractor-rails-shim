@@ -939,7 +939,7 @@ module RactorRailsShim
       ::ActiveRecord::Base.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def configurations
           v = ActiveSupport::IsolatedExecutionState[#{key_str}]
-          return v unless v.nil?
+          return v if ActiveSupport::IsolatedExecutionState.key?(#{key_str})
           if Ractor.main?
             ActiveRecord::Core.class_variable_get(:@@configurations)
           else
@@ -995,7 +995,7 @@ module RactorRailsShim
       ::ActiveRecord::DatabaseConfigurations.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def db_config_handlers
           v = ActiveSupport::IsolatedExecutionState[#{key_str}]
-          return v unless v.nil?
+          return v if ActiveSupport::IsolatedExecutionState.key?(#{key_str})
           if Ractor.main?
             @db_config_handlers
           else
@@ -1049,7 +1049,7 @@ module RactorRailsShim
       ::ActiveRecord.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def query_transformers
           v = ActiveSupport::IsolatedExecutionState[#{key_str}]
-          return v unless v.nil?
+          return v if ActiveSupport::IsolatedExecutionState.key?(#{key_str})
           if Ractor.main?
             @query_transformers
           else
@@ -1102,7 +1102,7 @@ module RactorRailsShim
         ::ActiveRecord.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
           def #{method_name}
             v = ActiveSupport::IsolatedExecutionState[#{key_str}]
-            return v unless v.nil?
+            return v if ActiveSupport::IsolatedExecutionState.key?(#{key_str})
             if Ractor.main?
               @#{method_name}
             else
@@ -1134,7 +1134,7 @@ module RactorRailsShim
         def registry
           key = :"ractor_rails_shim_dedup_registry_\#{name || object_id}"
           v = ActiveSupport::IsolatedExecutionState[key]
-          return v unless v.nil?
+          return v if ActiveSupport::IsolatedExecutionState.key?(key)
           h = {}
           ActiveSupport::IsolatedExecutionState[key] = h
           h
@@ -1157,7 +1157,7 @@ module RactorRailsShim
         def query_constraints_list
           key = :"ractor_rails_shim_qcl_\#{name || object_id}"
           v = ActiveSupport::IsolatedExecutionState[key]
-          return v unless v.nil?
+          return v if ActiveSupport::IsolatedExecutionState.key?(key)
           result = if base_class? || primary_key != base_class.primary_key
             primary_key if primary_key.is_a?(::Array)
           else
@@ -1169,7 +1169,7 @@ module RactorRailsShim
         def has_query_constraints?
           key = :"ractor_rails_shim_qcl_\#{name || object_id}"
           v = ActiveSupport::IsolatedExecutionState[key]
-          return !v.nil? unless v.nil?
+          return !v.nil? if ActiveSupport::IsolatedExecutionState.key?(key)
           result = query_constraints_list
           !result.nil?
         end
@@ -1412,7 +1412,7 @@ module RactorRailsShim
       ::ActiveRecord::Base.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def default_connection_handler
           v = ActiveSupport::IsolatedExecutionState[#{dch_key_str}]
-          return v unless v.nil?
+          return v if ActiveSupport::IsolatedExecutionState.key?(#{dch_key_str})
           if Ractor.main?
             cv = RactorRailsShim::CLASS_ATTR_VALUES[:__ractor_rails_shim_ar_default_connection_handler__]
             return cv if cv
@@ -1427,6 +1427,12 @@ module RactorRailsShim
         # worker's other threads; Ractor.current is per-Ractor and shared by all
         # threads of the worker. Falls back to IES (legacy) then
         # default_connection_handler (main Ractor only).
+        # NOTE: uses nil-sentinel (`unless v.nil?`) rather than key?-based
+        # detection because Ractor#[] has no `key?` method (Ractor local
+        # storage returns nil for both unset and set-to-nil). Safe here
+        # because `connection_handler=` is only ever called with a real
+        # ConnectionHandler instance, never nil — so nil unambiguously
+        # means "unset, fall through to default_connection_handler".
         def connection_handler
           v = Ractor.current[:active_record_connection_handler]
           return v unless v.nil?
@@ -1504,7 +1510,7 @@ module RactorRailsShim
         def serialize_cast_value_compatible?
           key = :"ractor_rails_shim_scv_\#{name || object_id}"
           v = ActiveSupport::IsolatedExecutionState[key]
-          return v unless v.nil?
+          return v if ActiveSupport::IsolatedExecutionState.key?(key)
           result = ancestors.index(instance_method(:serialize_cast_value).owner) <= ancestors.index(instance_method(:serialize).owner)
           ActiveSupport::IsolatedExecutionState[key] = result
           result
@@ -1537,7 +1543,7 @@ module RactorRailsShim
         def uncacheable_methods
           key = :ractor_rails_shim_ar_uncacheable_methods
           v = ActiveSupport::IsolatedExecutionState[key]
-          return v unless v.nil?
+          return v if ActiveSupport::IsolatedExecutionState.key?(key)
           result = (
             delegated_classes.flat_map(&:public_instance_methods) - ActiveRecord::Relation.public_instance_methods
           ).to_set.freeze
@@ -1573,7 +1579,7 @@ module RactorRailsShim
         def primary_key
           key = :"ractor_rails_shim_pk_\#{name || object_id}"
           v = ActiveSupport::IsolatedExecutionState[key]
-          return v unless v.nil?
+          return v if ActiveSupport::IsolatedExecutionState.key?(key)
           if Ractor.main?
             reset_primary_key if PRIMARY_KEY_NOT_SET.equal?(@primary_key)
             v = @primary_key
@@ -1586,7 +1592,7 @@ module RactorRailsShim
         def composite_primary_key?
           key = :"ractor_rails_shim_pk_\#{name || object_id}"
           v = ActiveSupport::IsolatedExecutionState[key]
-          return v.is_a?(::Array) unless v.nil?
+          return v.is_a?(::Array) if ActiveSupport::IsolatedExecutionState.key?(key)
           if Ractor.main?
             reset_primary_key if PRIMARY_KEY_NOT_SET.equal?(@primary_key)
             @primary_key.is_a?(::Array)
@@ -1776,7 +1782,7 @@ module RactorRailsShim
       mig.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def migrations_paths
           v = ActiveSupport::IsolatedExecutionState[#{mp_key_str}]
-          return v unless v.nil?
+          return v if ActiveSupport::IsolatedExecutionState.key?(#{mp_key_str})
           if Ractor.main? && instance_variable_defined?(:@migrations_paths)
             v = @migrations_paths
             ActiveSupport::IsolatedExecutionState[#{mp_key_str}] = v

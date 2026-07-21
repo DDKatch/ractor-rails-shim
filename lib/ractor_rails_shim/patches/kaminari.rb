@@ -62,7 +62,7 @@ module RactorRailsShim
       ::Kaminari.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def config
           v = ActiveSupport::IsolatedExecutionState[#{k_key_str}]
-          return v unless v.nil?
+          return v if ActiveSupport::IsolatedExecutionState.key?(#{k_key_str})
           if Ractor.main? && instance_variable_defined?(:@_config)
             @_config
           else
