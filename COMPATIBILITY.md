@@ -25,7 +25,7 @@ and which are fundamentally incompatible with Ractor mode.
 
 | Gem | Status | Storage class | Shim auto-fixes? | Notes |
 |---|---|---|---|---|
-| **rails** (8.1) | ✅ verified | mattr/cattr + class_attribute + constants + 7 Procs | yes (via `make_app_shareable!`) | The shim's whole purpose. Minimal app dispatches `GET /up` → 200 in a worker Ractor. Full-stack app (AR + Devise + real views) also dispatches `GET /up` → 200. |
+| **rails** (8.1) | ✅ verified | mattr/cattr + class_attribute + constants + 7 Procs | yes (via `make_app_shareable!`) | The shim's whole purpose. Full-stack app (AR + Devise 5 + Propshaft + Kaminari + PG) dispatches every routable action in worker Ractors under `kino -m ractor`: `/up`, `/posts` (index/show/new/edit), Devise sign-in/sign-out (CSRF issue + validate), authenticated `POST /posts` → 302 (row persisted), `DELETE/PATCH /posts/:id`. |
 | **propshaft** | ✅ analyzed | class_attribute + constants | yes | Static asset server; no per-request class state. |
 | **puma** | ✅ analyzed | n/a (instance state) | n/a | Server, not in the app graph. Per-Ractor workers are the server's job (Kino/Puma), not the shim's. |
 | **kino** | ✅ verified | — | n/a | The Ractor web server; runs `:ractor` mode against the shareable app. |
@@ -77,8 +77,9 @@ of:
 - **NoOpLock** for Mutexes the gem holds (the shared app is read-only
   post-boot).
 
-Open a PR adding the patch to `lib/ractor_rails_shim/patches.rb` and an entry
-to `SHAREABLE_CONSTANTS` for any unshareable constants the gem owns.
+Open a PR adding the patch to `lib/ractor_rails_shim/patches/` (a new
+per-concern file or an existing one) and an entry to `SHAREABLE_CONSTANTS`
+for any unshareable constants the gem owns.
 
 ### Gems that are fundamentally incompatible (❌)
 They're **process singletons by design**: background job processors

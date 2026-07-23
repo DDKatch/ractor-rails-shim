@@ -189,7 +189,7 @@ main** that swaps worker pools; workers are always non-main.
   correct content. `/posts/1` proves the `set_post` replay works; the Devise
   routes prove `require_no_authentication`/`allow_params_authentication!`/etc.
   replay correctly. The only 500 (`/users/confirmation/new`) is a genuine missing
-  route (Devise confirmable not enabled), not a shim bug. Shim unit specs: 31/31
+  route (Devise confirmable not enabled), not a shim bug. Shim unit specs: 61/61
   pass.
 - `kino -m threaded` in **development** (mode-aware boot, `KINO_MODE=threaded`):
   same routes return 200 with code reloading ON (live reload). This is the
@@ -215,12 +215,13 @@ main** that swaps worker pools; workers are always non-main.
 
 ## 8. Verification & commits
 
-- Shim: `ractor-rails-shim` @ `60e978d` — early `with_empty_template_cache`
+- Shim: `ractor-rails-shim` (main) — early `with_empty_template_cache`
   install via `on_load`; shared `SHAREABLE_COMPILED_MODULE`; JSON const
   deep-freeze; callback `only`/`except` capture; removed debug probes.
-- Test app: `ractor-rails-shim-test-app` @ `ad44763` — `config_ractor.ru` cleaned of debug
-  probes.
-- Both dev and prod verified 200 under `kino -m ractor` after `60e978d`.
+- Test app: `ractor-rails-shim-test-app` (main) — `config_ractor.ru` cleaned of
+  debug probes.
+- Both dev and prod verified 200 under `kino -m ractor` after the
+  `with_empty_template_cache` early-install fix.
 - **Callback-leak fix (subsequent commit):** `make_shareable.rb` now intercepts
   `ActiveSupport::Callbacks.set_callback` (`_install_callback_declaration_capture!`)
   to capture each controller's own declared filters into

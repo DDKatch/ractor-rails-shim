@@ -207,7 +207,7 @@ upstream lands; it becomes a no-op and is removed when Rails does this.
 
 ## Evidence
 
-- Reference implementation: `ractor-rails-shim` (this repo). 31 passing specs
+- Reference implementation: `ractor-rails-shim` (this repo). 61 passing specs
   + an integration spec dispatching `GET /up` → 200 in a worker Ractor.
 - `ractor-rails-check` audit output from a minimal Rails 8.1 app (101
   blockers in gems, 0 in the Rails framework after the shim reroutes them).

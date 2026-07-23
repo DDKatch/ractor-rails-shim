@@ -115,6 +115,6 @@ collections) and some hold singletons (railtie `@instance`, `@deprecator`).
   merely not calling `install` isn't enough, since `Bundler.require` triggers
   the auto-install. The unit spec (`spec/shim_spec.rb`, test 1) covers the
   "before shim" case with a fake module.
-- Namespace is `RactorRailsShim` (top-level), NOT `Ractor::RailsShim`. The
-  README's `Ractor::RailsShim.install` examples are stale and should be
-  `RactorRailsShim.install`.
+- Namespace is `RactorRailsShim` (top-level), NOT `Ractor::RailsShim`. All
+  examples in this repo use `RactorRailsShim.install` / `.prepare_for_ractors!`
+  / `.make_app_shareable!` — the correct, current API.

@@ -4,31 +4,34 @@ A monkey-patch shim that reroutes Rails' class-level instance variable accessors
 
 **Status:** proof-of-concept / stopgap. The goal is for Rails to do this upstream, at which point this gem becomes a no-op and can be removed.
 
-**Current status:** on a full Rails 8.1 app (Devise 5, Propshaft, Kaminari,
-PG) under **official Ruby 4.0.6**, worker Ractors serve **every** routable action —
-`GET /up`, full ERB view rendering, Devise sign-in/sign-out (CSRF issuance
-**and** validation), and authenticated Devise **writes** (`POST /posts` → 302,
-row persisted). A worker Ractor dispatches `GET /up` → **HTTP 200** via
-`RactorRailsShim.make_app_shareable!`. The shim builds a shareable fallback
-table for framework class config (`class_attribute` / `mattr_accessor` values)
-and patches the raw class-ivar accessors Rails reads per-request
-(`ExecutionWrapper.active_key`, `Notifications.notifier`, `Inflections`,
-`PathRegistry`, `I18n`, `AbstractController` lazy ivars, `Rack::Request`/`Utils`,
-`ExecutionContext`, etc.).
+**Current status (v0.2.5):** on a full Rails 8.1 app (Devise 5, Propshaft,
+Kaminari, PG) under **official Ruby 4.0.6**, worker Ractors serve **every**
+routable action — `GET /up`, full ERB view rendering, Devise sign-in/sign-out
+(CSRF issuance **and** validation), and authenticated Devise **writes**
+(`POST /posts` → 302, row persisted). A worker Ractor dispatches `GET /up` →
+**HTTP 200** via `RactorRailsShim.make_app_shareable!`. The shim builds a
+shareable fallback table for framework class config (`class_attribute` /
+`mattr_accessor` values) and patches the raw class-ivar accessors Rails reads
+per-request (`ExecutionWrapper.active_key`, `Notifications.notifier`,
+`Inflections`, `PathRegistry`, `I18n`, `AbstractController` lazy ivars,
+`Rack::Request`/`Utils`, `ExecutionContext`, etc.). 61 unit specs across 7
+spec files pass (no Rails dependency); an integration spec dispatches `GET /up`
+→ 200 in a worker Ractor.
 
 **No patched Ruby or kino required.** Official Ruby 4.0.6 ships the frozen-iseq
 call-cache fix (#22075) and the cross-ractor env-string fix, so the SIGBUS crashes
 that previously required the DDKatch patched Ruby/kino forks are resolved in core.
 Both SIGBUS classes were the only reason a patched build was ever needed; on 4.0.6
-the shim runs `kino -m ractor` on the official `kino` gem under sustained read
-**and** write load (verified: 0 transport failures / 0 server errors across
+the shim runs `kino -m ractor` on the official `kino` gem (0.1.3) under sustained
+read **and** write load (verified: 0 transport failures / 0 server errors across
 `/up`, `GET /posts`, `POST /posts` in the benchmark matrix).
 
 ## Requirements
 
-- **Ruby >= 4.0** — the shim relies on Ruby 4.0's Ractor semantics and
-  `Ractor.make_shareable`. It will not work (and refuses to install) on
-  earlier Ruby versions.
+- **Ruby >= 4.0.6** — the shim relies on Ruby 4.0's Ractor semantics and
+  `Ractor.make_shareable`, plus the frozen-iseq call-cache fix (#22075) and
+  the cross-ractor env-string fix that both shipped in 4.0.6. It will not
+  work (and refuses to install) on earlier Ruby versions.
 - **Rails ~> 8.1** — tested against Rails 8.1.x class layouts. Other versions
   are not yet supported (see Version compatibility below).
 
@@ -43,11 +46,70 @@ the configuration it is verified against.
 [kino](https://github.com/yaroslav/kino) (`kino -m ractor`). On official Ruby
 4.0.6 the **upstream `kino` gem (0.1.3) works as-is** — no fork or patch is
 required. (Historically a DDKatch/kino fork carried a per-ractor env-string
-cache fix; that fix is in official 4.0.6, so the fork is obsolete.)
+cache fix; that fix landed in official 4.0.6, so the fork is obsolete.)
+
+**Threaded servers (Puma/Falcon/Thin/Webrick):** set
+`RactorRailsShim.thread_mode = true` (or `ENV["SERVER"]` to one of
+`puma|falcon|thin|webrick|thread*`) and the shim installs a **minimal**
+patch set — only the `class_attribute` isolation fix + nil-safe callback
+replay. The per-Ractor IES-routing patches are skipped because IES is empty
+on a thread server's request threads and would break the app; Rails' own
+class globals are thread-safe and used as-is. Use this when you want the
+callback-correctness fixes without running in Ractor mode.
 
 **Benchmarks:** throughput/latency/memory of this shim + the test app under
 kino `:ractor` vs Puma vs Falcon are documented in
 [ractor-rails-shim-test-app/BENCHMARKS.md](https://github.com/DDKatch/ractor-rails-shim-test-app/blob/main/BENCHMARKS.md).
+
+## Repository layout
+
+```
+lib/ractor_rails_shim.rb            # entry point — autoload-install if Rails is loaded
+lib/ractor_rails_shim/
+  version.rb                        # VERSION constant (currently 0.2.5)
+  version_check.rb                  # Gem::Version-based Ruby/Rails detection + policy
+  fallback_ies.rb                   # thread-local IES shim when ActiveSupport is absent
+  check.rb                          # the ractor-rails-check audit (Check.scan / report)
+  patches.rb                        # requires all per-concern patch files in order
+  patches/
+    core.rb                         # module skeleton, registries, install, prepare_for_ractors!, WorkerApp
+    make_shareable.rb               # make_app_shareable!, callable/lock replacement, shareable fallback
+    rails_module.rb                 # Rails.application / Rails.cache / Rails.logger / Rails.env …
+    mattr_accessor.rb               # Module#mattr_accessor / cattr_accessor macro rewrite
+    class_attribute.rb              # ActiveSupport class_attribute macro rewrite
+    zeitwerk_registry.rb            # Zeitwerk::Registry class ivars
+    route_helpers.rb                # ActionDispatch::Routing::RouteSet#generate_url_helpers
+    url_helpers.rb                  # URL helper singleton + module fixes
+    execution_wrapper.rb            # ActiveSupport::ExecutionWrapper + callback replay
+    rack.rb                         # Rack::Request / Rack::Utils
+    action_view.rb                  # PathRegistry, LookupContext, Template handlers, compiled_method_container
+    action_controller.rb            # AbstractController, ActionController name/encoding
+    action_dispatch.rb              # ActionDispatch routing, http_url, journey, mounted helpers
+    polymorphic_routes.rb           # polymorphic_path(s) URL helpers
+    active_support.rb               # Inflector, error_reporter, ExecutionContext, I18n, JSON encoding, Reloader
+    warden.rb                       # Warden hooks / strategies / serializer
+    devise.rb                       # Devise url_helpers / authenticatable / failure_app
+    active_model_attribute.rb       # ActiveModel::Attribute dup_or_share for frozen graphs
+    active_record_model_schema.rb   # AR ModelSchema reload_schema_from_cache (worker-safe)
+    activerecord.rb                 # AR connection handler, configurations, query caches, …
+    kaminari.rb                     # Kaminari config
+    propshaft.rb                    # Propshaft asset server
+    orm_adapter.rb                  # orm_adapter
+    openssl.rb                      # OpenSSL digest cache
+    rubygems.rb                     # Rubygems msgpack pre-check
+exe/ractor-rails-check              # CLI audit tool
+spec/                               # 7 spec files, 61 unit tests (no Rails dep) + integration spec
+script/make_test_app.sh             # build the minimal Rails 8.1 test app (CI uses this)
+script/make_full_test_app.sh        # build the full-featured test app (Devise/PG/Kaminari)
+.github/workflows/ci.yml            # unit job + integration job (GET /up → 200 in a worker Ractor)
+```
+
+Per-concern patch files reopen `RactorRailsShim`'s singleton class to add
+their `_install_*` methods. `patches.rb` requires them in dependency order
+(`core.rb` first — it defines the module skeleton + registries the rest
+reference). Each `_install_*` method is idempotent (guarded by its own
+`@*_patched` flag), so `install`, `prepare_for_ractors!`, and
+`make_app_shareable!` can all call the full set safely.
 
 ## Why
 
