@@ -35,7 +35,7 @@ Gem::Specification.new do |spec|
 
   spec.homepage = REPO_URL
   spec.license = "MIT"
-  spec.required_ruby_version = ">= 4.0"
+  spec.required_ruby_version = ">= 4.0.6"
 
   spec.metadata = {
     "homepage_uri" => spec.homepage,

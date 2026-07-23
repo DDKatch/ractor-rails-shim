@@ -434,9 +434,10 @@ module RactorRailsShim
     def _check_version_support
       @version_policy ||= :warn
       unless RactorRailsShim::Version.supported_ruby?
-        msg = "ractor-rails-shim: Ruby #{RUBY_VERSION} — shim developed " \
-              "against Ruby #{SUPPORTED_RUBY}. Ractor semantics may differ; " \
-              "the shim may break. Proceeding anyway."
+        msg = "ractor-rails-shim: Ruby #{RUBY_VERSION} — shim requires " \
+              "Ruby >= #{SUPPORTED_RUBY} (frozen-iseq call-cache fix #22075 " \
+              "and cross-ractor env-string fix both shipped in 4.0.6). " \
+              "Proceeding anyway."
         _version_mismatch(msg)
       end
       if RactorRailsShim::Version.rails &&

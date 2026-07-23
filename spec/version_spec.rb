@@ -48,10 +48,10 @@ class VersionSpec < Minitest::Spec
   end
 
   it "Version.supported_ruby? is true on the developed-against Ruby" do
-    # The shim is developed against Ruby 4.0; CI runs on 4.0.x.
+    # The shim requires Ruby >= 4.0.6; CI runs on 4.0.6+.
     assert RactorRailsShim::Version.supported_ruby?,
-           "expected Ruby #{RUBY_VERSION} segment " \
-           "(#{RactorRailsShim::Version.ruby_segment}) to be supported"
+           "expected Ruby #{RUBY_VERSION} to be >= " \
+           "#{RactorRailsShim::Version::SUPPORTED_RUBY}"
   end
 
   it "Version.rails is nil when Rails isn't loaded (boot.rb case)" do

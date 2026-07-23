@@ -23,9 +23,11 @@
 #     exactly what applied to their runtime.
 module RactorRailsShim
   module Version
-    # Ruby version the shim was developed against (major.minor). Ractor
-    # semantics are still settling; non-4.0 Rubies may behave differently.
-    SUPPORTED_RUBY = "4.0"
+    # Ruby version the shim was developed against (major.minor.patch). Ractor
+    # semantics are still settling; the frozen-iseq call-cache fix (#22075) and
+    # the cross-ractor env-string fix that the shim relies on both shipped in
+    # 4.0.6, so earlier 4.0.x patch releases are NOT supported.
+    SUPPORTED_RUBY = "4.0.6"
     # Rails versions each patch was tested against. Patches are registered
     # with one or more entries from this list; the dispatcher applies a patch
     # only if the runtime Rails version matches one of its tags. To add 7.x
@@ -33,7 +35,7 @@ module RactorRailsShim
     TESTED_RAILS = ["8.1"].freeze
 
     class << self
-      # Runtime Ruby version as a Gem::Version (e.g. "4.0.5"). Always
+      # Runtime Ruby version as a Gem::Version (e.g. "4.0.6"). Always
       # available — Ruby is obviously loaded.
       def ruby
         Gem::Version.new(RUBY_VERSION)
@@ -64,9 +66,11 @@ module RactorRailsShim
         "#{v.segments[0]}.#{v.segments[1]}"
       end
 
-      # True if the runtime Ruby's major.minor matches the supported segment.
+      # True if the runtime Ruby is >= the supported version (4.0.6). Uses a
+      # full Gem::Version compare (not a segment match) so the minimum patch
+      # release is enforced — the shim relies on fixes that shipped in 4.0.6.
       def supported_ruby?
-        ruby_segment == SUPPORTED_RUBY
+        ruby >= Gem::Version.new(SUPPORTED_RUBY)
       end
 
       # True if the runtime Rails major.minor is in the tested set (or Rails
