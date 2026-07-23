@@ -5,7 +5,7 @@ require_relative "lib/ractor_rails_shim/version"
 Gem::Specification.new do |spec|
   spec.name = "ractor-rails-shim"
   spec.version = RactorRailsShim::VERSION
-  spec.authors = ["dev"]
+  spec.authors = ["Daniil Kachur"]
   spec.email = ["kachur.daniil@gmail.com"]
 
   spec.summary = "Make Rails apps Ractor-safe so they can run in Ractor mode (e.g. under the kino web server)."
