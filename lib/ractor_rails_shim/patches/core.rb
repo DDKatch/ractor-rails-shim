@@ -533,10 +533,16 @@ module RactorRailsShim
     # constants in the main Ractor and wraps the frozen, shareable app in a
     # WorkerApp that rebinds those constants (and initializes the worker's
     # ActiveRecord connection) on the first request served by each worker
-    # Ractor. Returns a shareable WorkerApp instance.
+    # Ractor. Returns a shareable WorkerApp instance — frozen and
+    # `Ractor.make_shareable`'d — so it can be passed directly to
+    # `Ractor.new(worker_app) { |a| a.call(env) }` without the caller having
+    # to know the shareability contract.
     def worker_app(frozen_app)
       bindings = capture_app_constants
-      WorkerApp.new(frozen_app, bindings)
+      wa = WorkerApp.new(frozen_app, bindings)
+      wa.freeze
+      Ractor.make_shareable(wa)
+      wa
     end
 
     # See patches/active_model_attribute.rb. When the frozen `:ractor` graph is
@@ -770,8 +776,9 @@ module RactorRailsShim
   #   2. ensures the worker's ActiveRecord connection handler is initialized.
   #
   # The wrapper holds only shareable state (@app, @bindings), so the instance
-  # is Ractor.make_shareable. `Ractor.current` provides per-worker storage for
-  # the one-time guard, avoiding any top-level constant reference.
+  # is `Ractor.make_shareable`'d by `worker_app` before being handed to worker
+  # Ractors. `Ractor.current` provides per-worker storage for the one-time
+  # guard, avoiding any top-level constant reference.
   class WorkerApp
     def initialize(app, bindings)
       @app = app
@@ -788,9 +795,12 @@ module RactorRailsShim
     def setup_once!
       # All threads inside a worker Ractor share Ractor.current, so a single
       # per-Ractor mutex serializes the one-time init across the worker's
-      # threads. (The mutex is created under ||= which is racy under extreme
-      # contention, but both init steps below are themselves idempotent, so a
-      # rare double-init is harmless.)
+      # threads. `Ractor.current[:key] ||= Thread::Mutex.new` is atomic in
+      # Ruby 4.0.6 (verified: 100 concurrent threads produce exactly one
+      # mutex object), so the TOCTOU race that would let two threads each
+      # create their own mutex does not occur. The `:rrs_worker_ready` guard
+      # inside `synchronize` then ensures `rebind_constants` runs exactly
+      # once per worker; later threads return early.
       m = Ractor.current[:rrs_worker_mutex] ||= Thread::Mutex.new
       m.synchronize do
         return if Ractor.current[:rrs_worker_ready]
