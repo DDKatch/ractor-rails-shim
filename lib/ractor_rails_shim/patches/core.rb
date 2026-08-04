@@ -320,21 +320,6 @@ module RactorRailsShim
       [parent, parts.last.to_sym]
     end
 
-    # Public API: run after Rails.application.initialize! and BEFORE spawning
-    # worker Ractors. Makes every registered constant shareable (deep-freeze).
-    # Constants that didn't exist at install time (e.g. Rails::Railtie, loaded
-    # after `module Rails` opens) get fixed here. Idempotent; safe to call
-    # multiple times. Must run in the main Ractor.
-    #
-    # NOTE: this does NOT build the framework-config shareable fallback. That
-    # step is folded into `make_app_shareable!` because some class_attribute /
-    # mattr_accessor values reference the app graph, and making them shareable
-    # must happen AFTER the app itself is already frozen (otherwise the app
-    # gets frozen prematurely and precompute/proc-replacement can't mutate
-    # it). If you call prepare_for_ractors! standalone (without
-    # make_app_shareable!), worker Ractors will see nil for framework config
-    # values that couldn't be shared without freezing the app — set them
-    # explicitly per worker, or use make_app_shareable!.
     # Shared list of every framework patch install method. Both
     # `prepare_for_ractors!` (pre-worker boot) and `make_app_shareable!`
     # (post-boot, pre-freeze) call this, so the two no longer duplicate the
@@ -422,6 +407,21 @@ module RactorRailsShim
       _install_hash_compute_if_absent_patch
     end
 
+    # Public API: run after Rails.application.initialize! and BEFORE spawning
+    # worker Ractors. Makes every registered constant shareable (deep-freeze).
+    # Constants that didn't exist at install time (e.g. Rails::Railtie, loaded
+    # after `module Rails` opens) get fixed here. Idempotent; safe to call
+    # multiple times. Must run in the main Ractor.
+    #
+    # NOTE: this does NOT build the framework-config shareable fallback. That
+    # step is folded into `make_app_shareable!` because some class_attribute /
+    # mattr_accessor values reference the app graph, and making them shareable
+    # must happen AFTER the app itself is already frozen (otherwise the app
+    # gets frozen prematurely and precompute/proc-replacement can't mutate
+    # it). If you call prepare_for_ractors! standalone (without
+    # make_app_shareable!), worker Ractors will see nil for framework config
+    # values that couldn't be shared without freezing the app — set them
+    # explicitly per worker, or use make_app_shareable!.
     def prepare_for_ractors!
       do_install_shareable_constants
       RactorRailsShim._freeze_shareable_class_ivars! if RactorRailsShim.respond_to?(:_freeze_shareable_class_ivars!)
@@ -435,9 +435,9 @@ module RactorRailsShim
       _freeze_global_class_ivars!
       _freeze_global_constants!
       _freeze_messages_constants!
-     end
+    end
 
-     # Verify the runtime matches the versions the shim was developed against.
+    # Verify the runtime matches the versions the shim was developed against.
     # The shim's patches target specific Rails 8.1 class layouts and Ruby 4.0
     # Ractor semantics. On other versions, the patches may silently miss or
     # break things. Behavior on mismatch is governed by `version_policy`:
