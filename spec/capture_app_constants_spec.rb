@@ -22,26 +22,29 @@ require_relative "../lib/ractor_rails_shim/patches"
 
 class CaptureAppConstantsSpec < Minitest::Spec
   # Fakes for the Rails autoloaders surface. We stub `::Rails` for the
-  # duration of each test via a throwaway module.
+  # duration of each test, SAVING AND RESTORING the original constant so we
+  # don't clobber a `Rails` module another spec file defined at load time
+  # (e.g. check_spec.rb defines `module Rails::CheckSpecFixture`).
   def with_rails(autoloaders_value)
+    saved = defined?(::Rails) ? ::Rails : nil
+    Object.send(:remove_const, :Rails) if defined?(::Rails)
     fake_rails = Module.new
     fake_rails.define_singleton_method(:autoloaders) { autoloaders_value } unless autoloaders_value.nil?
-    Object.send(:const_set, :FakeRailsForCapture, fake_rails)
-    # `defined?(::Rails)` in the lib checks the literal ::Rails constant;
-    # alias it for the duration of the test.
-    Object.send(:remove_const, :Rails) if defined?(::Rails)
     Object.const_set(:Rails, fake_rails)
     yield
   ensure
     Object.send(:remove_const, :Rails) if defined?(::Rails)
-    Object.send(:remove_const, :FakeRailsForCapture) if defined?(FakeRailsForCapture)
+    Object.const_set(:Rails, saved) if saved
   end
 
   it "returns an empty frozen map when Rails is not defined" do
+    saved = defined?(::Rails) ? ::Rails : nil
     Object.send(:remove_const, :Rails) if defined?(::Rails)
     map = RactorRailsShim.capture_app_constants
     assert_equal({}, map)
     assert map.frozen?
+  ensure
+    Object.const_set(:Rails, saved) if saved
   end
 
   it "returns an empty frozen map when Rails doesn't respond to :autoloaders" do

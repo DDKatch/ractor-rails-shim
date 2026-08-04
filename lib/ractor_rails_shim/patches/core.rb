@@ -120,6 +120,29 @@ module RactorRailsShim
     end
     attr_writer :version_policy
 
+    # When true, swallowed exceptions in freeze/shareability paths are
+    # reported to $stderr so a worker Ractor that later crashes on an
+    # unshareable value has a traceable cause. Default false (silent, the
+    # historical behaviour). Enable for diagnosis:
+    #   RactorRailsShim.debug = true
+    def debug?
+      defined?(@debug) ? @debug : false
+    end
+    attr_writer :debug
+
+    # Swallow an exception raised by the block, optionally logging it when
+    # `debug?` is on. Used by freeze/shareability paths where individual
+    # failures are expected (some ivars hold intrinsically unshareable
+    # values like Procs) but a worker crash on the same value later has no
+    # visible cause. `label` identifies the call site (e.g. "freeze AR ivar
+    # Post@column_defaults"). Keep the label short — it's only for grepping.
+    def _swallow(label)
+      yield
+    rescue => e
+      warn "[ractor_rails_shim] #{label}: #{e.class}: #{e.message[0, 120]}" if debug?
+      nil
+    end
+
     SUPPORTED_RUBY = RactorRailsShim::Version::SUPPORTED_RUBY
     SUPPORTED_RAILS = "8.1"
 
@@ -283,11 +306,7 @@ module RactorRailsShim
         # with `equal?`, and a frozen Symbol is always shareable.
         Ractor.make_shareable(:"__shim_unshareable_sentinel__")
       else
-        begin
-          Ractor.make_shareable(val)
-        rescue => e
-          nil
-        end
+        _swallow("make_value_shareable #{val.class}") { Ractor.make_shareable(val) }
       end
     end
 
@@ -666,10 +685,8 @@ module RactorRailsShim
         klass.instance_variables.each do |ivar|
           val = klass.instance_variable_get(ivar)
           next if Ractor.shareable?(val)
-          begin
+          _swallow("freeze AR ivar #{klass.name}#{ivar}") do
             Ractor.make_shareable(val)
-          rescue
-            nil
           end
         end
       end
@@ -687,10 +704,8 @@ module RactorRailsShim
         klass.instance_variables.each do |ivar|
           val = klass.instance_variable_get(ivar)
           next if Ractor.shareable?(val)
-          begin
+          _swallow("freeze global ivar #{klass}#{ivar}") do
             Ractor.make_shareable(val)
-          rescue
-            nil
           end
         end
       end
