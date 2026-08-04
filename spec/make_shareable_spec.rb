@@ -16,6 +16,7 @@
 # Run: ruby -Ilib -Ispec spec/make_shareable_spec.rb
 
 require "minitest/autorun"
+require "set"
 require "active_support/isolated_execution_state"
 require "concurrent" # for Concurrent::Map, used by Rails caches the rewriter targets
 require_relative "../lib/ractor_rails_shim/fallback_ies"
@@ -165,6 +166,54 @@ class MakeShareableSpec < Minitest::Spec
       ]
     end
     assert_equal [:from_worker, "bar", false], r.value
+  end
+
+  # --- _replace_unshareable_procs! and _replace_locks_and_concurrent_maps! container coverage ---
+
+  # A graph using Set and Struct — container types the original traversal
+  # skipped (it only handled Array and Hash). Rails uses Set in several
+  # caches (e.g. ActionDispatch::Journey::Routes), so a Mutex nested inside
+  # a Set member would be missed by _replace_locks_and_concurrent_maps!.
+  class SetAndStructHolder
+    attr_reader :set_with_lock, :struct_with_lock, :range_with_lock
+    def initialize
+      @set_with_lock = Set.new([ChildWithLock.new])
+      # Structs store members in an internal values array, but ALSO expose
+      # them via instance variables on some Rubies — verify the traversal
+      # reaches the member.
+      @struct_with_lock = Struct.new(:member).new(ChildWithLock.new)
+      @range_with_lock = ChildWithLock.new # Range doesn't hold ivars well; use direct
+    end
+  end
+
+  it "_replace_locks_and_concurrent_maps! walks Set members and replaces nested Mutexes" do
+    holder = SetAndStructHolder.new
+    RactorRailsShim.send(:_replace_locks_and_concurrent_maps!, holder)
+
+    set_member = holder.set_with_lock.first
+    assert_kind_of NoOpLock, set_member.inner_lock,
+      "Mutex nested inside a Set member must be replaced (Set was not walked pre-fix)"
+  end
+
+  it "_replace_locks_and_concurrent_maps! walks Struct members and replaces nested Mutexes" do
+    holder = SetAndStructHolder.new
+    RactorRailsShim.send(:_replace_locks_and_concurrent_maps!, holder)
+
+    assert_kind_of NoOpLock, holder.struct_with_lock.member.inner_lock,
+      "Mutex nested inside a Struct member must be replaced (Struct was not walked pre-fix)"
+  end
+
+  it "_replace_unshareable_procs! walks Set members and replaces nested Procs" do
+    # A Set containing a holder that references a Proc. Pre-fix, the Proc
+    # was not reached because Set wasn't traversed.
+    proc_holder = Class.new do
+      def initialize; @p = ->(*) { :set_proc }; end
+      attr_reader :p
+    end.new
+    set_holder = Set.new([proc_holder])
+    RactorRailsShim.send(:_replace_unshareable_procs!, set_holder)
+    refute_kind_of Proc, proc_holder.p, "Proc nested inside a Set member must be replaced"
+    assert_kind_of NoOpProc, proc_holder.p
   end
 
   # --- _replace_unshareable_procs! multi-pass ---

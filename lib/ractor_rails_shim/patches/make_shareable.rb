@@ -592,26 +592,74 @@ module RactorRailsShim
         next if seen[o.object_id]
         seen[o.object_id] = true
         next if o.is_a?(Mutex) || o.is_a?(Monitor)
-        begin
-          o.instance_variables.each do |iv|
-            begin; v = o.instance_variable_get(iv); rescue; next; end
-            stack << [v, "#{_path}.#{iv}", o, iv] if v
+        _each_ivar_and_child(o, _path) do |child, child_path, child_ivar|
+          if child_ivar == :__default_proc__
+            procs << [child, child_path, o, :__default_proc__]
+          else
+            stack << [child, child_path, o, child_ivar] if child
           end
-        rescue => e
-          # Some objects (BasicObject) don't support instance_variables
-        end
-        if o.is_a?(Array)
-          o.each_with_index { |e, i| stack << [e, "#{_path}[#{i}]", o, nil] if e }
-        elsif o.is_a?(Hash)
-          o.each do |k, val|
-            stack << [k, "#{_path}.key", o, nil] if k
-            stack << [val, "#{_path}[#{k.inspect}]", o, nil] if val
-          end
-          dp = o.default_proc
-          procs << [dp, "#{_path}.default_proc", o, :__default_proc__] if dp
         end
       end
       procs
+    end
+
+    # Enumerate every child reference of `o` for the graph traversals:
+    #   - instance variables (yields [value, "path.iv", iv])
+    #   - Array / Set / Enumerable members (yields [member, "path[i]", nil])
+    #   - Hash pairs (yields [key, "path.key", nil] and [val, "path[k]", nil])
+    #   - Hash#default_proc (yields [proc, "path.default_proc", :__default_proc__])
+    #   - Struct members (yields [value, "path.member", nil] via #each_pair)
+    #
+    # Pre-fix the traversals only handled Array and Hash, so a Mutex or Proc
+    # nested inside a Set (Rails uses Set in several caches, e.g.
+    # ActionDispatch::Journey::Routes) or a Struct was missed and left
+    # unshareable. Centralized here so _collect_procs and
+    # _replace_locks_and_concurrent_maps! share the same container coverage.
+    def _each_ivar_and_child(o, path)
+      begin
+        o.instance_variables.each do |iv|
+          begin; v = o.instance_variable_get(iv); rescue; next; end
+          yield v, "#{path}.#{iv}", iv
+        end
+      rescue => e
+        # BasicObject or frozen objects don't support instance_variables
+      end
+      if o.is_a?(Hash)
+        o.each do |k, val|
+          yield k, "#{path}.key", nil
+          yield val, "#{path}[#{k.inspect}]", nil
+        end
+        dp = o.default_proc
+        yield dp, "#{path}.default_proc", :__default_proc__ if dp
+      elsif o.is_a?(Array)
+        o.each_with_index { |e, i| yield e, "#{path}[#{i}]", nil }
+      elsif o.is_a?(::Set)
+        o.each_with_index { |e, i| yield e, "#{path}.set[#{i}]", nil }
+      elsif o.is_a?(::Struct)
+        o.each_pair { |name, val| yield val, "#{path}.#{name}", nil }
+      elsif _enumerable_but_not_basic?(o)
+        # Generic Enumerable fallback (Range, Enumerator, custom Enumerable
+        # mixes). Skip String/Hash/Array/Set/Struct — already handled. Best
+        # effort; rescue per-element in case #each raises for some members.
+        idx = -1
+        o.each do |e|
+          idx += 1
+          yield e, "#{path}.each[#{idx}]", nil
+        end rescue nil
+      end
+    end
+
+    # True if `o` is Enumerable but NOT one of the container types with a
+    # dedicated branch in _each_ivar_and_child. Used to gate the generic
+    # Enumerable fallback so we don't double-walk Array/Hash/etc.
+    def _enumerable_but_not_basic?(o)
+      return false unless o.is_a?(::Enumerable)
+      return false if o.is_a?(::Array) || o.is_a?(::Hash) || o.is_a?(::Set) || o.is_a?(::Struct)
+      return false if o.is_a?(::String) # String is Enumerable (chars) but not a container of refs we want
+      true
+    rescue NoMethodError
+      # BasicObject without Kernel — not Enumerable.
+      false
     end
 
     def _replace_one_proc(proc_obj, parent, ivar, mw)
@@ -708,24 +756,20 @@ module RactorRailsShim
         next if seen[o.object_id]
         seen[o.object_id] = true
         next if o.is_a?(Mutex) || o.is_a?(Monitor)
-        begin
-          o.instance_variables.each do |iv|
-            begin; v = o.instance_variable_get(iv); rescue; next; end
-            if v.is_a?(Mutex) || v.is_a?(Monitor)
-              o.instance_variable_set(iv, NoOpLock.new) rescue nil
-            elsif defined?(::Concurrent::Map) && v.is_a?(::Concurrent::Map)
-              hash_copy = {}
-              v.each_pair { |k, val| hash_copy[k] = val }
-              o.instance_variable_set(iv, hash_copy) rescue nil
-            elsif v
-              stack << [v, "#{_p}.#{iv}", o, iv]
-            end
+        _each_ivar_and_child(o, _p) do |child, child_path, child_ivar|
+          next if child_ivar == :__default_proc__
+          if child.is_a?(Mutex) || child.is_a?(Monitor)
+            o.instance_variable_set(child_ivar, NoOpLock.new) rescue nil if child_ivar
+            # If the lock is in an Array/Set/Hash (no ivar), we can't swap
+            # it in place here — leave it; make_shareable will handle the
+            # frozen container. The ivar case is the load-bearing one.
+          elsif defined?(::Concurrent::Map) && child.is_a?(::Concurrent::Map) && child_ivar
+            hash_copy = {}
+            child.each_pair { |k, val| hash_copy[k] = val }
+            o.instance_variable_set(child_ivar, hash_copy) rescue nil
+          elsif child
+            stack << [child, child_path, o, child_ivar]
           end
-        rescue => e
-          # BasicObject or frozen objects don't support instance_variables
-        end
-        if o.is_a?(Array); o.each_with_index { |e, i| stack << [e, "#{_p}[#{i}]", o, nil] if e }
-        elsif o.is_a?(Hash); o.each { |k, val| stack << [k, "#{_p}.key", o, nil] if k; stack << [val, "#{_p}[#{k.inspect}]", o, nil] if val }
         end
       end
     end
