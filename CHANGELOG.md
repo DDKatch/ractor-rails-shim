@@ -7,6 +7,111 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.6]
+
+### Fixed
+- **`WorkerApp` from `worker_app` not `Ractor.shareable?`.** The factory
+  returned a bare `WorkerApp` instance without freezing or making it
+  shareable, so any caller following the README's
+  `Ractor.new(worker_app) { |a| a.call(env) }` example would raise
+  `Ractor::IsolationError` at spawn. `worker_app` now freezes +
+  `Ractor.make_shareable`s the instance, enforcing the shareability
+  contract at the boundary instead of pushing it onto every caller.
+  (`patches/core.rb`)
+
+- **`Hash#compute_if_absent` nil-caching divergence from
+  `Concurrent::Map`.** The shim replaces `Concurrent::Map` instances in
+  the frozen app graph with plain `Hash`es (Concurrent::Map isn't
+  Ractor-shareable) and adds a compatible `compute_if_absent`. The
+  frozen-Hash branch used `IES[key] ||= yield`, which SKIPS nil results
+  — but `Concurrent::Map#compute_if_absent` STORES nil (verified: the
+  key is present after a nil-result block call), so the shim's
+  divergent semantics re-invoked the block on every subsequent lookup
+  for any cache slot whose computed value was nil. The frozen branch
+  now uses a two-level IES bucket (`slot[object_id][key]`) with a
+  proper `key?` presence check, matching `Concurrent::Map` exactly.
+  Also fixed: an existing key on a frozen Hash now returns without
+  invoking the block (was always treating the receiver as empty), and
+  per-Hash isolation is now keyed by `object_id` so two frozen hashes
+  with the same key don't collide. (`patches/core.rb`)
+
+- **Magic `line == 32` strategy dispatch replaced with identity check.**
+  The Proc-replacement pass distinguished
+  `ActionDispatch::Routing::Mapper::Constraints::SERVE` from `CALL` by
+  hard-coding the `source_location` line number (32). Any Rails patch
+  release that shifted the constant definitions by even one line would
+  silently swap the two strategies and break routing (a dispatcher
+  endpoint called as `app.call(req.env)` instead of `app.serve(req)`).
+  Replaced with an `equal?` check against the actual constants — the
+  value stored in `@strategy` IS the constant object (Rails assigns it
+  by reference), so identity is the robust identifier, independent of
+  source layout. Falls through to `NoOpProc` for an unknown Proc
+  (defensive; never mis-routes). Extracted into
+  `_strategy_replacement_for`. (`patches/make_shareable.rb`)
+
+- **`capture_app_constants` crash on non-Zeitwerk autoloaders.** The
+  method called `Rails.autoloaders.main` / `.once` directly, which
+  `NoMethodError`s for apps in classic-loader mode or with
+  `config.autoloaders = false` (the autoloaders object exists but
+  doesn't expose `main`/`once`). Now filters to the loaders that
+  actually expose `all_expected_cpaths` (the Zeitwerk introspection
+  API), and tolerates autoloaders objects that only respond to `each`.
+  Also fixed a pre-existing bug: the early-return path returned an
+  UNFROZEN map, violating the method's documented frozen-map contract.
+  (`patches/core.rb`)
+
+### Changed
+- **`_replace_unshareable_procs!` 3.times magic replaced with a
+  fixed-point loop.** The original `3.times` had no justification and
+  an arbitrary constant. Replaced with a loop-to-fixed-point (break
+  when `_collect_procs` returns empty) plus a safety cap of 8 passes
+  to guard against a pathological graph where replacement keeps
+  introducing new Procs (the replacements are `NoOpProc`/`Callable`,
+  not `Proc`, so this shouldn't happen, but the cap prevents an
+  infinite loop). Documented the multi-occurrence rationale (the same
+  Proc object can live in many containers, e.g. shared deprecation
+  behaviors). Observed real graphs converge in 2 passes.
+  (`patches/make_shareable.rb`)
+
+- **Graph traversals now walk Set/Struct/Enumerable.**
+  `_collect_procs` and `_replace_locks_and_concurrent_maps!` only
+  handled `Array` and `Hash` as recursive containers. Rails uses `Set`
+  in several caches (e.g. `ActionDispatch::Journey::Routes`), and
+  `Struct`/`Enumerable` mixes appear in framework internals — a
+  `Mutex` or `Proc` nested inside one of those was missed and left
+  unshareable, breaking `make_app_shareable!` downstream. Extracted
+  `_each_ivar_and_child` (single responsibility: enumerate every child
+  reference of an object) shared by both traversals, handling `Hash`,
+  `Array`, `Set`, `Struct`, and a generic `Enumerable` fallback
+  (`Range`, `Enumerator`, custom mixins). The `Hash#default_proc`
+  branch is preserved so `_collect_procs` still flags default-proc
+  Procs. (`patches/make_shareable.rb`)
+
+### Added
+- **Debug funnel for freeze-path silent rescues.** The
+  freeze/shareability paths (`_freeze_active_record_class_ivars!`,
+  `_freeze_global_class_ivars!`, `_make_value_shareable`) rescue all
+  exceptions silently with bare `rescue; nil`. Individual failures are
+  expected (some ivars hold intrinsically unshareable values like
+  Procs), but a worker Ractor that later crashes on the same
+  unshareable value had no traceable cause. New `_swallow(label) { ... }`
+  funnel is silent by default (preserves backward compat) and emits a
+  labeled `[ractor_rails_shim] <label>: <class>: <msg>` line to
+  `$stderr` when `RactorRailsShim.debug = true`. The three freeze-path
+  rescues are routed through it; the bare rescues in non-freeze paths
+  (require `LoadError`, optional `const_get`, etc.) are left as-is —
+  those are genuinely expected and a `$stderr` line would be noise.
+  (`patches/core.rb`)
+
+### Documentation
+- **`WorkerApp#setup_once!` race comment corrected.** The previous
+  comment claimed `Ractor.current[:key] ||= Thread::Mutex.new` was racy
+  under "extreme contention" and dismissed it as harmless because the
+  init steps are idempotent. Verified on Ruby 4.0.6 that
+  `Ractor.current[:key] ||= X` is atomic (100 concurrent threads
+  produce exactly one mutex object), so the TOCTOU race does not
+  occur. Replaced the misleading comment with the verified finding.
+
 ## [0.2.5]
 
 ### Fixed
