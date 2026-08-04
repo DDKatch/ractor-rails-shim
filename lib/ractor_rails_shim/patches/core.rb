@@ -582,11 +582,25 @@ module RactorRailsShim
     # them. But Rails code calls Concurrent::Map#compute_if_absent on these
     # caches (e.g. ActiveModel::AttributeMethods' attribute_method_patterns_
     # cache). Plain Hash lacks that method, so we add a compatible definition.
+    #
+    # Semantics MUST match Concurrent::Map#compute_if_absent exactly:
+    #   - if the key is present (even with a nil value), return the stored
+    #     value WITHOUT invoking the block;
+    #   - otherwise invoke the block, STORE the result (including nil), and
+    #     return it.
+    # The nil-storing behaviour is load-bearing: Concurrent::Map stores nil
+    # results so the block doesn't re-run; the original shim implementation
+    # used `IES[key] ||= yield` in the frozen branch, which SKIPS nil — a
+    # divergent semantics that re-invokes the block on every lookup for any
+    # cache slot whose computed value is nil.
+    #
     # For a MUTABLE cache the shim freezes the replaced Hash (so it is shareable
     # across workers); mutating it would raise FrozenError. So when the receiver
     # is frozen we route the store to per-Ractor IES keyed by the Hash identity
     # and the key — giving each worker its own cache entry without mutating the
-    # shared object. Semantics otherwise match Concurrent::Map.
+    # shared object. The frozen branch mirrors the mutable one: check presence
+    # first (via IES key?), invoke the block only on miss, store the result
+    # (including nil) via IES[]=.
     def _install_hash_compute_if_absent_patch
       return @hash_compute_if_absent_patched if defined?(@hash_compute_if_absent_patched) && @hash_compute_if_absent_patched
       @hash_compute_if_absent_patched = true
@@ -594,8 +608,17 @@ module RactorRailsShim
       ::Hash.prepend(Module.new do
         def compute_if_absent(key)
           if frozen?
-            ies_key = :"rrs_cia_#{object_id}_#{key}"
-            ActiveSupport::IsolatedExecutionState[ies_key] ||= yield(key)
+            # Check the receiver first — a present key (even nil-valued)
+            # returns without invoking the block, matching Concurrent::Map.
+            return self[key] if key?(key)
+            # Per-Ractor IES slot, namespaced by this Hash's object_id so two
+            # frozen hashes with the same key don't collide. Use a two-level
+            # structure (Hash per receiver) so the presence check (`key?`)
+            # and the store share the same slot.
+            slot = ActiveSupport::IsolatedExecutionState[:rrs_cia] ||= {}
+            bucket = slot[object_id] ||= {}
+            return bucket[key] if bucket.key?(key)
+            bucket[key] = yield(key)
           elsif key?(key)
             self[key]
           else
