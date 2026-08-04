@@ -627,8 +627,18 @@ module RactorRailsShim
         elsif src.end_with?(DEVISE_SCOPE_LOC)
           _devise_mapping_replacement(proc_obj, parent)
         elsif src.end_with?(MAPPER_LOC) && ivar == :@strategy
-          line = proc_obj.source_location[1]
-          line == 32 ? StrategyServe.new : StrategyCall.new
+          # Identify SERVE vs CALL by OBJECT IDENTITY against the actual
+          # ActionDispatch constants, NOT by source_location line number.
+          # The value stored in @strategy IS the constant object (Rails
+          # assigns it via `@strategy = strategy` where `strategy` is passed
+          # as Constraints::SERVE or Constraints::CALL), so `equal?` is the
+          # robust identifier — it survives any Rails patch release that
+          # shifts the constant definitions by a line or two, where the old
+          # `line == 32` check would silently swap the two strategies and
+          # break routing. Falls through to NoOpProc if the Proc isn't
+          # either constant (defensive: shouldn't happen, but never
+          # mis-route).
+          _strategy_replacement_for(proc_obj)
         else
           NoOpProc.new
         end
@@ -660,6 +670,22 @@ module RactorRailsShim
     # NOTE: `_devise_mapping_replacement` (Devise scope constraint →
     # DeviseMappingCallable) now lives in warden.rb; `_find_files_server`
     # (Rack::Files target for the asset stack) now lives in rack.rb.
+
+    # Identify which ActionDispatch strategy a Proc is and return its
+    # shareable replacement. The Proc stored in
+    # `ActionDispatch::Routing::Mapper::Constraints#@strategy` is the
+    # constant `SERVE` or `CALL` (assigned by reference), so `equal?` is
+    # the robust identifier — independent of the source line number, which
+    # any Rails patch release can shift. Returns NoOpProc for an unknown
+    # Proc (defensive; never mis-route).
+    def _strategy_replacement_for(proc_obj)
+      constraints = defined?(::ActionDispatch::Routing::Mapper::Constraints) ?
+        ::ActionDispatch::Routing::Mapper::Constraints : nil
+      return NoOpProc.new unless constraints
+      return StrategyServe.new if proc_obj.equal?(constraints::SERVE)
+      return StrategyCall.new if proc_obj.equal?(constraints::CALL)
+      NoOpProc.new
+    end
 
     def _replace_locks_and_concurrent_maps!(app)
       seen = {}
