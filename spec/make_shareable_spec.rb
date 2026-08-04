@@ -167,6 +167,42 @@ class MakeShareableSpec < Minitest::Spec
     assert_equal [:from_worker, "bar", false], r.value
   end
 
+  # --- _replace_unshareable_procs! multi-pass ---
+
+  # A graph where the SAME Proc object is referenced from multiple
+  # containers. Replacing one occurrence must not leave the others in
+  # place — the loop runs until a fixed point (no Procs left).
+  class SharedProcHolder
+    attr_reader :a, :b, :c
+    def initialize
+      shared = ->(*) { :shared }
+      @a = shared
+      @b = [@a, @a] # same Proc twice in one Array
+      @c = { nested: @a, other: @a } # same Proc twice in one Hash
+    end
+  end
+
+  it "_replace_unshareable_procs! replaces every occurrence of a shared Proc (multi-pass to fixed point)" do
+    holder = SharedProcHolder.new
+    RactorRailsShim.send(:_replace_unshareable_procs!, holder)
+
+    # Every reference must be a NoOpProc, not a Proc — the same object_id
+    # reference must not survive in any container.
+    refute_kind_of Proc, holder.a, "@a still holds a Proc"
+    assert_kind_of NoOpProc, holder.a
+    assert_kind_of NoOpProc, holder.b[0], "b[0] still holds a Proc"
+    assert_kind_of NoOpProc, holder.b[1], "b[1] still holds a Proc"
+    assert_kind_of NoOpProc, holder.c[:nested], "c[:nested] still holds a Proc"
+    assert_kind_of NoOpProc, holder.c[:other], "c[:other] still holds a Proc"
+  end
+
+  it "_replace_unshareable_procs! converges and leaves a shareable graph" do
+    holder = SharedProcHolder.new
+    RactorRailsShim.send(:_replace_unshareable_procs!, holder)
+    Ractor.make_shareable(holder)
+    assert Ractor.shareable?(holder), "graph with all Procs replaced should be shareable"
+  end
+
   # --- make_app_shareable! end-to-end ---
   #
   # The full `make_app_shareable!` pipeline requires a booted Rails

@@ -547,7 +547,18 @@ module RactorRailsShim
     # Doesn't dedup procs — must replace every occurrence.
     def _replace_unshareable_procs!(app)
       mw = (app.instance_variable_get(:@app) rescue nil)
-      3.times do
+      # Replace every Proc in the graph. The same Proc object can live in
+      # many containers (e.g. deprecation behaviors shared across
+      # deprecators), and replacing one occurrence doesn't replace the
+      # others — so we loop until a fixed point (no Procs left). A safety
+      # cap guards against a pathological graph where replacement keeps
+      # introducing new Procs (the replacements themselves are NoOpProc/
+      # Callable instances, not Procs, so this shouldn't happen, but the
+      # cap prevents an infinite loop if a future callable class leaks a
+      # Proc). 3 passes was the original magic number; observed real graphs
+      # converge in 2.
+      max_passes = 8
+      max_passes.times do
         procs = _collect_procs(app)
         break if procs.empty?
         procs.each { |proc_obj, _path, parent, ivar| _replace_one_proc(proc_obj, parent, ivar, mw) }
