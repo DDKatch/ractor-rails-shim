@@ -509,9 +509,27 @@ module RactorRailsShim
     # `Zeitwerk::Loader.new` raises IsolationError off the main Ractor).
     def capture_app_constants
       map = {}
-      return map unless defined?(::Rails) && Rails.respond_to?(:autoloaders)
-      [Rails.autoloaders.main, Rails.autoloaders.once].each do |loader|
-        next unless loader.respond_to?(:all_expected_cpaths)
+      unless defined?(::Rails) && Rails.respond_to?(:autoloaders)
+        return map.freeze
+      end
+      autoloaders = Rails.autoloaders
+      # Guard against non-Zeitwerk configurations: Rails.autoloaders may be
+      # present (the method exists) but not expose `main`/`once` (e.g. classic
+      # loader mode, or `config.autoloaders = false` returning a null object).
+      # `main`/`once` may also individually be nil when only one loader is
+      # configured. Filter to the loaders that actually expose
+      # `all_expected_cpaths` (the Zeitwerk introspection API the capture
+      # relies on).
+      loaders =
+        if autoloaders.respond_to?(:main) && autoloaders.respond_to?(:once)
+          [autoloaders.main, autoloaders.once]
+        elsif autoloaders.respond_to?(:each)
+          autoloaders.to_a
+        else
+          []
+        end
+      loaders.each do |loader|
+        next unless loader && loader.respond_to?(:all_expected_cpaths)
         begin
           loader.all_expected_cpaths.values.each do |cpath|
             obj = Object.const_get(cpath) rescue next
