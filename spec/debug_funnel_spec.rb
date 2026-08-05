@@ -114,7 +114,7 @@ class DebugFunnelSpec < Minitest::Spec
     RactorRailsShim::SHAREABLE_CLASS_IVARS << ["ShimFreezeIvarProbe", :@editors]
     label = "freeze global ivar"
     _with_silent_const_path(label) do
-      RactorRailsShim.send(:_freeze_shareable_class_ivars!)
+      RactorRailsShim::Freezers::ShareableClassIvarFreezer.call
     end
   ensure
     RactorRailsShim::SHAREABLE_CLASS_IVARS.delete(["ShimFreezeIvarProbe", :@editors])
@@ -131,7 +131,7 @@ class DebugFunnelSpec < Minitest::Spec
       raise RuntimeError, "forced-const-set-failure"
     end
     _with_silent_const_path(label) do
-      RactorRailsShim.send(:_freeze_declared_callbacks!)
+      RactorRailsShim::CallbackCapture.freeze_declared_callbacks!
     end
   ensure
     RactorRailsShim.singleton_class.send(:alias_method, :const_set, :_orig_const_set)
@@ -145,7 +145,7 @@ class DebugFunnelSpec < Minitest::Spec
     app = Object.new
     def app.routes; raise RuntimeError, "forced-routes-failure"; end
     _with_silent_const_path(label) do
-      RactorRailsShim.send(:_collect_controller_classes, app)
+      RactorRailsShim::ControllerCollector.call(app)
     end
   end
 
@@ -198,7 +198,7 @@ class DebugFunnelSpec < Minitest::Spec
     end.new
     parent.freeze
     _with_silent_const_path(label) do
-      RactorRailsShim.send(:_replace_locks_and_concurrent_maps!, parent)
+      RactorRailsShim::ShareabilityTraversal.replace_locks_and_concurrent_maps!(parent)
     end
   end
 
@@ -213,7 +213,7 @@ class DebugFunnelSpec < Minitest::Spec
     end.new
     parent.freeze
     _with_silent_const_path(label) do
-      RactorRailsShim.send(:_replace_unshareable_procs!, parent)
+      RactorRailsShim::ShareabilityTraversal.replace_unshareable_procs!(parent)
     end
   end
 
@@ -230,7 +230,7 @@ class DebugFunnelSpec < Minitest::Spec
     end.new
     app.freeze
     _with_silent_const_path(label) do
-      RactorRailsShim.send(:_neutralize_logger_io!, app) rescue nil
+      RactorRailsShim::LoggerIONeutralizer.call(app) rescue nil
     end
   end
 
@@ -289,7 +289,7 @@ class DebugFunnelSpec < Minitest::Spec
     result = nil
     RactorRailsShim.debug = true
     out = capture_stderr do
-      result = RactorRailsShim.send(:_read_action_filter_constraints, fake_af)
+      result = RactorRailsShim::CallbackCapture.read_action_filter_constraints(fake_af)
     end
     assert_includes out, "[ractor_rails_shim]", "missing ivars should be funneled through _swallow"
     assert_includes out, label, "stderr should carry the action-filter label"
@@ -302,7 +302,7 @@ class DebugFunnelSpec < Minitest::Spec
     fake_af = Object.new
     fake_af.instance_variable_set(:@conditional_key, :only)
     fake_af.instance_variable_set(:@actions, Set.new(["index", "show"].freeze).freeze)
-    result = RactorRailsShim.send(:_read_action_filter_constraints, fake_af)
+    result = RactorRailsShim::CallbackCapture.read_action_filter_constraints(fake_af)
     assert_equal :only, result[0]
     assert_equal [:index, :show], result[1]
   end

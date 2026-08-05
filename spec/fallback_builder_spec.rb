@@ -134,7 +134,7 @@ class FallbackBuilderSpec < Minitest::Spec
     RactorRailsShim::FallbackBuilder.define_singleton_method(:build!) do
       delegated = true
     end
-    RactorRailsShim.send(:_build_shareable_fallback!)
+    RactorRailsShim::FallbackBuilder.build!
     assert delegated
   ensure
     RactorRailsShim::FallbackBuilder.define_singleton_method(:build!, original)
@@ -146,7 +146,7 @@ class FallbackBuilderSpec < Minitest::Spec
     RactorRailsShim::FallbackBuilder.define_singleton_method(:try_make_shareable) do |val, *args, **kw|
       delegated = true
     end
-    RactorRailsShim._try_make_shareable(["a"], "Foo", :list)
+    RactorRailsShim::FallbackBuilder.try_make_shareable(["a"], "Foo", :list)
     assert delegated
   ensure
     RactorRailsShim::FallbackBuilder.define_singleton_method(:try_make_shareable, original)
@@ -158,7 +158,7 @@ class FallbackBuilderSpec < Minitest::Spec
     RactorRailsShim::FallbackBuilder.define_singleton_method(:shareable_copy) do |val|
       delegated = true
     end
-    RactorRailsShim._shareable_copy({})
+    RactorRailsShim::FallbackBuilder.shareable_copy({})
     assert delegated
   ensure
     RactorRailsShim::FallbackBuilder.define_singleton_method(:shareable_copy, original)
@@ -309,9 +309,9 @@ class FallbackBuilderSpec < Minitest::Spec
       shareable_mattr_defaults: [],
       storage: {}
     )
-    refute_equal RactorRailsShim.method(:_safe_const_get), RactorRailsShim::FallbackBuilder.safe_const_get
-    refute_equal RactorRailsShim.method(:_replace_unshareable_procs!), RactorRailsShim::FallbackBuilder.replace_unshareable_procs
-    refute_equal RactorRailsShim.method(:_replace_locks_and_concurrent_maps!), RactorRailsShim::FallbackBuilder.replace_locks_and_concurrent_maps
+    refute_equal RactorRailsShim::ConstantShareabilizer.method(:safe_const_get), RactorRailsShim::FallbackBuilder.safe_const_get
+    refute_equal RactorRailsShim::ShareabilityTraversal.method(:replace_unshareable_procs!), RactorRailsShim::FallbackBuilder.replace_unshareable_procs
+    refute_equal RactorRailsShim::ShareabilityTraversal.method(:replace_locks_and_concurrent_maps!), RactorRailsShim::FallbackBuilder.replace_locks_and_concurrent_maps
     refute_equal RactorRailsShim.method(:_reassign_shareable_const), RactorRailsShim::FallbackBuilder.reassign_shareable_const
     refute_same RactorRailsShim::CLASS_ATTRIBUTES, RactorRailsShim::FallbackBuilder.class_attributes
     refute_same RactorRailsShim::CLASS_ATTR_VALUES, RactorRailsShim::FallbackBuilder.class_attr_values
@@ -319,9 +319,9 @@ class FallbackBuilderSpec < Minitest::Spec
     refute_same RactorRailsShim.storage, RactorRailsShim::FallbackBuilder.storage
 
     RactorRailsShim::FallbackBuilder.reset_configuration
-    assert_equal RactorRailsShim.method(:_safe_const_get), RactorRailsShim::FallbackBuilder.safe_const_get
-    assert_equal RactorRailsShim.method(:_replace_unshareable_procs!), RactorRailsShim::FallbackBuilder.replace_unshareable_procs
-    assert_equal RactorRailsShim.method(:_replace_locks_and_concurrent_maps!), RactorRailsShim::FallbackBuilder.replace_locks_and_concurrent_maps
+    assert_equal RactorRailsShim::ConstantShareabilizer.method(:safe_const_get), RactorRailsShim::FallbackBuilder.safe_const_get
+    assert_equal RactorRailsShim::ShareabilityTraversal.method(:replace_unshareable_procs!), RactorRailsShim::FallbackBuilder.replace_unshareable_procs
+    assert_equal RactorRailsShim::ShareabilityTraversal.method(:replace_locks_and_concurrent_maps!), RactorRailsShim::FallbackBuilder.replace_locks_and_concurrent_maps
     assert_equal RactorRailsShim.method(:_reassign_shareable_const), RactorRailsShim::FallbackBuilder.reassign_shareable_const
     assert_same RactorRailsShim::CLASS_ATTRIBUTES, RactorRailsShim::FallbackBuilder.class_attributes
     assert_same RactorRailsShim::CLASS_ATTR_VALUES, RactorRailsShim::FallbackBuilder.class_attr_values

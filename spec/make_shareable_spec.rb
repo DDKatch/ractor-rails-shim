@@ -121,7 +121,7 @@ class MakeShareableSpec < Minitest::Spec
 
   it "_replace_locks_and_concurrent_maps! rewrites Mutex/Monitor → NoOpLock and Concurrent::Map → Hash" do
     app = FakeApp.new
-    RactorRailsShim.send(:_replace_locks_and_concurrent_maps!, app)
+    RactorRailsShim::ShareabilityTraversal.replace_locks_and_concurrent_maps!(app)
 
     assert_kind_of NoOpLock, app.lock,
       "top-level Mutex should be replaced with NoOpLock"
@@ -148,7 +148,7 @@ class MakeShareableSpec < Minitest::Spec
     # combined invariant: after rewrite + make_shareable, the graph is
     # shareable.
     app = FakeApp.new
-    RactorRailsShim.send(:_replace_locks_and_concurrent_maps!, app)
+    RactorRailsShim::ShareabilityTraversal.replace_locks_and_concurrent_maps!(app)
     Ractor.make_shareable(app)
     assert Ractor.shareable?(app),
       "rewritten + make_shareable graph should be Ractor.shareable?"
@@ -156,7 +156,7 @@ class MakeShareableSpec < Minitest::Spec
 
   it "a worker Ractor can read the rewritten + shared graph" do
     app = FakeApp.new
-    RactorRailsShim.send(:_replace_locks_and_concurrent_maps!, app)
+    RactorRailsShim::ShareabilityTraversal.replace_locks_and_concurrent_maps!(app)
     Ractor.make_shareable(app)
     r = Ractor.new(app) do |a|
       [
@@ -188,7 +188,7 @@ class MakeShareableSpec < Minitest::Spec
 
   it "_replace_locks_and_concurrent_maps! walks Set members and replaces nested Mutexes" do
     holder = SetAndStructHolder.new
-    RactorRailsShim.send(:_replace_locks_and_concurrent_maps!, holder)
+    RactorRailsShim::ShareabilityTraversal.replace_locks_and_concurrent_maps!(holder)
 
     set_member = holder.set_with_lock.first
     assert_kind_of NoOpLock, set_member.inner_lock,
@@ -197,7 +197,7 @@ class MakeShareableSpec < Minitest::Spec
 
   it "_replace_locks_and_concurrent_maps! walks Struct members and replaces nested Mutexes" do
     holder = SetAndStructHolder.new
-    RactorRailsShim.send(:_replace_locks_and_concurrent_maps!, holder)
+    RactorRailsShim::ShareabilityTraversal.replace_locks_and_concurrent_maps!(holder)
 
     assert_kind_of NoOpLock, holder.struct_with_lock.member.inner_lock,
       "Mutex nested inside a Struct member must be replaced (Struct was not walked pre-fix)"
@@ -211,7 +211,7 @@ class MakeShareableSpec < Minitest::Spec
       attr_reader :p
     end.new
     set_holder = Set.new([proc_holder])
-    RactorRailsShim.send(:_replace_unshareable_procs!, set_holder)
+    RactorRailsShim::ShareabilityTraversal.replace_unshareable_procs!(set_holder)
     refute_kind_of Proc, proc_holder.p, "Proc nested inside a Set member must be replaced"
     assert_kind_of NoOpProc, proc_holder.p
   end
@@ -233,7 +233,7 @@ class MakeShareableSpec < Minitest::Spec
 
   it "_replace_unshareable_procs! replaces every occurrence of a shared Proc (multi-pass to fixed point)" do
     holder = SharedProcHolder.new
-    RactorRailsShim.send(:_replace_unshareable_procs!, holder)
+    RactorRailsShim::ShareabilityTraversal.replace_unshareable_procs!(holder)
 
     # Every reference must be a NoOpProc, not a Proc — the same object_id
     # reference must not survive in any container.
@@ -247,7 +247,7 @@ class MakeShareableSpec < Minitest::Spec
 
   it "_replace_unshareable_procs! converges and leaves a shareable graph" do
     holder = SharedProcHolder.new
-    RactorRailsShim.send(:_replace_unshareable_procs!, holder)
+    RactorRailsShim::ShareabilityTraversal.replace_unshareable_procs!(holder)
     Ractor.make_shareable(holder)
     assert Ractor.shareable?(holder), "graph with all Procs replaced should be shareable"
   end

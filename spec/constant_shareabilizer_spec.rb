@@ -444,14 +444,14 @@ class ConstantShareabilizerSpec < Minitest::Spec
     )
     refute_equal RactorRailsShim::Funnel.method(:swallow), RactorRailsShim::ConstantShareabilizer.funnel
     refute_equal RactorRailsShim.method(:_register_patch), RactorRailsShim::ConstantShareabilizer.register_patch
-    refute_equal RactorRailsShim.method(:_introspectable?), RactorRailsShim::ConstantShareabilizer.introspectable
+    refute_equal RactorRailsShim::ShareabilityTraversal.method(:introspectable?), RactorRailsShim::ConstantShareabilizer.introspectable
     refute_equal NoOpLock, RactorRailsShim::ConstantShareabilizer.noop_lock_class
     refute_same RactorRailsShim::SHAREABLE_CONSTANTS, RactorRailsShim::ConstantShareabilizer.shareable_constants_registry
 
     RactorRailsShim::ConstantShareabilizer.reset_configuration
     assert_equal RactorRailsShim::Funnel.method(:swallow), RactorRailsShim::ConstantShareabilizer.funnel
     assert_equal RactorRailsShim.method(:_register_patch), RactorRailsShim::ConstantShareabilizer.register_patch
-    assert_equal RactorRailsShim.method(:_introspectable?), RactorRailsShim::ConstantShareabilizer.introspectable
+    assert_equal RactorRailsShim::ShareabilityTraversal.method(:introspectable?), RactorRailsShim::ConstantShareabilizer.introspectable
     assert_equal NoOpLock, RactorRailsShim::ConstantShareabilizer.noop_lock_class
     assert_same RactorRailsShim::SHAREABLE_CONSTANTS, RactorRailsShim::ConstantShareabilizer.shareable_constants_registry
   ensure

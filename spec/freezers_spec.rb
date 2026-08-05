@@ -661,16 +661,16 @@ class FreezersSpec < Minitest::Spec
     both.each do |f|
       f.configure(funnel: ->(l, &b) { b&.call }, safe_const_get: ->(n, **k) { nil })
       refute_equal RactorRailsShim::Funnel.method(:swallow), f.funnel
-      refute_equal RactorRailsShim.method(:_safe_const_get), f.safe_const_get
+      refute_equal RactorRailsShim::ConstantShareabilizer.method(:safe_const_get), f.safe_const_get
       f.reset_configuration
       assert_equal RactorRailsShim::Funnel.method(:swallow), f.funnel
-      assert_equal RactorRailsShim.method(:_safe_const_get), f.safe_const_get
+      assert_equal RactorRailsShim::ConstantShareabilizer.method(:safe_const_get), f.safe_const_get
     end
     scg_only.each do |f|
       f.configure(safe_const_get: ->(n, **k) { nil })
-      refute_equal RactorRailsShim.method(:_safe_const_get), f.safe_const_get
+      refute_equal RactorRailsShim::ConstantShareabilizer.method(:safe_const_get), f.safe_const_get
       f.reset_configuration
-      assert_equal RactorRailsShim.method(:_safe_const_get), f.safe_const_get
+      assert_equal RactorRailsShim::ConstantShareabilizer.method(:safe_const_get), f.safe_const_get
     end
   ensure
     [RactorRailsShim::Freezers::CacheWarmer,
@@ -739,15 +739,7 @@ class FreezersSpec < Minitest::Spec
     RactorRailsShim::Freezers::ShareableClassIvarFreezer.reset_configuration
   end
 
-  it "RactorRailsShim._freeze_shareable_class_ivars! delegates to ShareableClassIvarFreezer.call" do
-    delegated = false
-    original = RactorRailsShim::Freezers::ShareableClassIvarFreezer.method(:call)
-    RactorRailsShim::Freezers::ShareableClassIvarFreezer.define_singleton_method(:call) do
-      delegated = true
-    end
-    RactorRailsShim._freeze_shareable_class_ivars!
-    assert delegated, "facade should delegate to ShareableClassIvarFreezer.call"
-  ensure
-    RactorRailsShim::Freezers::ShareableClassIvarFreezer.define_singleton_method(:call, original)
-  end
+  # The facade delegation _freeze_shareable_class_ivars! was deleted in
+  # Issue #31. The role-object method ShareableClassIvarFreezer.call is
+  # tested directly above.
 end

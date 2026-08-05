@@ -77,15 +77,15 @@ module RactorRailsShim
     end
 
     def self.safe_const_get
-      @safe_const_get || RactorRailsShim.method(:_safe_const_get)
+      @safe_const_get || RactorRailsShim::ConstantShareabilizer.method(:safe_const_get)
     end
 
     def self.replace_unshareable_procs
-      @replace_unshareable_procs || RactorRailsShim.method(:_replace_unshareable_procs!)
+      @replace_unshareable_procs || RactorRailsShim::ShareabilityTraversal.method(:replace_unshareable_procs!)
     end
 
     def self.replace_locks_and_concurrent_maps
-      @replace_locks_and_concurrent_maps || RactorRailsShim.method(:_replace_locks_and_concurrent_maps!)
+      @replace_locks_and_concurrent_maps || RactorRailsShim::ShareabilityTraversal.method(:replace_locks_and_concurrent_maps!)
     end
 
     def self.reassign_shareable_const

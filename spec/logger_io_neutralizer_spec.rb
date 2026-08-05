@@ -97,7 +97,7 @@ class LoggerIONeutralizerSpec < Minitest::Spec
     sentinel.freeze
     app = Object.new
     app.instance_variable_set(:@logger, sentinel)
-    RactorRailsShim.send(:_neutralize_logger_io!, app)
+    RactorRailsShim::LoggerIONeutralizer.call(app)
     assert_kind_of ::ActiveSupport::BroadcastLogger,
                    app.instance_variable_get(:@logger),
                    "facade delegation should neutralize @logger"

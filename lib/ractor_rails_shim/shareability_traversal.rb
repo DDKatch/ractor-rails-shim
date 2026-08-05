@@ -109,7 +109,7 @@ module RactorRailsShim
     end
 
     def self.strategy_replacement_for
-      @strategy_replacement_for || RactorRailsShim.method(:_strategy_replacement_for)
+      @strategy_replacement_for || RactorRailsShim::ActionDispatchStrategy.method(:replacement_for)
     end
 
     def self.noop_lock_class

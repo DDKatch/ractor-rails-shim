@@ -77,7 +77,7 @@ class StrategyProcSpec < Minitest::Spec
     c = build_constraints(SERVE)
     holder = StrategyHolder.new(c)
 
-    RactorRailsShim.send(:_replace_unshareable_procs!, holder)
+    RactorRailsShim::ShareabilityTraversal.replace_unshareable_procs!(holder)
 
     replaced = c.instance_variable_get(:@strategy)
     assert_kind_of StrategyServe, replaced,
@@ -88,7 +88,7 @@ class StrategyProcSpec < Minitest::Spec
     c = build_constraints(CALL)
     holder = StrategyHolder.new(c)
 
-    RactorRailsShim.send(:_replace_unshareable_procs!, holder)
+    RactorRailsShim::ShareabilityTraversal.replace_unshareable_procs!(holder)
 
     replaced = c.instance_variable_get(:@strategy)
     assert_kind_of StrategyCall, replaced,
@@ -103,7 +103,7 @@ class StrategyProcSpec < Minitest::Spec
     # actual SERVE/CALL constants; anything else is NoOpProc.
     fake = ->(*_) { :not_a_strategy }
     fake_holder = StrategyHolder.new(fake)
-    RactorRailsShim.send(:_replace_unshareable_procs!, fake_holder)
+    RactorRailsShim::ShareabilityTraversal.replace_unshareable_procs!(fake_holder)
     replaced = fake_holder.instance_variable_get(:@strategy)
     refute_kind_of StrategyServe, replaced
     refute_kind_of StrategyCall, replaced

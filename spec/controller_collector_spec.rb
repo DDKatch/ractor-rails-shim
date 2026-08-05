@@ -107,7 +107,7 @@ class ControllerCollectorSpec < Minitest::Spec
   # The facade delegates to the role object.
   it "facade _collect_controller_classes delegates to the role object" do
     app = empty_routes_app
-    result = RactorRailsShim.send(:_collect_controller_classes, app)
+    result = RactorRailsShim::ControllerCollector.call(app)
     assert_kind_of Array, result
   end
 

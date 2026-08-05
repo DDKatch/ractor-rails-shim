@@ -116,7 +116,7 @@ module RactorRailsShim
       end
 
       def self.safe_const_get
-        @safe_const_get || RactorRailsShim.method(:_safe_const_get)
+        @safe_const_get || RactorRailsShim::ConstantShareabilizer.method(:safe_const_get)
       end
 
       TARGETS = Ractor.make_shareable(%w[Time Date DateTime I18n].freeze)
@@ -148,7 +148,7 @@ module RactorRailsShim
       end
 
       def self.safe_const_get
-        @safe_const_get || RactorRailsShim.method(:_safe_const_get)
+        @safe_const_get || RactorRailsShim::ConstantShareabilizer.method(:safe_const_get)
       end
 
       # Mutable target list — downstream apps can register their own
@@ -201,7 +201,7 @@ module RactorRailsShim
       end
 
       def self.safe_const_get
-        @safe_const_get || RactorRailsShim.method(:_safe_const_get)
+        @safe_const_get || RactorRailsShim::ConstantShareabilizer.method(:safe_const_get)
       end
 
       TARGET_NAMES = Ractor.make_shareable(%i[ENVELOPE_SERIALIZERS TIMESTAMP_SERIALIZERS].freeze)
@@ -261,7 +261,7 @@ module RactorRailsShim
       end
 
       def self.safe_const_get
-        @safe_const_get || RactorRailsShim.method(:_safe_const_get)
+        @safe_const_get || RactorRailsShim::ConstantShareabilizer.method(:safe_const_get)
       end
 
       def self.call

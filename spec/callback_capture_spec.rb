@@ -204,44 +204,24 @@ class CallbackCaptureSpec < Minitest::Spec
     RactorRailsShim::CallbackCapture.define_singleton_method(:record_declared_callback) do |*args|
       delegated = true
     end
-    RactorRailsShim._record_declared_callback(999, :before, :x, nil, nil)
+    RactorRailsShim::CallbackCapture.record_declared_callback(999, :before, :x, nil, nil)
     assert delegated
   ensure
     RactorRailsShim::CallbackCapture.define_singleton_method(:record_declared_callback, original)
   end
 
-  it "RactorRailsShim._freeze_declared_callbacks! delegates to CallbackCapture.freeze_declared_callbacks!" do
-    delegated = false
-    original = RactorRailsShim::CallbackCapture.method(:freeze_declared_callbacks!)
-    RactorRailsShim::CallbackCapture.define_singleton_method(:freeze_declared_callbacks!) do
-      delegated = true
-    end
-    RactorRailsShim._freeze_declared_callbacks!
-    assert delegated
-  ensure
-    RactorRailsShim::CallbackCapture.define_singleton_method(:freeze_declared_callbacks!, original)
-  end
+  # The facade delegations _freeze_declared_callbacks! and
+  # _install_callback_declaration_capture! were deleted in Issue #31.
+  # The role-object methods are tested directly elsewhere in this file.
 
-  it "RactorRailsShim._install_callback_declaration_capture! delegates to CallbackCapture.install_callback_declaration_capture!" do
-    delegated = false
-    original = RactorRailsShim::CallbackCapture.method(:install_callback_declaration_capture!)
-    RactorRailsShim::CallbackCapture.define_singleton_method(:install_callback_declaration_capture!) do
-      delegated = true
-    end
-    RactorRailsShim._install_callback_declaration_capture!
-    assert delegated
-  ensure
-    RactorRailsShim::CallbackCapture.define_singleton_method(:install_callback_declaration_capture!, original)
-  end
-
-  it "RactorRailsShim._read_action_filter_constraints delegates to CallbackCapture.read_action_filter_constraints" do
+  it "RactorRailsShim::CallbackCapture.read_action_filter_constraints delegates to CallbackCapture.read_action_filter_constraints" do
     delegated = false
     original = RactorRailsShim::CallbackCapture.method(:read_action_filter_constraints)
     RactorRailsShim::CallbackCapture.define_singleton_method(:read_action_filter_constraints) do |af|
       delegated = true
       [nil, nil]
     end
-    RactorRailsShim._read_action_filter_constraints(Object.new)
+    RactorRailsShim::CallbackCapture.read_action_filter_constraints(Object.new)
     assert delegated
   ensure
     RactorRailsShim::CallbackCapture.define_singleton_method(:read_action_filter_constraints, original)
@@ -253,7 +233,7 @@ class CallbackCaptureSpec < Minitest::Spec
     RactorRailsShim::CallbackCapture.define_singleton_method(:read_ivar_or_warn) do |obj, ivar, label|
       delegated = true
     end
-    RactorRailsShim._read_ivar_or_warn(Object.new, :@x, "label")
+    RactorRailsShim::CallbackCapture.read_ivar_or_warn(Object.new, :@x, "label")
     assert delegated
   ensure
     RactorRailsShim::CallbackCapture.define_singleton_method(:read_ivar_or_warn, original)

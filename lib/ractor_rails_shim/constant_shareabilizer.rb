@@ -83,7 +83,7 @@ module RactorRailsShim
     end
 
     def self.introspectable
-      @introspectable || RactorRailsShim.method(:_introspectable?)
+      @introspectable || RactorRailsShim::ShareabilityTraversal.method(:introspectable?)
     end
 
     def self.noop_lock_class

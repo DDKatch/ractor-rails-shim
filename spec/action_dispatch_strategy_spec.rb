@@ -68,7 +68,7 @@ class ActionDispatchStrategySpec < Minitest::Spec
 
   # The facade delegates to the role object.
   it "facade _strategy_replacement_for delegates to the role object" do
-    result = RactorRailsShim.send(:_strategy_replacement_for, ->(*) {})
+    result = RactorRailsShim::ActionDispatchStrategy.replacement_for(->(*) {})
     assert_kind_of NoOpProc, result,
                    "facade delegation should return NoOpProc (no Constraints)"
   end

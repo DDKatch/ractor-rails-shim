@@ -192,83 +192,11 @@ class ShareabilityTraversalSpec < Minitest::Spec
   end
 
   # --- Facade delegation ---
-
-  it "RactorRailsShim._introspectable? delegates to ShareabilityTraversal.introspectable?" do
-    delegated = false
-    original = RactorRailsShim::ShareabilityTraversal.method(:introspectable?)
-    RactorRailsShim::ShareabilityTraversal.define_singleton_method(:introspectable?) do |o|
-      delegated = true
-      original.call(o)
-    end
-    RactorRailsShim._introspectable?(Object.new)
-    assert delegated
-  ensure
-    RactorRailsShim::ShareabilityTraversal.define_singleton_method(:introspectable?, original)
-  end
-
-  it "RactorRailsShim._replace_unshareable_procs! delegates to ShareabilityTraversal.replace_unshareable_procs!" do
-    delegated = false
-    original = RactorRailsShim::ShareabilityTraversal.method(:replace_unshareable_procs!)
-    RactorRailsShim::ShareabilityTraversal.define_singleton_method(:replace_unshareable_procs!) do |app|
-      delegated = true
-      original.call(app)
-    end
-    RactorRailsShim._replace_unshareable_procs!(SharedProcHolder.new)
-    assert delegated
-  ensure
-    RactorRailsShim::ShareabilityTraversal.define_singleton_method(:replace_unshareable_procs!, original)
-  end
-
-  it "RactorRailsShim._replace_locks_and_concurrent_maps! delegates to ShareabilityTraversal.replace_locks_and_concurrent_maps!" do
-    delegated = false
-    original = RactorRailsShim::ShareabilityTraversal.method(:replace_locks_and_concurrent_maps!)
-    RactorRailsShim::ShareabilityTraversal.define_singleton_method(:replace_locks_and_concurrent_maps!) do |app|
-      delegated = true
-      original.call(app)
-    end
-    RactorRailsShim._replace_locks_and_concurrent_maps!(FakeApp.new)
-    assert delegated
-  ensure
-    RactorRailsShim::ShareabilityTraversal.define_singleton_method(:replace_locks_and_concurrent_maps!, original)
-  end
-
-  it "RactorRailsShim._precompute_lazy_ivars delegates to ShareabilityTraversal.precompute_lazy_ivars" do
-    delegated = false
-    original = RactorRailsShim::ShareabilityTraversal.method(:precompute_lazy_ivars)
-    RactorRailsShim::ShareabilityTraversal.define_singleton_method(:precompute_lazy_ivars) do |app|
-      delegated = true
-    end
-    RactorRailsShim._precompute_lazy_ivars(Object.new)
-    assert delegated
-  ensure
-    RactorRailsShim::ShareabilityTraversal.define_singleton_method(:precompute_lazy_ivars, original)
-  end
-
-  it "RactorRailsShim._generate_ar_attribute_methods! delegates to ShareabilityTraversal.generate_ar_attribute_methods!" do
-    delegated = false
-    original = RactorRailsShim::ShareabilityTraversal.method(:generate_ar_attribute_methods!)
-    RactorRailsShim::ShareabilityTraversal.define_singleton_method(:generate_ar_attribute_methods!) do
-      delegated = true
-      original.call
-    end
-    RactorRailsShim._generate_ar_attribute_methods!
-    assert delegated
-  ensure
-    RactorRailsShim::ShareabilityTraversal.define_singleton_method(:generate_ar_attribute_methods!, original)
-  end
-
-  it "RactorRailsShim._warm_attribute_method_patterns! delegates to ShareabilityTraversal.warm_attribute_method_patterns!" do
-    delegated = false
-    original = RactorRailsShim::ShareabilityTraversal.method(:warm_attribute_method_patterns!)
-    RactorRailsShim::ShareabilityTraversal.define_singleton_method(:warm_attribute_method_patterns!) do
-      delegated = true
-      original.call
-    end
-    RactorRailsShim._warm_attribute_method_patterns!
-    assert delegated
-  ensure
-    RactorRailsShim::ShareabilityTraversal.define_singleton_method(:warm_attribute_method_patterns!, original)
-  end
+  # The facade delegations (_introspectable?, _replace_unshareable_procs!,
+  # _replace_locks_and_concurrent_maps!, _precompute_lazy_ivars,
+  # _generate_ar_attribute_methods!, _warm_attribute_method_patterns!)
+  # were deleted in Issue #31. The role-object methods are tested directly
+  # above. The facade no longer forwards to them.
 
   # --- Issue #23: injected collaborators (POODR §2 Dependencies) ---
   #
@@ -435,7 +363,7 @@ class ShareabilityTraversalSpec < Minitest::Spec
     assert_equal RactorRailsShim::Funnel.method(:swallow), RactorRailsShim::ShareabilityTraversal.funnel
     assert_equal RactorRailsShim.method(:_find_files_server), RactorRailsShim::ShareabilityTraversal.find_files_server
     assert_equal RactorRailsShim.method(:_devise_mapping_replacement), RactorRailsShim::ShareabilityTraversal.devise_mapping_replacement
-    assert_equal RactorRailsShim.method(:_strategy_replacement_for), RactorRailsShim::ShareabilityTraversal.strategy_replacement_for
+    assert_equal RactorRailsShim::ActionDispatchStrategy.method(:replacement_for), RactorRailsShim::ShareabilityTraversal.strategy_replacement_for
     assert_equal sc.const_get(:NoOpLock), RactorRailsShim::ShareabilityTraversal.noop_lock_class
     assert_equal sc.const_get(:NoOpProc), RactorRailsShim::ShareabilityTraversal.noop_proc_class
     assert_equal sc.const_get(:Callable), RactorRailsShim::ShareabilityTraversal.callable_class
