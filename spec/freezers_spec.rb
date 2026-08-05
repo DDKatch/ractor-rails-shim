@@ -416,6 +416,28 @@ class FreezersSpec < Minitest::Spec
     RactorRailsShim::Freezers::GlobalConstantFreezer.define_singleton_method(:call, original)
   end
 
+  it "GlobalConstantFreezer.add_target appends to TARGETS" do
+    original_targets = RactorRailsShim::Freezers::GlobalConstantFreezer::TARGETS.dup
+    RactorRailsShim::Freezers::GlobalConstantFreezer.add_target("CustomGem")
+    assert_includes RactorRailsShim::Freezers::GlobalConstantFreezer::TARGETS, "CustomGem"
+  ensure
+    RactorRailsShim::Freezers::GlobalConstantFreezer::TARGETS.replace(original_targets)
+  end
+
+  it "GlobalConstantFreezer.call iterates newly added targets" do
+    mod = Module.new
+    Object.const_set(:ShimGCFAddTargetMod, mod)
+    mod.const_set(:DATE_FORMATS, { added: :yes })
+    original_targets = RactorRailsShim::Freezers::GlobalConstantFreezer::TARGETS.dup
+    RactorRailsShim::Freezers::GlobalConstantFreezer::TARGETS.replace(["ShimGCFAddTargetMod"])
+    RactorRailsShim::Freezers::GlobalConstantFreezer.call
+    val = mod.const_get(:DATE_FORMATS, false)
+    assert Ractor.shareable?(val), "newly added target's constant should be frozen"
+  ensure
+    RactorRailsShim::Freezers::GlobalConstantFreezer::TARGETS.replace(original_targets)
+    Object.send(:remove_const, :ShimGCFAddTargetMod) if defined?(ShimGCFAddTargetMod)
+  end
+
   # --- MessagesConstantsFreezer: AS::Messages::Metadata constants ---
 
   it "RactorRailsShim::Freezers::MessagesConstantsFreezer is a Module" do

@@ -151,8 +151,15 @@ module RactorRailsShim
         @safe_const_get || RactorRailsShim.method(:_safe_const_get)
       end
 
-      TARGETS = Ractor.make_shareable(%w[Time Date DateTime].freeze)
+      # Mutable target list — downstream apps can register their own
+      # DATE_FORMATS-style constants via add_target without monkey-patching.
+      # Read at boot time (main Ractor only) before workers spawn.
+      TARGETS = %w[Time Date DateTime]
       CONSTANT_NAME = :DATE_FORMATS
+
+      def self.add_target(class_name)
+        TARGETS << class_name unless TARGETS.include?(class_name)
+      end
 
       def self.call
         constants = TARGETS.filter_map do |n|
