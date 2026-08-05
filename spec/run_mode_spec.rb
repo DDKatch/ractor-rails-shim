@@ -40,6 +40,20 @@ class RunModeSpec < Minitest::Spec
     RactorRailsShim::RunMode.reset
   end
 
+  # Defensive teardown: RunMode is process-global state shared across every
+  # spec file in the suite. Several tests below set RunMode.thread = true
+  # (directly or via resolve! under ENV=puma) to verify the contract; without
+  # a reset, a leftover `true` leaks into later spec files (e.g.
+  # version_spec#test_0013 calls `install`, which calls RunMode.resolve!,
+  # which is a no-op once @thread is defined, so install wrongly takes the
+  # thread-mode branch and skips mattr_accessor/rails_module/etc). The per-
+  # test `ensure reset_run_mode!` blocks below cover the mutating tests, and
+  # this teardown is a belt-and-braces guard so a forgotten ensure can never
+  # leak thread-mode into the rest of the suite.
+  def teardown
+    reset_run_mode!
+  end
+
   def with_env(server)
     saved = ENV["SERVER"]
     ENV["SERVER"] = server
