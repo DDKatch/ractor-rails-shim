@@ -134,17 +134,17 @@ class CallbackCaptureSpec < Minitest::Spec
 
   # --- install_callback_declaration_capture! ---
 
-  it "install_callback_declaration_capture! is idempotent via @callback_capture_installed" do
+  it "install_callback_declaration_capture! is idempotent via @installed" do
     # The real install aliases set_callback; we only assert idempotency here
     # (the second call is a no-op). Clear the flag first so the test is
     # isolated.
-    RactorRailsShim.remove_instance_variable(:@callback_capture_installed) if RactorRailsShim.instance_variable_defined?(:@callback_capture_installed)
+    RactorRailsShim::CallbackCapture.reset_installed!
     RactorRailsShim::CallbackCapture.install_callback_declaration_capture!
-    assert RactorRailsShim.instance_variable_get(:@callback_capture_installed),
+    assert RactorRailsShim::CallbackCapture.installed?,
            "flag should be set after install"
     # Second call must not raise and must remain installed.
     RactorRailsShim::CallbackCapture.install_callback_declaration_capture!
-    assert RactorRailsShim.instance_variable_get(:@callback_capture_installed)
+    assert RactorRailsShim::CallbackCapture.installed?
   ensure
     # Restore the original set_callback if we aliased it. The install aliases
     # _rrs_orig_set_callback → set_callback; restore so later specs see the
@@ -159,7 +159,7 @@ class CallbackCaptureSpec < Minitest::Spec
   # --- re-install safety (regression for order-dependent SystemStackError) ---
   #
   # install_callback_declaration_capture! must be safe to re-run after the
-  # @callback_capture_installed flag is cleared (several specs clear it to
+  # @installed flag is cleared (several specs clear it to
   # test the install path in isolation). The second run aliases
   # _rrs_orig_set_callback → set_callback, but by then set_callback IS the
   # interceptor from the first run — so the saved "original" points at the
@@ -172,7 +172,7 @@ class CallbackCaptureSpec < Minitest::Spec
     saved_orig = mod.method_defined?(:_rrs_orig_set_callback) ?
       mod.instance_method(:_rrs_orig_set_callback) : nil
     # Clear the idempotency flag and re-install — this is the failure mode.
-    RactorRailsShim.remove_instance_variable(:@callback_capture_installed) if RactorRailsShim.instance_variable_defined?(:@callback_capture_installed)
+    RactorRailsShim::CallbackCapture.reset_installed!
     RactorRailsShim::CallbackCapture.install_callback_declaration_capture!
     # The saved original must NOT be the interceptor (which would recurse).
     refute mod.instance_method(:set_callback).equal?(mod.instance_method(:_rrs_orig_set_callback)),
@@ -183,7 +183,7 @@ class CallbackCaptureSpec < Minitest::Spec
 
   it "a real set_callback call does not stack-overflow after a re-install" do
     RactorRailsShim::CallbackCapture.install_callback_declaration_capture!
-    RactorRailsShim.remove_instance_variable(:@callback_capture_installed) if RactorRailsShim.instance_variable_defined?(:@callback_capture_installed)
+    RactorRailsShim::CallbackCapture.reset_installed!
     RactorRailsShim::CallbackCapture.install_callback_declaration_capture!
     klass = Class.new do
       include ::ActiveSupport::Callbacks
@@ -265,7 +265,7 @@ class CallbackCaptureSpec < Minitest::Spec
 
   it "install_callback_declaration_capture! registers :action_filter_introspection tagged 8.1" do
     RactorRailsShim::VersionPolicy::PATCH_VERSIONS.delete(:action_filter_introspection)
-    RactorRailsShim.remove_instance_variable(:@callback_capture_installed) if RactorRailsShim.instance_variable_defined?(:@callback_capture_installed)
+    RactorRailsShim::CallbackCapture.reset_installed!
     RactorRailsShim::CallbackCapture.install_callback_declaration_capture!
     assert_includes RactorRailsShim::VersionPolicy::PATCH_VERSIONS, :action_filter_introspection,
                     "install should register :action_filter_introspection"
@@ -326,13 +326,12 @@ class CallbackCaptureSpec < Minitest::Spec
   #   - `register_patch`           (callable: `(name, ver) -> registers`)
   # The seam is `configure(funnel:, reassign_shareable_const:, register_patch:)`;
   # the defaults are the facade lookups so existing call sites keep working.
-  # The @declared_callbacks table and @callback_capture_installed flag stay
-  # on the facade singleton (Issue #24 moves them onto this role). The
-  # eval'd interceptor's `_record_declared_callback` / `_read_action_filter_
-  # constraints` calls stay as facade delegations — those names are
-  # load-bearing (they resolve at call time on whatever Ractor runs the
-  # interceptor; injecting them would change the eval'd method body's
-  # resolution semantics).
+  # The @declared_callbacks table stays on the facade singleton (the
+  # interceptor writes it directly). The eval'd interceptor's
+  # `_record_declared_callback` / `_read_action_filter_constraints` calls
+  # stay as facade delegations — those names are load-bearing (they resolve
+  # at call time on whatever Ractor runs the interceptor; injecting them
+  # would change the eval'd method body's resolution semantics).
 
   it "responds to configure(funnel:, reassign_shareable_const:, register_patch:)" do
     assert_respond_to RactorRailsShim::CallbackCapture, :configure
@@ -393,13 +392,13 @@ class CallbackCaptureSpec < Minitest::Spec
     registered = []
     register = ->(name, ver) { registered << [name, ver] }
     # Clear the installed flag so install runs the body.
-    prev_installed = RactorRailsShim.instance_variable_get(:@callback_capture_installed)
-    RactorRailsShim.instance_variable_set(:@callback_capture_installed, nil)
+    prev_installed = RactorRailsShim::CallbackCapture.installed?
+    RactorRailsShim::CallbackCapture.reset_installed!
     RactorRailsShim::CallbackCapture.configure(register_patch: register)
     RactorRailsShim::CallbackCapture.install_callback_declaration_capture!
     assert_includes registered.map(&:first), :action_filter_introspection
   ensure
-    RactorRailsShim.instance_variable_set(:@callback_capture_installed, prev_installed) if prev_installed
+    RactorRailsShim::CallbackCapture.instance_variable_set(:@installed, true) if prev_installed
     RactorRailsShim::CallbackCapture.reset_configuration
   end
 

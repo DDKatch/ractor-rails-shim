@@ -19,10 +19,10 @@
 # `RactorRailsShim._record_declared_callback` via the facade — those names
 # are load-bearing (the eval'd method body resolves them at call time on
 # whatever Ractor runs it, and the facade delegates here). The @declared_
-# callbacks table and @callback_capture_installed flag live on the
-# RactorRailsShim singleton (the interceptor writes @declared_callbacks
-# directly; keeping it on the singleton avoids changing the eval'd method
-# body). The SHAREABLE_DECLARED_CALLBACKS constant lives on RactorRailsShim.
+# callbacks table stays on the RactorRailsShim singleton (the interceptor
+# writes @declared_callbacks directly; keeping it on the singleton avoids
+# changing the eval'd method body). The SHAREABLE_DECLARED_CALLBACKS
+# constant lives on RactorRailsShim.
 #
 # The three callable collaborators — `_swallow` (funnel),
 # `_reassign_shareable_const`, and `_register_patch` — are reached via the
@@ -33,14 +33,16 @@
 # patch:)` injects different collaborators so the role is independently
 # constructible and specable without the `RactorRailsShim` god module
 # loaded (Issue #23, POODR §2 Dependencies). The @declared_callbacks table
-# and @callback_capture_installed flag stay on the facade singleton here —
-# Issue #24 moves them onto this role.
+# stays on the facade singleton (the interceptor writes it directly); the
+# `@installed` idempotency flag lives on `CallbackCapture` itself
+# (Issue #24, POODR §2 — own your own state).
 #
 # The RactorRailsShim singleton keeps facade methods that delegate, so
 # debug_funnel_spec and the integration spec keep passing unchanged.
 
 module RactorRailsShim
   module CallbackCapture
+    @installed = false
     @funnel = nil
     @reassign_shareable_const = nil
     @register_patch = nil
@@ -63,6 +65,18 @@ module RactorRailsShim
       @funnel = nil
       @reassign_shareable_const = nil
       @register_patch = nil
+    end
+
+    # Has install_callback_declaration_capture! run? Lives on
+    # CallbackCapture (Issue #24 — own your own state), NOT on the
+    # facade singleton.
+    def self.installed?
+      @installed
+    end
+
+    # Clear the installed flag. Test seam + reinstall seam.
+    def self.reset_installed!
+      @installed = false
     end
 
     # The active funnel: the injected one if configured, else the
@@ -116,9 +130,9 @@ module RactorRailsShim
     # captured as they happen) — install wires it via the
     # ActiveSupport.on_load(:active_support) hook in `install`.
     def self.install_callback_declaration_capture!
-      return if RactorRailsShim.instance_variable_get(:@callback_capture_installed)
+      return if @installed
       register_patch.call(:action_filter_introspection, "8.1")
-      RactorRailsShim.instance_variable_set(:@callback_capture_installed, true)
+      @installed = true
       # ActiveSupport::Callbacks may not be loaded yet at
       # on_load(:active_support) time (it's required lazily). Require it so
       # the ClassMethods module with set_callback exists before we alias it.
@@ -168,7 +182,7 @@ module RactorRailsShim
           _rrs_orig_set_callback(name, *filters, &block)
         end
       RUBY
-      RactorRailsShim.instance_variable_set(:@callback_capture_installed, true)
+      @installed = true
     end
 
     # Read @conditional_key and @actions off an ActionFilter instance (Rails
