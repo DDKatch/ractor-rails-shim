@@ -52,7 +52,7 @@ module RactorRailsShim
       return unless defined?(::Devise::FailureApp)
       ::Devise::FailureApp.singleton_class.module_eval <<-'RUBY', __FILE__, __LINE__ + 1
         def call(env)
-          respond = ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_devise_failure_respond] ||= action(:respond)
+          respond = RactorRailsShim.storage[:ractor_rails_shim_devise_failure_respond] ||= action(:respond)
           respond.call(env)
         end
       RUBY
@@ -90,10 +90,10 @@ module RactorRailsShim
       ::Devise::Models::Authenticatable::ClassMethods.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def devise_parameter_filter
           key = :"ractor_rails_shim_devise_param_filter_\#{object_id}"
-          v = ActiveSupport::IsolatedExecutionState[key]
-          return v if ActiveSupport::IsolatedExecutionState.key?(key)
+          v = RactorRailsShim.storage[key]
+          return v if RactorRailsShim.storage.key?(key)
           f = Devise::ParameterFilter.new(case_insensitive_keys, strip_whitespace_keys)
-          ActiveSupport::IsolatedExecutionState[key] = f
+          RactorRailsShim.storage[key] = f
           f
         end
       RUBY

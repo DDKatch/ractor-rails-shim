@@ -84,8 +84,8 @@ module RactorRailsShim
       key_str = key.inspect
       lc.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def registered_details
-          v = ActiveSupport::IsolatedExecutionState[#{key_str}]
-          return v if ActiveSupport::IsolatedExecutionState.key?(#{key_str})
+          v = RactorRailsShim.storage[#{key_str}]
+          return v if RactorRailsShim.storage.key?(#{key_str})
           if Ractor.main? && instance_variable_defined?(:@registered_details)
             @registered_details
           else
@@ -93,7 +93,7 @@ module RactorRailsShim
           end
         end
         def registered_details=(val)
-          ActiveSupport::IsolatedExecutionState[#{key_str}] = val
+          RactorRailsShim.storage[#{key_str}] = val
           @registered_details = val if Ractor.main?
           val
         end
@@ -231,7 +231,7 @@ module RactorRailsShim
       CLASS_ATTRIBUTES << ["ActionView::LookupContext::DetailsKey", :view_context_class, vcc_key, nil]
       # Build it now in main and stash in IES so the fallback builder picks it up.
       if Ractor.main? && defined?(::ActionView::Base)
-        ActiveSupport::IsolatedExecutionState[vcc_key] = ::ActionView::LookupContext::DetailsKey.view_context_class
+        RactorRailsShim.storage[vcc_key] = ::ActionView::LookupContext::DetailsKey.view_context_class
         # Shareable fallback view_context_class for any controller not present in
         # the registry at prepare time. Subclasses ActionView::Base, so it
         # inherits the per-class compiled_method_container (self.class) and the
@@ -256,29 +256,29 @@ module RactorRailsShim
       vcc_key_str2 = vcc_key.inspect
       dk.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def view_context_class
-          v = ActiveSupport::IsolatedExecutionState[#{vcc_key_str2}]
-          return v if ActiveSupport::IsolatedExecutionState.key?(#{vcc_key_str2})
+          v = RactorRailsShim.storage[#{vcc_key_str2}]
+          return v if RactorRailsShim.storage.key?(#{vcc_key_str2})
           if Ractor.main? && instance_variable_defined?(:@view_context_class)
             v = @view_context_class
-            ActiveSupport::IsolatedExecutionState[#{vcc_key_str2}] = v
+            RactorRailsShim.storage[#{vcc_key_str2}] = v
             v
           else
             RactorRailsShim::SHAREABLE_FALLBACK[#{vcc_key_str2}]
           end
         end
         def details_keys
-          v = ActiveSupport::IsolatedExecutionState[#{dk_key_str}]
+          v = RactorRailsShim.storage[#{dk_key_str}]
           return v if v
           if Ractor.main? && instance_variable_defined?(:@details_keys)
             v = @details_keys
           else
             v = Concurrent::Map.new
           end
-          ActiveSupport::IsolatedExecutionState[#{dk_key_str}] = v
+          RactorRailsShim.storage[#{dk_key_str}] = v
           v
         end
         def digest_cache(details)
-          dc = (ActiveSupport::IsolatedExecutionState[#{dc_key_str}] ||= Concurrent::Map.new)
+          dc = (RactorRailsShim.storage[#{dc_key_str}] ||= Concurrent::Map.new)
           dc[details_cache_key(details)] ||= Concurrent::Map.new
         end
         def details_cache_key(details)
@@ -328,13 +328,13 @@ module RactorRailsShim
       # not just the singleton class.
       h.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def self._ractor_rails_shim_handlers
-          map = ActiveSupport::IsolatedExecutionState[#{th_key_str}]
+          map = RactorRailsShim.storage[#{th_key_str}]
           return map unless map.nil?
           if Ractor.main?
             cv = class_variable_get(:@@template_handlers) rescue nil
             cv = nil if cv && cv.empty?
             if cv
-              ActiveSupport::IsolatedExecutionState[#{th_key_str}] = cv
+              RactorRailsShim.storage[#{th_key_str}] = cv
               return cv
             end
           end
@@ -345,12 +345,12 @@ module RactorRailsShim
             builder: ::ActionView::Template::Handlers::Builder.new,
             ruby: ->(_, source) { source },
           }
-          ActiveSupport::IsolatedExecutionState[#{th_key_str}] = built
+          RactorRailsShim.storage[#{th_key_str}] = built
           built
         end
 
         def self._ractor_rails_shim_persist(map)
-          ActiveSupport::IsolatedExecutionState[#{th_key_str}] = map
+          RactorRailsShim.storage[#{th_key_str}] = map
           class_variable_set(:@@template_handlers, map) if Ractor.main?
         end
 
@@ -407,19 +407,19 @@ module RactorRailsShim
       fsr_key_str = fsr_key.inspect
       pr.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def get_view_paths(klass)
-          h = ActiveSupport::IsolatedExecutionState[#{vpc_key_str}]
+          h = RactorRailsShim.storage[#{vpc_key_str}]
           h = (Ractor.main? ? (instance_variable_defined?(:@view_paths_by_class) ? instance_variable_get(:@view_paths_by_class) : {}) : RactorRailsShim::SHAREABLE_FALLBACK[#{vpc_key_str}]) if h.nil?
           h[klass] || get_view_paths(klass.superclass)
         end
 
         def set_view_paths(klass, paths)
-          h = ActiveSupport::IsolatedExecutionState[#{vpc_key_str}] ||= (Ractor.main? ? (instance_variable_defined?(:@view_paths_by_class) ? instance_variable_get(:@view_paths_by_class) : {}) : {})
+          h = RactorRailsShim.storage[#{vpc_key_str}] ||= (Ractor.main? ? (instance_variable_defined?(:@view_paths_by_class) ? instance_variable_get(:@view_paths_by_class) : {}) : {})
           h[klass] = paths
           instance_variable_set(:@view_paths_by_class, h) if Ractor.main?
         end
 
         def all_file_system_resolvers
-          h = ActiveSupport::IsolatedExecutionState[#{fsr_key_str}]
+          h = RactorRailsShim.storage[#{fsr_key_str}]
           h = (Ractor.main? ? (instance_variable_defined?(:@file_system_resolvers) ? instance_variable_get(:@file_system_resolvers) : {}) : RactorRailsShim::SHAREABLE_FALLBACK[#{fsr_key_str}]) if h.nil?
           h.values
         end
@@ -458,7 +458,7 @@ module RactorRailsShim
           # the cache for all others (e.g. app/views caches [] for
           # devise/sessions/new, hiding the template that lives in the
           # devise gem resolver).
-          cache = (ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_resolver_cache] ||= {})
+          cache = (RactorRailsShim.storage[:ractor_rails_shim_resolver_cache] ||= {})
           cache_key = [@path, virtual]
           unbound_templates =
             if cache.key?(cache_key)
@@ -488,7 +488,7 @@ module RactorRailsShim
         pp_key_str = pp_key.inspect
         pp.module_eval <<-RUBY, __FILE__, __LINE__ + 1
           def parse(path)
-            regex = ActiveSupport::IsolatedExecutionState[:"#{pp_key_str}_\#{object_id}"] ||= build_path_regex
+            regex = RactorRailsShim.storage[:"#{pp_key_str}_\#{object_id}"] ||= build_path_regex
             match = regex.match(path)
             path = ::ActionView::TemplatePath.build(match[:action], match[:prefix] || "", !!match[:partial])
             details = ::ActionView::TemplateDetails.new(
@@ -525,7 +525,7 @@ module RactorRailsShim
             raise ArgumentError.new("\#{object.inspect}' is not an ActiveModel-compatible object. It must implement #to_partial_path.")
           end
           if view.prefix_partial_path_with_controller_namespace
-            cache = (ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_prefixed_partial_names] ||= {})
+            cache = (RactorRailsShim.storage[:ractor_rails_shim_prefixed_partial_names] ||= {})
             cache[@context_prefix] ||= {}
             cache[@context_prefix][path] ||= merge_prefix_into_object_path(@context_prefix, path.dup)
           else
@@ -550,10 +550,10 @@ module RactorRailsShim
       tf.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def field_type
           key = :"ractor_rails_shim_field_type_\#{name}"
-          v = ActiveSupport::IsolatedExecutionState[key]
+          v = RactorRailsShim.storage[key]
           return v if v
           ft = name.split("::").last.sub("Field", "").downcase
-          ActiveSupport::IsolatedExecutionState[key] = ft
+          RactorRailsShim.storage[key] = ft
           ft
         end
       RUBY

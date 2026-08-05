@@ -55,8 +55,8 @@ module RactorRailsShim
       xp_key_str = xp_key.inspect
       req.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def forwarded_priority
-          v = ActiveSupport::IsolatedExecutionState[#{fp_key_str}]
-          return v if ActiveSupport::IsolatedExecutionState.key?(#{fp_key_str})
+          v = RactorRailsShim.storage[#{fp_key_str}]
+          return v if RactorRailsShim.storage.key?(#{fp_key_str})
           if Ractor.main? && instance_variable_defined?(:@forwarded_priority)
             @forwarded_priority
           else
@@ -64,13 +64,13 @@ module RactorRailsShim
           end
         end
         def forwarded_priority=(val)
-          ActiveSupport::IsolatedExecutionState[#{fp_key_str}] = val
+          RactorRailsShim.storage[#{fp_key_str}] = val
           @forwarded_priority = val if Ractor.main?
           val
         end
         def x_forwarded_proto_priority
-          v = ActiveSupport::IsolatedExecutionState[#{xp_key_str}]
-          return v if ActiveSupport::IsolatedExecutionState.key?(#{xp_key_str})
+          v = RactorRailsShim.storage[#{xp_key_str}]
+          return v if RactorRailsShim.storage.key?(#{xp_key_str})
           if Ractor.main? && instance_variable_defined?(:@x_forwarded_proto_priority)
             @x_forwarded_proto_priority
           else
@@ -78,7 +78,7 @@ module RactorRailsShim
           end
         end
         def x_forwarded_proto_priority=(val)
-          ActiveSupport::IsolatedExecutionState[#{xp_key_str}] = val
+          RactorRailsShim.storage[#{xp_key_str}] = val
           @x_forwarded_proto_priority = val if Ractor.main?
           val
         end
@@ -104,33 +104,33 @@ module RactorRailsShim
       mfl_key_str = mfl_key.inspect
       u.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def default_query_parser
-          v = ActiveSupport::IsolatedExecutionState[#{dqp_key_str}]
-          return v if ActiveSupport::IsolatedExecutionState.key?(#{dqp_key_str})
+          v = RactorRailsShim.storage[#{dqp_key_str}]
+          return v if RactorRailsShim.storage.key?(#{dqp_key_str})
           if Ractor.main? && instance_variable_defined?(:@default_query_parser)
             v = @default_query_parser
-            ActiveSupport::IsolatedExecutionState[#{dqp_key_str}] = v
+            RactorRailsShim.storage[#{dqp_key_str}] = v
             v
           else
             RactorRailsShim::SHAREABLE_FALLBACK[#{dqp_key_str}] || ::Rack::QueryParser::QueryParser.make_default(32)
           end
         end
         def multipart_total_part_limit
-          v = ActiveSupport::IsolatedExecutionState[#{mtp_key_str}]
-          return v if ActiveSupport::IsolatedExecutionState.key?(#{mtp_key_str})
+          v = RactorRailsShim.storage[#{mtp_key_str}]
+          return v if RactorRailsShim.storage.key?(#{mtp_key_str})
           if Ractor.main? && instance_variable_defined?(:@multipart_total_part_limit)
             v = @multipart_total_part_limit
-            ActiveSupport::IsolatedExecutionState[#{mtp_key_str}] = v
+            RactorRailsShim.storage[#{mtp_key_str}] = v
             v
           else
             RactorRailsShim::SHAREABLE_FALLBACK[#{mtp_key_str}] || 128
           end
         end
         def multipart_file_limit
-          v = ActiveSupport::IsolatedExecutionState[#{mfl_key_str}]
-          return v if ActiveSupport::IsolatedExecutionState.key?(#{mfl_key_str})
+          v = RactorRailsShim.storage[#{mfl_key_str}]
+          return v if RactorRailsShim.storage.key?(#{mfl_key_str})
           if Ractor.main? && instance_variable_defined?(:@multipart_file_limit)
             v = @multipart_file_limit
-            ActiveSupport::IsolatedExecutionState[#{mfl_key_str}] = v
+            RactorRailsShim.storage[#{mfl_key_str}] = v
             v
           else
             RactorRailsShim::SHAREABLE_FALLBACK[#{mfl_key_str}] || 64

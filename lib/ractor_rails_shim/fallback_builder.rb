@@ -46,7 +46,7 @@ module RactorRailsShim
         # via the patched reader. Trying to make it shareable would freeze the
         # IO, breaking logging in main too.
         next if owner_name == "Rails" && attr_name == :logger
-        val = ActiveSupport::IsolatedExecutionState[ies_key]
+        val = RactorRailsShim.storage[ies_key]
         # For class_attribute values whose IES slot was never written but
         # whose definition-time DEFAULT was mutated in place during boot
         # (e.g. AbstractController::Base's `config`, whose default

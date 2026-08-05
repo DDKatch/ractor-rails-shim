@@ -41,10 +41,10 @@ module RactorRailsShim
       # Symbol is shareable. Compute it once per Ractor and cache in IES.
       ew.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def active_key
-          v = ActiveSupport::IsolatedExecutionState[#{key_str}]
-          return v if ActiveSupport::IsolatedExecutionState.key?(#{key_str})
+          v = RactorRailsShim.storage[#{key_str}]
+          return v if RactorRailsShim.storage.key?(#{key_str})
           sym = :"active_execution_wrapper_\#{object_id}"
-          ActiveSupport::IsolatedExecutionState[#{key_str}] = sym
+          RactorRailsShim.storage[#{key_str}] = sym
           sym
         end
       RUBY

@@ -153,4 +153,28 @@ class StorageSpec < Minitest::Spec
     expected = [42, true, 42, false]
     assert_equal expected.inspect, out.lines.first.chomp
   end
+
+  # --- End-to-end: eval'd method bodies route through RactorRailsShim.storage ---
+  # The compute_if_absent patch (core.rb) generates a method body that calls
+  # `RactorRailsShim.storage[...]` inside a heredoc. This proves the
+  # indirection works through a real generated method (not just direct calls),
+  # against the IES implementation (AS is loaded in the shim's bundle).
+  it "a generated (eval'd) method body routes through RactorRailsShim.storage" do
+    script = <<~'RUBY'
+      require "active_support/isolated_execution_state"
+      require "ractor_rails_shim/storage"
+      require "ractor_rails_shim/patches"
+      RactorRailsShim.send(:_install_hash_compute_if_absent_patch)
+      h = {}.freeze
+      # The generated body stores into RactorRailsShim.storage (IES in this
+      # process). A subsequent read must hit the cache (block not re-invoked).
+      calls = 0
+      v1 = h.compute_if_absent(:gen) { calls += 1; "gen-v" }
+      v2 = h.compute_if_absent(:gen) { calls += 1; "other" }
+      puts [v1, v2, calls].inspect
+    RUBY
+    out, _err, status = run_subprocess_assertions(script)
+    assert_equal 0, status.exitstatus
+    assert_equal ["gen-v", "gen-v", 1].inspect, out.lines.first.chomp
+  end
 end

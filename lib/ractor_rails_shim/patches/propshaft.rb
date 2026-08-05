@@ -33,7 +33,7 @@ module RactorRailsShim
       lp = ::Propshaft::LoadPath
       lp.class_eval <<-RUBY, __FILE__, __LINE__ + 1
         def asset_paths_by_type(content_type)
-          cache = (ActiveSupport::IsolatedExecutionState[:"ractor_rails_shim_propshaft_type_\#{object_id}"] ||= {})
+          cache = (RactorRailsShim.storage[:"ractor_rails_shim_propshaft_type_\#{object_id}"] ||= {})
           if cache.key?(content_type)
             cache[content_type]
           else
@@ -42,7 +42,7 @@ module RactorRailsShim
         end
 
         def asset_paths_by_glob(glob)
-          cache = (ActiveSupport::IsolatedExecutionState[:"ractor_rails_shim_propshaft_glob_\#{object_id}"] ||= {})
+          cache = (RactorRailsShim.storage[:"ractor_rails_shim_propshaft_glob_\#{object_id}"] ||= {})
           if cache.key?(glob)
             cache[glob]
           else
@@ -54,7 +54,7 @@ module RactorRailsShim
       if lp.method_defined?(:asset_paths_by_path)
         lp.class_eval <<-RUBY, __FILE__, __LINE__ + 1
           def asset_paths_by_path(path)
-            cache = (ActiveSupport::IsolatedExecutionState[:"ractor_rails_shim_propshaft_path_\#{object_id}"] ||= {})
+            cache = (RactorRailsShim.storage[:"ractor_rails_shim_propshaft_path_\#{object_id}"] ||= {})
             if cache.key?(path)
               cache[path]
             else

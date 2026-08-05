@@ -50,7 +50,7 @@ module RactorRailsShim
     module InstanceMethods
       def _default_attributes # :nodoc:
         key = :"rrs_default_attributes_#{object_id}"
-        ActiveSupport::IsolatedExecutionState[key] ||=
+        RactorRailsShim.storage[key] ||=
           ::ActiveModel::AttributeSet.new({}).tap do |attribute_set|
             apply_pending_attribute_modifications(attribute_set)
           end
@@ -58,7 +58,7 @@ module RactorRailsShim
 
       def attribute_types # :nodoc:
         key = :"rrs_attribute_types_#{object_id}"
-        ActiveSupport::IsolatedExecutionState[key] ||= begin
+        RactorRailsShim.storage[key] ||= begin
           types = _default_attributes.cast_types
           types.default = ::ActiveModel::Type.default_value
           types
@@ -77,8 +77,8 @@ module RactorRailsShim
           @default_attributes = nil
           @attribute_types = nil
         else
-          ActiveSupport::IsolatedExecutionState.delete(:"rrs_default_attributes_#{object_id}")
-          ActiveSupport::IsolatedExecutionState.delete(:"rrs_attribute_types_#{object_id}")
+          RactorRailsShim.storage.delete(:"rrs_default_attributes_#{object_id}")
+          RactorRailsShim.storage.delete(:"rrs_attribute_types_#{object_id}")
         end
       end
     end
@@ -96,7 +96,7 @@ module RactorRailsShim
       # cache in IES so workers never read/write the shared class ivar.
       def _default_attributes # :nodoc:
         key = :"rrs_default_attributes_#{object_id}"
-        ActiveSupport::IsolatedExecutionState[key] ||= begin
+        RactorRailsShim.storage[key] ||= begin
           attributes_hash = with_connection do |connection|
             columns_hash.transform_values do |column|
               ::ActiveModel::Attribute.from_database(

@@ -19,10 +19,10 @@
 #
 # Rails already uses IES for `connection_handler` (core.rb:132-138):
 #   def self.connection_handler
-#     ActiveSupport::IsolatedExecutionState[:active_record_connection_handler] || default_connection_handler
+#     RactorRailsShim.storage[:active_record_connection_handler] || default_connection_handler
 #   end
 #   def self.connection_handler=(handler)
-#     ActiveSupport::IsolatedExecutionState[:active_record_connection_handler] = handler
+#     RactorRailsShim.storage[:active_record_connection_handler] = handler
 #   end
 #
 # The problem: in the main ractor, `default_connection_handler` is set via
@@ -225,7 +225,7 @@ module RactorRailsShim
 
       key = :active_record_connection_handler
       # Store the handler in Ractor-local storage (Ractor.current), NOT in
-      # ActiveSupport::IsolatedExecutionState. IES is per-THREAD (it is a
+      # the IES-backed RactorRailsShim.storage. IES is per-THREAD (it is a
       # Thread.attr_accessor), so a value set on the init thread is invisible
       # to the other worker threads in the same worker Ractor ->
       # ConnectionNotEstablished ("No connection handler for Ractor X").
@@ -604,7 +604,7 @@ module RactorRailsShim
             reset_table_name unless defined?(@table_name)
             @table_name
           else
-            store = (ActiveSupport::IsolatedExecutionState[:rrs_table_names] ||= {})
+            store = (RactorRailsShim.storage[:rrs_table_names] ||= {})
             store.fetch(object_id) { store[object_id] = compute_table_name }
           end
         end
@@ -621,7 +621,7 @@ module RactorRailsShim
             @sequence_name     = nil unless @explicit_sequence_name
             @predicate_builder = nil
           else
-            (ActiveSupport::IsolatedExecutionState[:rrs_table_names] ||= {})[object_id] = value
+            (RactorRailsShim.storage[:rrs_table_names] ||= {})[object_id] = value
           end
         end
 
@@ -653,7 +653,7 @@ module RactorRailsShim
           if Ractor.main?
             @arel_table ||= ::Arel::Table.new(table_name, klass: self)
           else
-            store = (ActiveSupport::IsolatedExecutionState[:rrs_arel_tables] ||= {})
+            store = (RactorRailsShim.storage[:rrs_arel_tables] ||= {})
             store.fetch(object_id) { store[object_id] = ::Arel::Table.new(table_name, klass: self) }
           end
         end
@@ -663,7 +663,7 @@ module RactorRailsShim
             @predicate_builder ||= ::ActiveRecord::PredicateBuilder.new(
               ::ActiveRecord::TableMetadata.new(self, arel_table))
           else
-            store = (ActiveSupport::IsolatedExecutionState[:rrs_predicate_builders] ||= {})
+            store = (RactorRailsShim.storage[:rrs_predicate_builders] ||= {})
             store.fetch(object_id) do
               store[object_id] = ::ActiveRecord::PredicateBuilder.new(
                 ::ActiveRecord::TableMetadata.new(self, arel_table))
@@ -675,7 +675,7 @@ module RactorRailsShim
           if Ractor.main?
             @type_caster ||= ::ActiveRecord::TypeCaster::Map.new(self)
           else
-            store = (ActiveSupport::IsolatedExecutionState[:rrs_type_casters] ||= {})
+            store = (RactorRailsShim.storage[:rrs_type_casters] ||= {})
             store.fetch(object_id) { store[object_id] = ::ActiveRecord::TypeCaster::Map.new(self) }
           end
         end
@@ -698,7 +698,7 @@ module RactorRailsShim
           if Ractor.main?
             :true == (@finder_needs_type_condition ||= descends_from_active_record? ? :false : :true)
           else
-            store = (ActiveSupport::IsolatedExecutionState[:rrs_finder_type_cond] ||= {})
+            store = (RactorRailsShim.storage[:rrs_finder_type_cond] ||= {})
             store.fetch(object_id) do
               store[object_id] = descends_from_active_record? ? false : true
             end
@@ -724,7 +724,7 @@ module RactorRailsShim
           if Ractor.main?
             @_model_name ||= _rrs_compute_model_name
           else
-            store = (ActiveSupport::IsolatedExecutionState[:rrs_model_names] ||= {})
+            store = (RactorRailsShim.storage[:rrs_model_names] ||= {})
             store[object_id] ||= _rrs_compute_model_name
           end
         end
@@ -758,23 +758,23 @@ module RactorRailsShim
       ::ActiveRecord::ModelSchema::ClassMethods.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def symbol_column_to_string(name_symbol)
           key = :"ractor_rails_shim_symbol_column_to_string_\#{self.name}"
-          v = ActiveSupport::IsolatedExecutionState[key]
+          v = RactorRailsShim.storage[key]
           return v[name_symbol] if v
           hash = column_names.index_by(&:to_sym)
-          ActiveSupport::IsolatedExecutionState[key] = hash
+          RactorRailsShim.storage[key] = hash
           hash[name_symbol]
         end
 
         def content_columns
           key = :"ractor_rails_shim_content_columns_\#{self.name}"
-          v = ActiveSupport::IsolatedExecutionState[key]
+          v = RactorRailsShim.storage[key]
           return v if v
           cols = columns.reject do |c|
             c.name == primary_key ||
             c.name == inheritance_column ||
             c.name.end_with?("_id", "_count")
           end.freeze
-          ActiveSupport::IsolatedExecutionState[key] = cols
+          RactorRailsShim.storage[key] = cols
           cols
         end
 
@@ -822,7 +822,7 @@ module RactorRailsShim
               :"rrs_arel_tables",
               :"rrs_predicate_builders",
               :"rrs_type_casters",
-            ].each do |k| ActiveSupport::IsolatedExecutionState.delete(k) end
+            ].each do |k| RactorRailsShim.storage.delete(k) end
             # The Timestamp subclass override calls `super` (this method); it
             # has already run by the time we get here via the super chain, so
             # its ivar-clears were intercepted by the worker branch of THIS
@@ -871,7 +871,7 @@ module RactorRailsShim
         module ClassMethods
           def _to_partial_path
             key = :"ractor_rails_shim_to_partial_path_\#{name}"
-            v = ActiveSupport::IsolatedExecutionState[key]
+            v = RactorRailsShim.storage[key]
             return v if v
             path = if respond_to?(:model_name)
               "\#{model_name.collection}/\#{model_name.element}"
@@ -881,7 +881,7 @@ module RactorRailsShim
               "\#{collection}/\#{element}"
             end
             path = path.freeze
-            ActiveSupport::IsolatedExecutionState[key] = path
+            RactorRailsShim.storage[key] = path
             path
           end
         end
@@ -923,8 +923,8 @@ module RactorRailsShim
       # never touches the class var.
       ::ActiveRecord::Base.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def configurations
-          v = ActiveSupport::IsolatedExecutionState[#{key_str}]
-          return v if ActiveSupport::IsolatedExecutionState.key?(#{key_str})
+          v = RactorRailsShim.storage[#{key_str}]
+          return v if RactorRailsShim.storage.key?(#{key_str})
           if Ractor.main?
             ActiveRecord::Core.class_variable_get(:@@configurations)
           else
@@ -932,7 +932,7 @@ module RactorRailsShim
           end
         end
         def configurations=(config)
-          ActiveSupport::IsolatedExecutionState[#{key_str}] = config
+          RactorRailsShim.storage[#{key_str}] = config
           ActiveRecord::Core.class_variable_set(:@@configurations, config) if Ractor.main?
         end
       RUBY
@@ -974,8 +974,8 @@ module RactorRailsShim
       key_str = key.inspect
       ::ActiveRecord::DatabaseConfigurations.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def db_config_handlers
-          v = ActiveSupport::IsolatedExecutionState[#{key_str}]
-          return v if ActiveSupport::IsolatedExecutionState.key?(#{key_str})
+          v = RactorRailsShim.storage[#{key_str}]
+          return v if RactorRailsShim.storage.key?(#{key_str})
           if Ractor.main?
             @db_config_handlers
           else
@@ -983,7 +983,7 @@ module RactorRailsShim
           end
         end
         def db_config_handlers=(val)
-          ActiveSupport::IsolatedExecutionState[#{key_str}] = val
+          RactorRailsShim.storage[#{key_str}] = val
           @db_config_handlers = val if Ractor.main?
         end
       RUBY
@@ -1023,8 +1023,8 @@ module RactorRailsShim
       key_str = key.inspect
       ::ActiveRecord.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def query_transformers
-          v = ActiveSupport::IsolatedExecutionState[#{key_str}]
-          return v if ActiveSupport::IsolatedExecutionState.key?(#{key_str})
+          v = RactorRailsShim.storage[#{key_str}]
+          return v if RactorRailsShim.storage.key?(#{key_str})
           if Ractor.main?
             @query_transformers
           else
@@ -1032,7 +1032,7 @@ module RactorRailsShim
           end
         end
         def query_transformers=(val)
-          ActiveSupport::IsolatedExecutionState[#{key_str}] = val
+          RactorRailsShim.storage[#{key_str}] = val
           @query_transformers = val if Ractor.main?
         end
       RUBY
@@ -1071,8 +1071,8 @@ module RactorRailsShim
         const_str = const_name.to_s
         ::ActiveRecord.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
           def #{method_name}
-            v = ActiveSupport::IsolatedExecutionState[#{key_str}]
-            return v if ActiveSupport::IsolatedExecutionState.key?(#{key_str})
+            v = RactorRailsShim.storage[#{key_str}]
+            return v if RactorRailsShim.storage.key?(#{key_str})
             if Ractor.main?
               @#{method_name}
             else
@@ -1080,7 +1080,7 @@ module RactorRailsShim
             end
           end
           def #{method_name}=(val)
-            ActiveSupport::IsolatedExecutionState[#{key_str}] = val
+            RactorRailsShim.storage[#{key_str}] = val
             @#{method_name} = val if Ractor.main?
           end
         RUBY
@@ -1103,10 +1103,10 @@ module RactorRailsShim
       ::ActiveRecord::ConnectionAdapters::Deduplicable::ClassMethods.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def registry
           key = :"ractor_rails_shim_dedup_registry_\#{name || object_id}"
-          v = ActiveSupport::IsolatedExecutionState[key]
-          return v if ActiveSupport::IsolatedExecutionState.key?(key)
+          v = RactorRailsShim.storage[key]
+          return v if RactorRailsShim.storage.key?(key)
           h = {}
-          ActiveSupport::IsolatedExecutionState[key] = h
+          RactorRailsShim.storage[key] = h
           h
         end
       RUBY
@@ -1126,20 +1126,20 @@ module RactorRailsShim
       ::ActiveRecord::Persistence::ClassMethods.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def query_constraints_list
           key = :"ractor_rails_shim_qcl_\#{name || object_id}"
-          v = ActiveSupport::IsolatedExecutionState[key]
-          return v if ActiveSupport::IsolatedExecutionState.key?(key)
+          v = RactorRailsShim.storage[key]
+          return v if RactorRailsShim.storage.key?(key)
           result = if base_class? || primary_key != base_class.primary_key
             primary_key if primary_key.is_a?(::Array)
           else
             base_class.query_constraints_list
           end
-          ActiveSupport::IsolatedExecutionState[key] = result
+          RactorRailsShim.storage[key] = result
           result
         end
         def has_query_constraints?
           key = :"ractor_rails_shim_qcl_\#{name || object_id}"
-          v = ActiveSupport::IsolatedExecutionState[key]
-          return !v.nil? if ActiveSupport::IsolatedExecutionState.key?(key)
+          v = RactorRailsShim.storage[key]
+          return !v.nil? if RactorRailsShim.storage.key?(key)
           result = query_constraints_list
           !result.nil?
         end
@@ -1260,12 +1260,12 @@ module RactorRailsShim
       ::Arel::Visitors::Visitor.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def dispatch_cache
           key = :"ractor_rails_shim_arel_dispatch_\#{name || object_id}"
-          v = ActiveSupport::IsolatedExecutionState[key]
+          v = RactorRailsShim.storage[key]
           return v if v
           cache = Hash.new do |hash, klass|
             hash[klass] = :"visit_\#{(klass.name || "").gsub("::", "_")}"
           end.compare_by_identity
-          ActiveSupport::IsolatedExecutionState[key] = cache
+          RactorRailsShim.storage[key] = cache
           cache
         end
       RUBY
@@ -1322,15 +1322,15 @@ module RactorRailsShim
         klass_mod.module_eval <<-RUBY, __FILE__, __LINE__ + 1
           def quote_column_name(name)
             key = :"ractor_rails_shim_quoted_cols_\#{self.name}"
-            cache = ActiveSupport::IsolatedExecutionState[key]
-            cache ||= (ActiveSupport::IsolatedExecutionState[key] = {})
+            cache = RactorRailsShim.storage[key]
+            cache ||= (RactorRailsShim.storage[key] = {})
             cache[name] ||= (#{column_logic})
           end
 
           def quote_table_name(name)
             key = :"ractor_rails_shim_quoted_tables_\#{self.name}"
-            cache = ActiveSupport::IsolatedExecutionState[key]
-            cache ||= (ActiveSupport::IsolatedExecutionState[key] = {})
+            cache = RactorRailsShim.storage[key]
+            cache ||= (RactorRailsShim.storage[key] = {})
             cache[name] ||= (#{table_logic})
           end
         RUBY
@@ -1367,7 +1367,7 @@ module RactorRailsShim
           orig_handler = ::ActiveRecord::Base.default_connection_handler
           if orig_handler
             RactorRailsShim::CLASS_ATTR_VALUES[:__ractor_rails_shim_ar_default_connection_handler__] = orig_handler
-            ActiveSupport::IsolatedExecutionState[dch_key] = orig_handler
+            RactorRailsShim.storage[dch_key] = orig_handler
           end
         rescue StandardError => e
           # Best-effort
@@ -1381,8 +1381,8 @@ module RactorRailsShim
       # handler if set, then fall back to the original (main only) or nil.
       ::ActiveRecord::Base.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def default_connection_handler
-          v = ActiveSupport::IsolatedExecutionState[#{dch_key_str}]
-          return v if ActiveSupport::IsolatedExecutionState.key?(#{dch_key_str})
+          v = RactorRailsShim.storage[#{dch_key_str}]
+          return v if RactorRailsShim.storage.key?(#{dch_key_str})
           if Ractor.main?
             cv = RactorRailsShim::CLASS_ATTR_VALUES[:__ractor_rails_shim_ar_default_connection_handler__]
             return cv if cv
@@ -1390,7 +1390,7 @@ module RactorRailsShim
           nil
         end
         def default_connection_handler=(val)
-          ActiveSupport::IsolatedExecutionState[#{dch_key_str}] = val
+          RactorRailsShim.storage[#{dch_key_str}] = val
         end
         # Route the per-Ractor handler through Ractor-local storage. IES is
         # per-thread, so a handler stored on the init thread is invisible to the
@@ -1406,7 +1406,7 @@ module RactorRailsShim
         def connection_handler
           v = Ractor.current[:active_record_connection_handler]
           return v unless v.nil?
-          ActiveSupport::IsolatedExecutionState[:active_record_connection_handler] || default_connection_handler
+          RactorRailsShim.storage[:active_record_connection_handler] || default_connection_handler
         end
         def connection_handler=(handler)
           Ractor.current[:active_record_connection_handler] = handler
@@ -1416,7 +1416,7 @@ module RactorRailsShim
       # Also ensure connection_handler (which Rails already routes through IES
       # at core.rb:132-138) works. Rails' implementation:
       #   def self.connection_handler
-      #     ActiveSupport::IsolatedExecutionState[:active_record_connection_handler] || default_connection_handler
+      #     RactorRailsShim.storage[:active_record_connection_handler] || default_connection_handler
       #   end
       # This is already correct — if the worker sets the IES key via
       # init_worker_ar_connections!, connection_handler returns it. If not,
@@ -1479,10 +1479,10 @@ module RactorRailsShim
       ::ActiveModel::Type::SerializeCastValue::ClassMethods.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def serialize_cast_value_compatible?
           key = :"ractor_rails_shim_scv_\#{name || object_id}"
-          v = ActiveSupport::IsolatedExecutionState[key]
-          return v if ActiveSupport::IsolatedExecutionState.key?(key)
+          v = RactorRailsShim.storage[key]
+          return v if RactorRailsShim.storage.key?(key)
           result = ancestors.index(instance_method(:serialize_cast_value).owner) <= ancestors.index(instance_method(:serialize).owner)
-          ActiveSupport::IsolatedExecutionState[key] = result
+          RactorRailsShim.storage[key] = result
           result
         end
       RUBY
@@ -1512,12 +1512,12 @@ module RactorRailsShim
       ::ActiveRecord::Delegation.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def uncacheable_methods
           key = :ractor_rails_shim_ar_uncacheable_methods
-          v = ActiveSupport::IsolatedExecutionState[key]
-          return v if ActiveSupport::IsolatedExecutionState.key?(key)
+          v = RactorRailsShim.storage[key]
+          return v if RactorRailsShim.storage.key?(key)
           result = (
             delegated_classes.flat_map(&:public_instance_methods) - ActiveRecord::Relation.public_instance_methods
           ).to_set.freeze
-          ActiveSupport::IsolatedExecutionState[key] = result
+          RactorRailsShim.storage[key] = result
           result
         end
       RUBY
@@ -1548,12 +1548,12 @@ module RactorRailsShim
       mod.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def primary_key
           key = :"ractor_rails_shim_pk_\#{name || object_id}"
-          v = ActiveSupport::IsolatedExecutionState[key]
-          return v if ActiveSupport::IsolatedExecutionState.key?(key)
+          v = RactorRailsShim.storage[key]
+          return v if RactorRailsShim.storage.key?(key)
           if Ractor.main?
             reset_primary_key if PRIMARY_KEY_NOT_SET.equal?(@primary_key)
             v = @primary_key
-            ActiveSupport::IsolatedExecutionState[key] = v
+            RactorRailsShim.storage[key] = v
             v
           else
             RactorRailsShim::AR_PRIMARY_KEYS_SHAREABLE[name]
@@ -1561,8 +1561,8 @@ module RactorRailsShim
         end
         def composite_primary_key?
           key = :"ractor_rails_shim_pk_\#{name || object_id}"
-          v = ActiveSupport::IsolatedExecutionState[key]
-          return v.is_a?(::Array) if ActiveSupport::IsolatedExecutionState.key?(key)
+          v = RactorRailsShim.storage[key]
+          return v.is_a?(::Array) if RactorRailsShim.storage.key?(key)
           if Ractor.main?
             reset_primary_key if PRIMARY_KEY_NOT_SET.equal?(@primary_key)
             @primary_key.is_a?(::Array)
@@ -1595,7 +1595,7 @@ module RactorRailsShim
       ::ActiveRecord::Base.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def cached_find_by_statement(connection, key, &block)
           return super if Ractor.main?
-          cache = (ActiveSupport::IsolatedExecutionState[:"ractor_rails_shim_find_by_cache_\#{object_id}"] ||= {})
+          cache = (RactorRailsShim.storage[:"ractor_rails_shim_find_by_cache_\#{object_id}"] ||= {})
           prepared = connection.prepared_statements
           sub = (cache[prepared] ||= {})
           if sub.key?(key)
@@ -1751,18 +1751,18 @@ module RactorRailsShim
       mp_key_str = mp_key.inspect
       mig.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def migrations_paths
-          v = ActiveSupport::IsolatedExecutionState[#{mp_key_str}]
-          return v if ActiveSupport::IsolatedExecutionState.key?(#{mp_key_str})
+          v = RactorRailsShim.storage[#{mp_key_str}]
+          return v if RactorRailsShim.storage.key?(#{mp_key_str})
           if Ractor.main? && instance_variable_defined?(:@migrations_paths)
             v = @migrations_paths
-            ActiveSupport::IsolatedExecutionState[#{mp_key_str}] = v
+            RactorRailsShim.storage[#{mp_key_str}] = v
             v
           else
             ["db/migrate"].freeze
           end
         end
         def migrations_paths=(val)
-          ActiveSupport::IsolatedExecutionState[#{mp_key_str}] = val
+          RactorRailsShim.storage[#{mp_key_str}] = val
           @migrations_paths = val if Ractor.main?
           val
         end
@@ -1777,15 +1777,15 @@ module RactorRailsShim
       cp.class_eval <<-RUBY, __FILE__, __LINE__ + 1
         def call(env)
           @mutex.synchronize do
-            watcher = ActiveSupport::IsolatedExecutionState[#{w_key_str}]
+            watcher = RactorRailsShim.storage[#{w_key_str}]
             if watcher.nil?
-              watcher = ActiveSupport::IsolatedExecutionState[#{w_key_str}] = build_watcher do
-                ActiveSupport::IsolatedExecutionState[#{nc_key_str}] = true
+              watcher = RactorRailsShim.storage[#{w_key_str}] = build_watcher do
+                RactorRailsShim.storage[#{nc_key_str}] = true
                 ::ActiveRecord::Migration.check_pending_migrations
-                ActiveSupport::IsolatedExecutionState[#{nc_key_str}] = false
+                RactorRailsShim.storage[#{nc_key_str}] = false
               end
             end
-            needs_check = ActiveSupport::IsolatedExecutionState[#{nc_key_str}]
+            needs_check = RactorRailsShim.storage[#{nc_key_str}]
             needs_check = true if needs_check.nil?
             if needs_check
               watcher.execute

@@ -95,8 +95,8 @@ module RactorRailsShim
         # lazy init via super. Worker ractors return nil (their own IES
         # slot is empty until they boot their own app).
         def application
-          v = ActiveSupport::IsolatedExecutionState[#{k[:application].inspect}]
-          return v if ActiveSupport::IsolatedExecutionState.key?(#{k[:application].inspect})
+          v = RactorRailsShim.storage[#{k[:application].inspect}]
+          return v if RactorRailsShim.storage.key?(#{k[:application].inspect})
           if Ractor.main?
             super
           else
@@ -105,7 +105,7 @@ module RactorRailsShim
         end
 
         def application=(val)
-          ActiveSupport::IsolatedExecutionState[#{k[:application].inspect}] = val
+          RactorRailsShim.storage[#{k[:application].inspect}] = val
           super if Ractor.main?
           val
         end
@@ -114,32 +114,32 @@ module RactorRailsShim
         # Workers fall back to the shareable fallback (built from main's
         # value at make_app_shareable! time) when their own IES slot is empty.
         def app_class
-          v = ActiveSupport::IsolatedExecutionState[#{k[:app_class].inspect}]
-          return v if ActiveSupport::IsolatedExecutionState.key?(#{k[:app_class].inspect})
+          v = RactorRailsShim.storage[#{k[:app_class].inspect}]
+          return v if RactorRailsShim.storage.key?(#{k[:app_class].inspect})
           return super if Ractor.main?
           RactorRailsShim::SHAREABLE_FALLBACK[#{k[:app_class].inspect}]
         end
         def app_class=(val)
-          ActiveSupport::IsolatedExecutionState[#{k[:app_class].inspect}] = val
+          RactorRailsShim.storage[#{k[:app_class].inspect}] = val
           super if Ractor.main?
           val
         end
 
         def cache
-          v = ActiveSupport::IsolatedExecutionState[#{k[:cache].inspect}]
-          return v if ActiveSupport::IsolatedExecutionState.key?(#{k[:cache].inspect})
+          v = RactorRailsShim.storage[#{k[:cache].inspect}]
+          return v if RactorRailsShim.storage.key?(#{k[:cache].inspect})
           return super if Ractor.main?
           RactorRailsShim::SHAREABLE_FALLBACK[#{k[:cache].inspect}]
         end
         def cache=(val)
-          ActiveSupport::IsolatedExecutionState[#{k[:cache].inspect}] = val
+          RactorRailsShim.storage[#{k[:cache].inspect}] = val
           super if Ractor.main?
           val
         end
 
         def logger
-          v = ActiveSupport::IsolatedExecutionState[#{k[:logger].inspect}]
-          return v if ActiveSupport::IsolatedExecutionState.key?(#{k[:logger].inspect})
+          v = RactorRailsShim.storage[#{k[:logger].inspect}]
+          return v if RactorRailsShim.storage.key?(#{k[:logger].inspect})
           return super if Ractor.main?
           # Loggers are intrinsically mutable (formatters hold tag stacks,
           # logdevs hold IO + Mutex) and can't be shared read-only. Build a
@@ -148,23 +148,23 @@ module RactorRailsShim
           # writing to $stderr (each Ractor has its own $stderr stream) and
           # cache it in IES so subsequent reads return the same instance.
           built = ActiveSupport::BroadcastLogger.new(Logger.new($stderr))
-          ActiveSupport::IsolatedExecutionState[#{k[:logger].inspect}] = built
+          RactorRailsShim.storage[#{k[:logger].inspect}] = built
           built
         end
         def logger=(val)
-          ActiveSupport::IsolatedExecutionState[#{k[:logger].inspect}] = val
+          RactorRailsShim.storage[#{k[:logger].inspect}] = val
           super if Ractor.main?
           val
         end
 
         def backtrace_cleaner
-          v = ActiveSupport::IsolatedExecutionState[#{k[:backtrace_cleaner].inspect}]
-          return v if ActiveSupport::IsolatedExecutionState.key?(#{k[:backtrace_cleaner].inspect})
+          v = RactorRailsShim.storage[#{k[:backtrace_cleaner].inspect}]
+          return v if RactorRailsShim.storage.key?(#{k[:backtrace_cleaner].inspect})
           return super if Ractor.main?
           RactorRailsShim::SHAREABLE_FALLBACK[#{k[:backtrace_cleaner].inspect}]
         end
         def backtrace_cleaner=(val)
-          ActiveSupport::IsolatedExecutionState[#{k[:backtrace_cleaner].inspect}] = val
+          RactorRailsShim.storage[#{k[:backtrace_cleaner].inspect}] = val
           super if Ractor.main?
           val
         end
@@ -173,22 +173,22 @@ module RactorRailsShim
         # (no @ _env ivar to read). Main ractor falls back to super, which
         # lazily builds and caches in @_env.
         def env
-          v = ActiveSupport::IsolatedExecutionState[#{k[:env].inspect}]
-          return v if ActiveSupport::IsolatedExecutionState.key?(#{k[:env].inspect})
+          v = RactorRailsShim.storage[#{k[:env].inspect}]
+          return v if RactorRailsShim.storage.key?(#{k[:env].inspect})
           if Ractor.main?
             super
           else
             built = ActiveSupport::EnvironmentInquirer.new(
               ENV["RAILS_ENV"].presence || ENV["RACK_ENV"].presence || "development"
             )
-            ActiveSupport::IsolatedExecutionState[#{k[:env].inspect}] = built
+            RactorRailsShim.storage[#{k[:env].inspect}] = built
             built
           end
         end
 
         def env=(val)
           v = ActiveSupport::EnvironmentInquirer.new(val)
-          ActiveSupport::IsolatedExecutionState[#{k[:env].inspect}] = v
+          RactorRailsShim.storage[#{k[:env].inspect}] = v
           super if Ractor.main?
           v
         end

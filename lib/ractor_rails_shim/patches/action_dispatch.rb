@@ -100,11 +100,11 @@ module RactorRailsShim
       pp_key_str = pp_key.inspect
       req.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def parameter_parsers
-          v = ActiveSupport::IsolatedExecutionState[#{pp_key_str}]
-          return v if ActiveSupport::IsolatedExecutionState.key?(#{pp_key_str})
+          v = RactorRailsShim.storage[#{pp_key_str}]
+          return v if RactorRailsShim.storage.key?(#{pp_key_str})
           if Ractor.main? && instance_variable_defined?(:@parameter_parsers)
             v = @parameter_parsers
-            ActiveSupport::IsolatedExecutionState[#{pp_key_str}] = v
+            RactorRailsShim.storage[#{pp_key_str}] = v
             v
           else
             RactorRailsShim::SHAREABLE_FALLBACK[#{pp_key_str}] || ActionDispatch::Request::DEFAULT_PARSERS

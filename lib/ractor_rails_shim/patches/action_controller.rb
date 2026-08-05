@@ -33,7 +33,7 @@ module RactorRailsShim
           enc = if Ractor.main?
             instance_variable_defined?(:@_parameter_encodings) ? @_parameter_encodings : nil
           else
-            ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_param_encodings]
+            RactorRailsShim.storage[:ractor_rails_shim_param_encodings]
           end
           if enc && enc.has_key?(action.to_s)
             enc[action.to_s]
@@ -71,7 +71,7 @@ module RactorRailsShim
       self._abstract_registry = registry
       ac.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def controller_path
-          cache = (ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_controller_path_cache] ||= {})
+          cache = (RactorRailsShim.storage[:ractor_rails_shim_controller_path_cache] ||= {})
           v = cache[self]
           return v if v
           if Ractor.main? && instance_variable_defined?(:@controller_path)
@@ -90,7 +90,7 @@ module RactorRailsShim
         # IES; workers compute it from public_instance_methods (no ivar read)
         # and cache in their own slot. Read per-request during dispatch.
         def action_methods
-          cache = (ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_action_methods_cache] ||= {})
+          cache = (RactorRailsShim.storage[:ractor_rails_shim_action_methods_cache] ||= {})
           v = cache[self]
           return v if v
           if Ractor.main? && instance_variable_defined?(:@action_methods)
@@ -109,7 +109,7 @@ module RactorRailsShim
           if Ractor.main?
             @action_methods = nil
           end
-          ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_action_methods_cache] = nil
+          RactorRailsShim.storage[:ractor_rails_shim_action_methods_cache] = nil
         end
 
         # abstract! / abstract / abstract? — raw class ivar (@abstract), a
@@ -151,7 +151,7 @@ module RactorRailsShim
         vp = ::ActionView::ViewPaths::ClassMethods
         vp.module_eval <<-RUBY, __FILE__, __LINE__ + 1
           def _prefixes
-            cache = (ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_vp_prefixes_cache] ||= {})
+            cache = (RactorRailsShim.storage[:ractor_rails_shim_vp_prefixes_cache] ||= {})
             v = cache[self]
             return v if v
             if Ractor.main? && instance_variable_defined?(:@_prefixes)
@@ -179,7 +179,7 @@ module RactorRailsShim
         url_for_cm = ::AbstractController::UrlFor::ClassMethods
         url_for_cm.module_eval <<-RUBY, __FILE__, __LINE__ + 1
           def action_methods
-            cache = (ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_url_for_action_methods_cache] ||= {})
+            cache = (RactorRailsShim.storage[:ractor_rails_shim_url_for_action_methods_cache] ||= {})
             v = cache[self]
             return v if v
             if Ractor.main? && instance_variable_defined?(:@action_methods)
@@ -221,10 +221,10 @@ module RactorRailsShim
         ::ActionController::Metal.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
           def controller_name
             key = :"ractor_rails_shim_controller_name_\#{name}"
-            v = ActiveSupport::IsolatedExecutionState[key]
+            v = RactorRailsShim.storage[key]
             return v if v
             cn = (name.demodulize.delete_suffix("Controller").underscore unless anonymous?)
-            ActiveSupport::IsolatedExecutionState[key] = cn
+            RactorRailsShim.storage[key] = cn
             cn
           end
         RUBY

@@ -479,7 +479,7 @@ module RactorRailsShim
             # frozen hashes with the same key don't collide. Use a two-level
             # structure (Hash per receiver) so the presence check (`key?`)
             # and the store share the same slot.
-            slot = ActiveSupport::IsolatedExecutionState[:rrs_cia] ||= {}
+            slot = RactorRailsShim.storage[:rrs_cia] ||= {}
             bucket = slot[object_id] ||= {}
             return bucket[key] if bucket.key?(key)
             bucket[key] = yield(key)

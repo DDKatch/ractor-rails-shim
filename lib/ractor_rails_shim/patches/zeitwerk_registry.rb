@@ -75,17 +75,17 @@ module RactorRailsShim
         ivar_str = ivar_sym.inspect
         reader_patch.module_eval <<-RUBY, __FILE__, __LINE__ + 1
           def #{ivar}
-            v = ActiveSupport::IsolatedExecutionState[#{key_str}]
-            return v if ActiveSupport::IsolatedExecutionState.key?(#{key_str})
+            v = RactorRailsShim.storage[#{key_str}]
+            return v if RactorRailsShim.storage.key?(#{key_str})
             if Ractor.main?
               existing = instance_variable_get(#{ivar_str}) if instance_variable_defined?(#{ivar_str})
               if existing
-                ActiveSupport::IsolatedExecutionState[#{key_str}] = existing
+                RactorRailsShim.storage[#{key_str}] = existing
                 return existing
               end
             end
             v = #{builder}
-            ActiveSupport::IsolatedExecutionState[#{key_str}] = v
+            RactorRailsShim.storage[#{key_str}] = v
             v
           end
         RUBY

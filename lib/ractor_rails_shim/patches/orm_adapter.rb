@@ -20,10 +20,10 @@ module RactorRailsShim
       ::OrmAdapter::ToAdapter.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def to_adapter
           key = :"ractor_rails_shim_orm_adapter_\#{object_id}"
-          v = ActiveSupport::IsolatedExecutionState[key]
-          return v if ActiveSupport::IsolatedExecutionState.key?(key)
+          v = RactorRailsShim.storage[key]
+          return v if RactorRailsShim.storage.key?(key)
           adapter = self::OrmAdapter.new(self)
-          ActiveSupport::IsolatedExecutionState[key] = adapter
+          RactorRailsShim.storage[key] = adapter
           adapter
         end
       RUBY

@@ -185,13 +185,13 @@ module RactorRailsShim
       nkey_str = nkey.inspect
       notif.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def notifier
-          v = ActiveSupport::IsolatedExecutionState[#{nkey_str}]
-          return v if ActiveSupport::IsolatedExecutionState.key?(#{nkey_str})
+          v = RactorRailsShim.storage[#{nkey_str}]
+          return v if RactorRailsShim.storage.key?(#{nkey_str})
           if Ractor.main? && instance_variable_defined?(:@notifier)
             @notifier
           else
             built = ActiveSupport::Notifications::Fanout.new
-            ActiveSupport::IsolatedExecutionState[#{nkey_str}] = built
+            RactorRailsShim.storage[#{nkey_str}] = built
             built
           end
         end
@@ -211,27 +211,27 @@ module RactorRailsShim
       inf.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def instance(locale = :en)
           if locale == :en
-            v = ActiveSupport::IsolatedExecutionState[#{en_key_str}]
-            return v if ActiveSupport::IsolatedExecutionState.key?(#{en_key_str})
+            v = RactorRailsShim.storage[#{en_key_str}]
+            return v if RactorRailsShim.storage.key?(#{en_key_str})
             if Ractor.main?
               existing = instance_variable_get(:@__en_instance__) if instance_variable_defined?(:@__en_instance__)
-              ActiveSupport::IsolatedExecutionState[#{en_key_str}] = existing
+              RactorRailsShim.storage[#{en_key_str}] = existing
               return existing || new.tap { |i| instance_variable_set(:@__en_instance__, i) }
             end
             fb = RactorRailsShim::SHAREABLE_FALLBACK[#{en_key_str}]
             return fb if fb
             built = new
-            ActiveSupport::IsolatedExecutionState[#{en_key_str}] = built
+            RactorRailsShim.storage[#{en_key_str}] = built
             built
           else
-            h = ActiveSupport::IsolatedExecutionState[#{inst_key_str}] ||= (Ractor.main? ? (instance_variable_defined?(:@__instance__) ? instance_variable_get(:@__instance__) : Concurrent::Map.new) : Concurrent::Map.new)
+            h = RactorRailsShim.storage[#{inst_key_str}] ||= (Ractor.main? ? (instance_variable_defined?(:@__instance__) ? instance_variable_get(:@__instance__) : Concurrent::Map.new) : Concurrent::Map.new)
             h[locale] ||= new
           end
         end
 
         def instance_or_fallback(locale)
           return instance(locale) if locale == :en
-          h = ActiveSupport::IsolatedExecutionState[#{inst_key_str}]
+          h = RactorRailsShim.storage[#{inst_key_str}]
           if h && h.key?(locale)
             return h[locale]
           end
@@ -275,7 +275,7 @@ module RactorRailsShim
             if Ractor.main?
               @parent_name = parent_name unless frozen?
             else
-              store = (ActiveSupport::IsolatedExecutionState[:rrs_module_parent_names] ||= {})
+              store = (RactorRailsShim.storage[:rrs_module_parent_names] ||= {})
               store[object_id] ||= parent_name
             end
             parent_name
@@ -301,18 +301,18 @@ module RactorRailsShim
       er_key_str = er_key.inspect
       ::ActiveSupport.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def error_reporter
-          v = ActiveSupport::IsolatedExecutionState[#{er_key_str}]
-          return v if ActiveSupport::IsolatedExecutionState.key?(#{er_key_str})
+          v = RactorRailsShim.storage[#{er_key_str}]
+          return v if RactorRailsShim.storage.key?(#{er_key_str})
           if Ractor.main? && instance_variable_defined?(:@error_reporter)
             @error_reporter
           else
             built = ActiveSupport::ErrorReporter.new
-            ActiveSupport::IsolatedExecutionState[#{er_key_str}] = built
+            RactorRailsShim.storage[#{er_key_str}] = built
             built
           end
         end
         def error_reporter=(val)
-          ActiveSupport::IsolatedExecutionState[#{er_key_str}] = val
+          RactorRailsShim.storage[#{er_key_str}] = val
           @error_reporter = val if Ractor.main?
           val
         end
@@ -342,30 +342,30 @@ module RactorRailsShim
       avs_key_str = avs_key.inspect
       cfg.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def default_locale
-          v = ActiveSupport::IsolatedExecutionState[#{dl_key_str}]
-          return v if ActiveSupport::IsolatedExecutionState.key?(#{dl_key_str})
+          v = RactorRailsShim.storage[#{dl_key_str}]
+          return v if RactorRailsShim.storage.key?(#{dl_key_str})
           if Ractor.main? && defined?(@@default_locale)
             cv = @@default_locale
-            ActiveSupport::IsolatedExecutionState[#{dl_key_str}] = cv
+            RactorRailsShim.storage[#{dl_key_str}] = cv
             return cv
           end
-          ActiveSupport::IsolatedExecutionState[#{dl_key_str}] = :en
+          RactorRailsShim.storage[#{dl_key_str}] = :en
           :en
         end
         def default_locale=(locale)
           v = locale && locale.to_sym
-          ActiveSupport::IsolatedExecutionState[#{dl_key_str}] = v
+          RactorRailsShim.storage[#{dl_key_str}] = v
           @@default_locale = v if Ractor.main?
           v
         end
         def locale
-          v = ActiveSupport::IsolatedExecutionState[#{l_key_str}]
-          return v if ActiveSupport::IsolatedExecutionState.key?(#{l_key_str})
+          v = RactorRailsShim.storage[#{l_key_str}]
+          return v if RactorRailsShim.storage.key?(#{l_key_str})
           default_locale
         end
         def locale=(locale)
           v = locale && locale.to_sym
-          ActiveSupport::IsolatedExecutionState[#{l_key_str}] = v
+          RactorRailsShim.storage[#{l_key_str}] = v
           v
         end
         # available_locales is read per-request during view template lookup
@@ -379,42 +379,42 @@ module RactorRailsShim
         # [:en] is the documented I18n default — correct for apps that don't
         # set config.i18n.available_locales explicitly.
         def available_locales
-          v = ActiveSupport::IsolatedExecutionState[#{av_key_str}]
-          return v if ActiveSupport::IsolatedExecutionState.key?(#{av_key_str})
+          v = RactorRailsShim.storage[#{av_key_str}]
+          return v if RactorRailsShim.storage.key?(#{av_key_str})
           if Ractor.main?
             if defined?(@@available_locales) && (cv = @@available_locales)
-              ActiveSupport::IsolatedExecutionState[#{av_key_str}] = cv
+              RactorRailsShim.storage[#{av_key_str}] = cv
               return cv
             end
             al = backend.available_locales
             al = al.freeze if al.respond_to?(:freeze) && !al.frozen?
-            ActiveSupport::IsolatedExecutionState[#{av_key_str}] = al
+            RactorRailsShim.storage[#{av_key_str}] = al
             return al
           end
           al = [:en].freeze
-          ActiveSupport::IsolatedExecutionState[#{av_key_str}] = al
+          RactorRailsShim.storage[#{av_key_str}] = al
           al
         end
         def available_locales=(locales)
           v = Array(locales).map { |l| l.to_sym }
           v = nil if v.empty?
-          ActiveSupport::IsolatedExecutionState[#{av_key_str}] = v
+          RactorRailsShim.storage[#{av_key_str}] = v
           @@available_locales = v if Ractor.main?
           v
         end
         def available_locales_set
-          v = ActiveSupport::IsolatedExecutionState[#{avs_key_str}]
-          return v if ActiveSupport::IsolatedExecutionState.key?(#{avs_key_str})
+          v = RactorRailsShim.storage[#{avs_key_str}]
+          return v if RactorRailsShim.storage.key?(#{avs_key_str})
           if Ractor.main? && defined?(@@available_locales_set) && (cv = @@available_locales_set)
-            ActiveSupport::IsolatedExecutionState[#{avs_key_str}] = cv
+            RactorRailsShim.storage[#{avs_key_str}] = cv
             return cv
           end
           s = available_locales.inject(Set.new) { |set, locale| set << locale.to_s << locale.to_sym }
-          ActiveSupport::IsolatedExecutionState[#{avs_key_str}] = s
+          RactorRailsShim.storage[#{avs_key_str}] = s
           s
         end
         def available_locales_initialized?
-          !!(ActiveSupport::IsolatedExecutionState[#{av_key_str}])
+          !!(RactorRailsShim.storage[#{av_key_str}])
         end
         # enforce_available_locales is read during every I18n.translate (the
         # Label/tag translation path in views). The original reads the
@@ -423,19 +423,19 @@ module RactorRailsShim
         # we mirror the class var, in a worker we default to `true` (the
         # documented I18n default).
         def enforce_available_locales
-          v = ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_enforce]
-          return v if ActiveSupport::IsolatedExecutionState.key?(:ractor_rails_shim_i18n_enforce)
+          v = RactorRailsShim.storage[:ractor_rails_shim_i18n_enforce]
+          return v if RactorRailsShim.storage.key?(:ractor_rails_shim_i18n_enforce)
           if Ractor.main? && defined?(@@enforce_available_locales)
             cv = @@enforce_available_locales
-            ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_enforce] = cv
+            RactorRailsShim.storage[:ractor_rails_shim_i18n_enforce] = cv
             return cv
           end
-          ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_enforce] = true
+          RactorRailsShim.storage[:ractor_rails_shim_i18n_enforce] = true
           true
         end
         def enforce_available_locales=(val)
           v = !!val
-          ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_enforce] = v
+          RactorRailsShim.storage[:ractor_rails_shim_i18n_enforce] = v
           @@enforce_available_locales = v if Ractor.main?
           v
         end
@@ -453,11 +453,11 @@ module RactorRailsShim
             @@backend ||= ::I18n::Backend::Simple.new
           else
             key = :ractor_rails_shim_i18n_backend
-            b = ActiveSupport::IsolatedExecutionState[key]
+            b = RactorRailsShim.storage[key]
             return b if b
             cls = (RactorRailsShim.const_defined?(:I18N_BACKEND_CLASS) && RactorRailsShim::I18N_BACKEND_CLASS) || ::I18n::Backend::Simple
             b = cls.new
-            ActiveSupport::IsolatedExecutionState[key] = b
+            RactorRailsShim.storage[key] = b
             b
           end
         end
@@ -468,12 +468,12 @@ module RactorRailsShim
         # worker). Capture the (shareable) list of translation file paths in
         # main; workers reload translations from disk via these paths.
         def load_path
-          v = ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_load_path]
-          return v if ActiveSupport::IsolatedExecutionState.key?(:ractor_rails_shim_i18n_load_path)
+          v = RactorRailsShim.storage[:ractor_rails_shim_i18n_load_path]
+          return v if RactorRailsShim.storage.key?(:ractor_rails_shim_i18n_load_path)
           if Ractor.main?
             lp = (defined?(@@load_path) && @@load_path) || []
             lp = lp.dup.freeze if lp.respond_to?(:freeze) && !lp.frozen?
-            ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_load_path] = lp
+            RactorRailsShim.storage[:ractor_rails_shim_i18n_load_path] = lp
             lp
           else
             RactorRailsShim.const_defined?(:I18N_LOAD_PATH) ? RactorRailsShim::I18N_LOAD_PATH : []
@@ -481,7 +481,7 @@ module RactorRailsShim
         end
         def load_path=(lp)
           lp = Array(lp)
-          ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_load_path] = lp
+          RactorRailsShim.storage[:ractor_rails_shim_i18n_load_path] = lp
           @@load_path = lp if Ractor.main?
           lp
         end
@@ -492,45 +492,45 @@ module RactorRailsShim
         # a String, a fresh ExceptionHandler, a fresh lambda, or the frozen
         # DEFAULT_INTERPOLATION_PATTERNS constant).
         def default_separator
-          v = ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_sep]
-          return v if ActiveSupport::IsolatedExecutionState.key?(:ractor_rails_shim_i18n_sep)
+          v = RactorRailsShim.storage[:ractor_rails_shim_i18n_sep]
+          return v if RactorRailsShim.storage.key?(:ractor_rails_shim_i18n_sep)
           if Ractor.main?
             cv = defined?(@@default_separator) ? @@default_separator : "."
-            ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_sep] = cv
+            RactorRailsShim.storage[:ractor_rails_shim_i18n_sep] = cv
             cv
           else
             "."
           end
         end
         def default_separator=(separator)
-          ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_sep] = separator
+          RactorRailsShim.storage[:ractor_rails_shim_i18n_sep] = separator
           @@default_separator = separator if Ractor.main?
           separator
         end
         def exception_handler
-          v = ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_exc]
-          return v if ActiveSupport::IsolatedExecutionState.key?(:ractor_rails_shim_i18n_exc)
+          v = RactorRailsShim.storage[:ractor_rails_shim_i18n_exc]
+          return v if RactorRailsShim.storage.key?(:ractor_rails_shim_i18n_exc)
           if Ractor.main?
             cv = defined?(@@exception_handler) ? @@exception_handler : ::I18n::ExceptionHandler.new
-            ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_exc] = cv
+            RactorRailsShim.storage[:ractor_rails_shim_i18n_exc] = cv
             cv
           else
             ::I18n::ExceptionHandler.new
           end
         end
         def exception_handler=(handler)
-          ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_exc] = handler
+          RactorRailsShim.storage[:ractor_rails_shim_i18n_exc] = handler
           @@exception_handler = handler if Ractor.main?
           handler
         end
         def missing_interpolation_argument_handler
-          v = ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_miss]
-          return v if ActiveSupport::IsolatedExecutionState.key?(:ractor_rails_shim_i18n_miss)
+          v = RactorRailsShim.storage[:ractor_rails_shim_i18n_miss]
+          return v if RactorRailsShim.storage.key?(:ractor_rails_shim_i18n_miss)
           if Ractor.main?
             cv = defined?(@@missing_interpolation_argument_handler) ? @@missing_interpolation_argument_handler : lambda do |missing_key, provided_hash, string|
                 raise ::I18n::MissingInterpolationArgument.new(missing_key, provided_hash, string)
               end
-            ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_miss] = cv
+            RactorRailsShim.storage[:ractor_rails_shim_i18n_miss] = cv
             cv
           else
             lambda do |missing_key, provided_hash, string|
@@ -539,23 +539,23 @@ module RactorRailsShim
           end
         end
         def missing_interpolation_argument_handler=(handler)
-          ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_miss] = handler
+          RactorRailsShim.storage[:ractor_rails_shim_i18n_miss] = handler
           @@missing_interpolation_argument_handler = handler if Ractor.main?
           handler
         end
         def interpolation_patterns
-          v = ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_ip]
-          return v if ActiveSupport::IsolatedExecutionState.key?(:ractor_rails_shim_i18n_ip)
+          v = RactorRailsShim.storage[:ractor_rails_shim_i18n_ip]
+          return v if RactorRailsShim.storage.key?(:ractor_rails_shim_i18n_ip)
           if Ractor.main?
             cv = defined?(@@interpolation_patterns) ? @@interpolation_patterns : ::I18n::DEFAULT_INTERPOLATION_PATTERNS.dup
-            ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_ip] = cv
+            RactorRailsShim.storage[:ractor_rails_shim_i18n_ip] = cv
             cv
           else
             ::I18n::DEFAULT_INTERPOLATION_PATTERNS
           end
         end
         def interpolation_patterns=(patterns)
-          ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_ip] = patterns
+          RactorRailsShim.storage[:ractor_rails_shim_i18n_ip] = patterns
           @@interpolation_patterns = patterns if Ractor.main?
           patterns
         end
@@ -598,17 +598,17 @@ module RactorRailsShim
         fb_key_str = fb_key.inspect
         i18n.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
           def fallbacks
-            v = ActiveSupport::IsolatedExecutionState[#{fb_key_str}]
-            return v if ActiveSupport::IsolatedExecutionState.key?(#{fb_key_str})
+            v = RactorRailsShim.storage[#{fb_key_str}]
+            return v if RactorRailsShim.storage.key?(#{fb_key_str})
             if Ractor.main? && defined?(@@fallbacks)
               cv = @@fallbacks
               if cv
-                ActiveSupport::IsolatedExecutionState[#{fb_key_str}] = cv
+                RactorRailsShim.storage[#{fb_key_str}] = cv
                 return cv
               end
             end
             built = I18n::Locale::Fallbacks.new
-            ActiveSupport::IsolatedExecutionState[#{fb_key_str}] = built
+            RactorRailsShim.storage[#{fb_key_str}] = built
             built
           end
         RUBY
@@ -621,14 +621,14 @@ module RactorRailsShim
           tag_key_str = tag_key.inspect
           tag.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
             def implementation
-              v = ActiveSupport::IsolatedExecutionState[#{tag_key_str}]
-              return v if ActiveSupport::IsolatedExecutionState.key?(#{tag_key_str})
+              v = RactorRailsShim.storage[#{tag_key_str}]
+              return v if RactorRailsShim.storage.key?(#{tag_key_str})
               if Ractor.main? && defined?(@@implementation)
                 cv = @@implementation
-                ActiveSupport::IsolatedExecutionState[#{tag_key_str}] = cv
+                RactorRailsShim.storage[#{tag_key_str}] = cv
                 return cv
               end
-              ActiveSupport::IsolatedExecutionState[#{tag_key_str}] = I18n::Locale::Tag::Simple
+              RactorRailsShim.storage[#{tag_key_str}] = I18n::Locale::Tag::Simple
               I18n::Locale::Tag::Simple
             end
           RUBY
@@ -644,8 +644,8 @@ module RactorRailsShim
           nk_key_str = nk_key.inspect
           ::I18n::Base.module_eval <<-RUBY, __FILE__, __LINE__ + 1
             def normalize_key(key, separator)
-              cache = ActiveSupport::IsolatedExecutionState[#{nk_key_str}]
-              cache ||= (ActiveSupport::IsolatedExecutionState[#{nk_key_str}] = ::I18n.new_double_nested_cache)
+              cache = RactorRailsShim.storage[#{nk_key_str}]
+              cache ||= (RactorRailsShim.storage[#{nk_key_str}] = ::I18n.new_double_nested_cache)
               cache[separator][key] ||=
                 case key
                 when Array
@@ -679,10 +679,10 @@ module RactorRailsShim
           rkp_key_str = rkp_key.inspect
           ::I18n.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
             def reserved_keys_pattern
-              v = ActiveSupport::IsolatedExecutionState[#{rkp_key_str}]
+              v = RactorRailsShim.storage[#{rkp_key_str}]
               return v if v
               pat = /(?<!%)%\\{(#{::I18n::RESERVED_KEYS.join("|")})\\}/
-              ActiveSupport::IsolatedExecutionState[#{rkp_key_str}] = pat
+              RactorRailsShim.storage[#{rkp_key_str}] = pat
               pat
             end
           RUBY
@@ -738,7 +738,7 @@ module RactorRailsShim
       ::I18n.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def interpolate_hash(string, values)
           patterns = config.interpolation_patterns
-          cache = (ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_i18n_interp_cache] ||= {})
+          cache = (RactorRailsShim.storage[:ractor_rails_shim_i18n_interp_cache] ||= {})
           pattern = cache[patterns] ||= ::Regexp.union(patterns)
           interpolated = false
 
@@ -780,15 +780,15 @@ module RactorRailsShim
       nest_key_str = nest_key.inspect
       ec.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def after_change_callbacks
-          v = ActiveSupport::IsolatedExecutionState[#{acb_key_str}]
-          return v if ActiveSupport::IsolatedExecutionState.key?(#{acb_key_str})
+          v = RactorRailsShim.storage[#{acb_key_str}]
+          return v if RactorRailsShim.storage.key?(#{acb_key_str})
           if Ractor.main? && instance_variable_defined?(:@after_change_callbacks)
             v = @after_change_callbacks
-            ActiveSupport::IsolatedExecutionState[#{acb_key_str}] = v
+            RactorRailsShim.storage[#{acb_key_str}] = v
             v
           else
             arr = []
-            ActiveSupport::IsolatedExecutionState[#{acb_key_str}] = arr
+            RactorRailsShim.storage[#{acb_key_str}] = arr
             arr
           end
         end
@@ -796,18 +796,18 @@ module RactorRailsShim
           after_change_callbacks << block
         end
         def nestable
-          v = ActiveSupport::IsolatedExecutionState[#{nest_key_str}]
-          return v if ActiveSupport::IsolatedExecutionState.key?(#{nest_key_str})
+          v = RactorRailsShim.storage[#{nest_key_str}]
+          return v if RactorRailsShim.storage.key?(#{nest_key_str})
           if Ractor.main? && instance_variable_defined?(:@nestable)
             v = @nestable
-            ActiveSupport::IsolatedExecutionState[#{nest_key_str}] = v
+            RactorRailsShim.storage[#{nest_key_str}] = v
             v
           else
             false
           end
         end
         def nestable=(val)
-          ActiveSupport::IsolatedExecutionState[#{nest_key_str}] = val
+          RactorRailsShim.storage[#{nest_key_str}] = val
           @nestable = val if Ractor.main?
           val
         end
@@ -854,8 +854,8 @@ module RactorRailsShim
       key_str = key.inspect
       ls.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def logger
-          v = ActiveSupport::IsolatedExecutionState[#{key_str}]
-          return v if ActiveSupport::IsolatedExecutionState.key?(#{key_str})
+          v = RactorRailsShim.storage[#{key_str}]
+          return v if RactorRailsShim.storage.key?(#{key_str})
           if Ractor.main? && instance_variable_defined?(:@logger)
             @logger
           elsif defined?(::Rails) && ::Rails.respond_to?(:logger)
@@ -864,7 +864,7 @@ module RactorRailsShim
         end
 
         def logger=(val)
-          ActiveSupport::IsolatedExecutionState[#{key_str}] = val
+          RactorRailsShim.storage[#{key_str}] = val
         end
       RUBY
     end
@@ -889,15 +889,15 @@ module RactorRailsShim
       key_str = key.inspect
       rl.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def check!
-          v = ActiveSupport::IsolatedExecutionState[#{key_str}]
-          return v if ActiveSupport::IsolatedExecutionState.key?(#{key_str})
+          v = RactorRailsShim.storage[#{key_str}]
+          return v if RactorRailsShim.storage.key?(#{key_str})
           result = check.call
-          ActiveSupport::IsolatedExecutionState[#{key_str}] = result
+          RactorRailsShim.storage[#{key_str}] = result
           result
         end
 
         def reloaded!
-          ActiveSupport::IsolatedExecutionState[#{key_str}] = false
+          RactorRailsShim.storage[#{key_str}] = false
         end
       RUBY
     end
@@ -941,7 +941,7 @@ module RactorRailsShim
       return unless defined?(::ActiveSupport::CachingKeyGenerator)
       ::ActiveSupport::CachingKeyGenerator.class_eval <<-RUBY, __FILE__, __LINE__ + 1
         def generate_key(*args)
-          store = (ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_caching_key_generator] ||= {})
+          store = (RactorRailsShim.storage[:ractor_rails_shim_caching_key_generator] ||= {})
           key = "\#{object_id}|\#{args.join("|")}"
           store.fetch(key) { store[key] = @key_generator.generate_key(*args) }
         end
@@ -967,7 +967,7 @@ module RactorRailsShim
           if Ractor.main?
             SERIALIZERS.fetch(format)
           else
-            (ActiveSupport::IsolatedExecutionState[:ractor_rails_shim_serializers] ||= {
+            (RactorRailsShim.storage[:ractor_rails_shim_serializers] ||= {
               marshal: ::ActiveSupport::Messages::SerializerWithFallback::MarshalWithFallback,
               json: ::ActiveSupport::Messages::SerializerWithFallback::JsonWithFallback,
               json_allow_marshal: ::ActiveSupport::Messages::SerializerWithFallback::JsonWithFallbackAllowMarshal,
@@ -1045,13 +1045,13 @@ module RactorRailsShim
           RactorRailsShim::JSON_ENCODER_CLASS
         end
         def encode_without_options(value)
-          encoder = ActiveSupport::IsolatedExecutionState[#{ec_key_str}]
-          encoder ||= (ActiveSupport::IsolatedExecutionState[#{ec_key_str}] = RactorRailsShim::JSON_ENCODER_CLASS.new)
+          encoder = RactorRailsShim.storage[#{ec_key_str}]
+          encoder ||= (RactorRailsShim.storage[#{ec_key_str}] = RactorRailsShim::JSON_ENCODER_CLASS.new)
           encoder.encode(value)
         end
         def encode_without_escape(value)
-          encoder = ActiveSupport::IsolatedExecutionState[#{ecn_key_str}]
-          encoder ||= (ActiveSupport::IsolatedExecutionState[#{ecn_key_str}] = RactorRailsShim::JSON_ENCODER_CLASS.new(escape: false))
+          encoder = RactorRailsShim.storage[#{ecn_key_str}]
+          encoder ||= (RactorRailsShim.storage[#{ecn_key_str}] = RactorRailsShim::JSON_ENCODER_CLASS.new(escape: false))
           encoder.encode(value)
         end
       RUBY

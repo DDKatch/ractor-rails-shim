@@ -68,7 +68,7 @@ module RactorRailsShim
 
           # Seed the main Ractor's IES slot with the default. Only seed in
           # main — workers start nil and set their own value via the writer.
-          ActiveSupport::IsolatedExecutionState[key] = value if Ractor.main?
+          RactorRailsShim.storage[key] = value if Ractor.main?
 
           # Also store in CLASS_ATTR_VALUES so the reader can fall back to it
           # in the MAIN ractor on non-boot threads. IES is thread-local: Puma's
@@ -141,7 +141,7 @@ module RactorRailsShim
             # Symbol per ancestor on EVERY read — the dominant allocation source
             # for GET requests. Replace it with a direct literal-key lookup
             # (zero per-read allocation). The per-Ractor value already lives in
-            # ActiveSupport::IsolatedExecutionState[key]; SHAREABLE_FALLBACK[key]
+            # RactorRailsShim.storage[key]; SHAREABLE_FALLBACK[key]
             # is the frozen, shared default built at prepare_for_ractors! time.
             target.module_eval RactorRailsShim._class_attr_ractor_methods(namespaced_name, key_str),
                                 __FILE__, __LINE__ + 1
@@ -193,15 +193,15 @@ module RactorRailsShim
     def _class_attr_ractor_methods(method_name, key_str)
       <<~RUBY
         def #{method_name}
-          v = ActiveSupport::IsolatedExecutionState[#{key_str}]
-          return v if ActiveSupport::IsolatedExecutionState.key?(#{key_str})
+          v = RactorRailsShim.storage[#{key_str}]
+          return v if RactorRailsShim.storage.key?(#{key_str})
           fb = RactorRailsShim::SHAREABLE_FALLBACK[#{key_str}]
           return fb unless fb.nil?
           RactorRailsShim::CLASS_ATTR_VALUES[#{key_str}] if Ractor.main?
         end
 
         def #{method_name}=(new_value)
-          ActiveSupport::IsolatedExecutionState[#{key_str}] = new_value
+          RactorRailsShim.storage[#{key_str}] = new_value
           RactorRailsShim::CLASS_ATTR_VALUES[#{key_str}] = new_value if Ractor.main?
           new_value
         end

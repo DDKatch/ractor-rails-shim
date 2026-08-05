@@ -56,8 +56,8 @@ module RactorRailsShim
       k_key_str = k_key.inspect
       ::Kaminari.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def config
-          v = ActiveSupport::IsolatedExecutionState[#{k_key_str}]
-          return v if ActiveSupport::IsolatedExecutionState.key?(#{k_key_str})
+          v = RactorRailsShim.storage[#{k_key_str}]
+          return v if RactorRailsShim.storage.key?(#{k_key_str})
           if Ractor.main? && instance_variable_defined?(:@_config)
             @_config
           else
@@ -66,7 +66,7 @@ module RactorRailsShim
         end
 
         def config=(val)
-          ActiveSupport::IsolatedExecutionState[#{k_key_str}] = val
+          RactorRailsShim.storage[#{k_key_str}] = val
         end
       RUBY
 

@@ -65,8 +65,8 @@ module RactorRailsShim
             # the default) at prepare time.
             singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
               def #{sym}
-                v = ActiveSupport::IsolatedExecutionState[#{key_str}]
-                return v if ActiveSupport::IsolatedExecutionState.key?(#{key_str})
+                v = RactorRailsShim.storage[#{key_str}]
+                return v if RactorRailsShim.storage.key?(#{key_str})
 
                 if #{!!shareable}
                   if class_variable_defined?(#{cv_str})
@@ -91,7 +91,7 @@ module RactorRailsShim
               end
 
               def #{sym}=(val)
-                ActiveSupport::IsolatedExecutionState[#{key_str}] = val
+                RactorRailsShim.storage[#{key_str}] = val
                 class_variable_set(#{cv_str}, val) if Ractor.main?
                 val
               end
@@ -109,8 +109,8 @@ module RactorRailsShim
             if instance_reader && instance_accessor
               module_eval <<-RUBY, __FILE__, __LINE__ + 1
                 def #{sym}
-                  v = ActiveSupport::IsolatedExecutionState[#{key_str}]
-                  return v if ActiveSupport::IsolatedExecutionState.key?(#{key_str})
+                  v = RactorRailsShim.storage[#{key_str}]
+                  return v if RactorRailsShim.storage.key?(#{key_str})
                   if Ractor.main?
                     self.class.class_variable_defined?(#{cv_str}) ? self.class.class_variable_get(#{cv_str}) : nil
                   else
@@ -122,7 +122,7 @@ module RactorRailsShim
             if instance_writer && instance_accessor
               module_eval <<-RUBY, __FILE__, __LINE__ + 1
                 def #{sym}=(val)
-                  ActiveSupport::IsolatedExecutionState[#{key_str}] = val
+                  RactorRailsShim.storage[#{key_str}] = val
                   self.class.class_variable_set(#{cv_str}, val) if Ractor.main? && self.class.class_variable_defined?(#{cv_str})
                   val
                 end
