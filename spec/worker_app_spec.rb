@@ -62,4 +62,58 @@ class WorkerAppSpec < Minitest::Spec
     assert_equal 200, status
     assert_equal "ok", body.each.to_a.join
   end
+
+  # --- Issue #13, Step 13.4: WorkerAppFactory extraction ---
+
+  it "RactorRailsShim::WorkerAppFactory is a Module" do
+    assert_kind_of Module, RactorRailsShim::WorkerAppFactory
+  end
+
+  it "RactorRailsShim::WorkerApp is a Class (moved to its own file)" do
+    assert_kind_of Class, RactorRailsShim::WorkerApp
+  end
+
+  it "WorkerAppFactory.build returns a frozen, shareable WorkerApp" do
+    app = FrozenApp.new
+    Ractor.make_shareable(app)
+    wa = RactorRailsShim::WorkerAppFactory.build(app)
+    assert wa.frozen?, "factory-built WorkerApp should be frozen"
+    assert Ractor.shareable?(wa), "factory-built WorkerApp should be shareable"
+    assert_kind_of RactorRailsShim::WorkerApp, wa
+  end
+
+  it "WorkerAppFactory.capture_constants returns a frozen Hash (no Rails → empty)" do
+    # Without Rails defined, capture returns an empty frozen Hash.
+    result = RactorRailsShim::WorkerAppFactory.capture_constants
+    assert_kind_of Hash, result
+    assert result.frozen?
+  end
+
+  it "RactorRailsShim.worker_app! delegates to WorkerAppFactory.build" do
+    delegated = false
+    original = RactorRailsShim::WorkerAppFactory.method(:build)
+    RactorRailsShim::WorkerAppFactory.define_singleton_method(:build) do |app|
+      delegated = true
+      original.call(app)
+    end
+    app = FrozenApp.new
+    Ractor.make_shareable(app)
+    RactorRailsShim.worker_app!(app)
+    assert delegated
+  ensure
+    RactorRailsShim::WorkerAppFactory.define_singleton_method(:build, original)
+  end
+
+  it "RactorRailsShim.capture_app_constants delegates to WorkerAppFactory.capture_constants" do
+    delegated = false
+    original = RactorRailsShim::WorkerAppFactory.method(:capture_constants)
+    RactorRailsShim::WorkerAppFactory.define_singleton_method(:capture_constants) do
+      delegated = true
+      original.call
+    end
+    RactorRailsShim.capture_app_constants
+    assert delegated
+  ensure
+    RactorRailsShim::WorkerAppFactory.define_singleton_method(:capture_constants, original)
+  end
 end

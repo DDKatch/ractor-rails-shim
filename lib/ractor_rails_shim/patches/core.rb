@@ -446,61 +446,23 @@ module RactorRailsShim
     # raises NameError. Rebinding the captured names fixes it without
     # re-running autoloading (which is itself impossible in a worker, since
     # `Zeitwerk::Loader.new` raises IsolationError off the main Ractor).
+    # Capture a frozen name -> object map for every constant the
+    # application's Zeitwerk loaders manage. Delegates to
+    # WorkerAppFactory.capture_constants (extracted Issue #13, Step 13.4;
+    # WorkerApp moved to ractor_rails_shim/worker_app.rb). See
+    # WorkerAppFactory for the contract (Zeitwerk introspection, the
+    # non-Zeitwerk guard, and why the captured map is needed for worker
+    # constant rebinding).
     def capture_app_constants
-      map = {}
-      unless defined?(::Rails) && Rails.respond_to?(:autoloaders)
-        return map.freeze
-      end
-      autoloaders = Rails.autoloaders
-      # Guard against non-Zeitwerk configurations: Rails.autoloaders may be
-      # present (the method exists) but not expose `main`/`once` (e.g. classic
-      # loader mode, or `config.autoloaders = false` returning a null object).
-      # `main`/`once` may also individually be nil when only one loader is
-      # configured. Filter to the loaders that actually expose
-      # `all_expected_cpaths` (the Zeitwerk introspection API the capture
-      # relies on).
-      loaders =
-        if autoloaders.respond_to?(:main) && autoloaders.respond_to?(:once)
-          [autoloaders.main, autoloaders.once]
-        elsif autoloaders.respond_to?(:each)
-          autoloaders.to_a
-        else
-          []
-        end
-      loaders.each do |loader|
-        next unless loader && loader.respond_to?(:all_expected_cpaths)
-        begin
-          loader.all_expected_cpaths.values.each do |cpath|
-            obj = Object.const_get(cpath) rescue next
-            begin
-              Ractor.make_shareable(obj) unless Ractor.shareable?(obj)
-            rescue StandardError
-              next
-            end
-            map[cpath] = obj if Ractor.shareable?(obj)
-          end
-        rescue StandardError => e
-          warn "[ractor_rails_shim] capture_app_constants: #{e.class}: #{e.message}"
-        end
-      end
-      map.freeze
+      WorkerAppFactory.capture_constants
     end
 
-    # Build the shareable Rack app handed to kino. Captures the application's
-    # constants in the main Ractor and wraps the frozen, shareable app in a
-    # WorkerApp that rebinds those constants (and initializes the worker's
-    # ActiveRecord connection) on the first request served by each worker
-    # Ractor. Returns a shareable WorkerApp instance — frozen and
-    # `Ractor.make_shareable`'d — so it can be passed directly to
-    # `Ractor.new(worker_app!) { |a| a.call(env) }` without the caller having
-    # to know the shareability contract.
+    # Build the shareable Rack app handed to kino. Delegates to
+    # WorkerAppFactory.build (extracted Issue #13, Step 13.4). See
+    # WorkerAppFactory for the shareability contract (returns a frozen,
+    # Ractor.shareable? WorkerApp instance).
     def worker_app!(frozen_app)
-      bindings = capture_app_constants
-      wa = WorkerApp.new(frozen_app, bindings)
-      wa.freeze
-      # Ractor.make_shareable returns the shareable object, so this is the
-      # factory's return value — no separate `wa` line needed (Issue #12).
-      Ractor.make_shareable(wa)
+      WorkerAppFactory.build(frozen_app)
     end
 
     # See patches/active_model_attribute.rb. When the frozen `:ractor` graph is
@@ -639,76 +601,6 @@ module RactorRailsShim
     # and the naming-convention spec.
     def _warm_active_record_class_caches!
       RactorRailsShim::Freezers::CacheWarmer.call
-    end
-  end
-  # A shareable Rack wrapper that performs per-worker initialization lazily,
-  # inside the worker Ractor's request path (kino's :ractor mode has no
-  # per-worker init hook). On the first request served by a worker it:
-  #
-  #   1. rebinds the captured application constants into that worker's
-  #      namespace (so bare `Post` etc. resolve), then
-  #   2. ensures the worker's ActiveRecord connection handler is initialized.
-  #
-  # The wrapper holds only shareable state (@app, @bindings), so the instance
-  # is `Ractor.make_shareable`'d by `worker_app!` before being handed to worker
-  # Ractors. `Ractor.current` provides per-worker storage for the one-time
-  # guard, avoiding any top-level constant reference.
-  class WorkerApp
-    def initialize(app, bindings)
-      @app = app
-      @bindings = bindings
-    end
-
-    def call(env)
-      setup_once!
-      @app.call(env)
-    end
-
-    private
-
-    def setup_once!
-      # All threads inside a worker Ractor share Ractor.current, so a single
-      # per-Ractor mutex serializes the one-time init across the worker's
-      # threads. `Ractor.current[:key] ||= Thread::Mutex.new` is NOT atomic
-      # (read-then-write; under a widened window N racing threads produce N
-      # distinct mutexes — verified by spec). The race is benign ONLY because
-      # the gated work is idempotent:
-      #   - `rebind_constants` guards each `const_set` with
-      #     `unless const_defined?`, so a redundant call is a no-op.
-      #   - `init_worker_ar_connections!` returns early if the connection
-      #     handler is already established.
-      # A per-Ractor mutex can't be pre-created (it isn't Ractor-shareable, so
-      # it can't travel from main to workers), and a global cross-Ractor lock
-      # is impossible (Mutex isn't shareable either). The idempotency contract
-      # is therefore load-bearing: if either step ever loses idempotency,
-      # redundant calls under the race would become incorrect. The spec
-      # `rebind_constants is idempotent under repeated calls` pins this.
-      m = Ractor.current[:rrs_worker_mutex] ||= Thread::Mutex.new
-      m.synchronize do
-        return if Ractor.current[:rrs_worker_ready]
-        rebind_constants
-        RactorRailsShim.init_worker_ar_connections! if defined?(RactorRailsShim)
-        Ractor.current[:rrs_worker_ready] = true
-      end
-    end
-
-    def rebind_constants
-      @bindings.each do |cpath, obj|
-        parent = Object
-        parts = cpath.split("::")
-        parts[0...-1].each do |p|
-          # Re-fetch the parent each iteration so concurrent setup (multiple
-          # threads racing through setup_once! on the same worker) cannot
-          # clobber a namespace module out from under us.
-          parent = if parent.const_defined?(p, false)
-                     parent.const_get(p, false)
-                   else
-                     parent.const_set(p, Module.new)
-                   end
-        end
-        leaf = parts.last
-        parent.const_set(leaf, obj) unless parent.const_defined?(leaf, false)
-      end
     end
   end
 end

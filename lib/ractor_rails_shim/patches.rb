@@ -42,6 +42,8 @@ require_relative "freezers"
 require_relative "constant_shareabilizer"
 require_relative "shareability_traversal"
 require_relative "fallback_builder"
+require_relative "worker_app"
+require_relative "worker_app_factory"
 
 # Naming convention for the patch methods on RactorRailsShim's singleton class:
 #
