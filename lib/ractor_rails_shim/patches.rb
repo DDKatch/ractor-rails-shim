@@ -91,6 +91,7 @@ require_relative "installer"
 # (core.rb defines the module skeleton + constants that others reference).
 require_relative "patches/core"
 require_relative "patches/callables"
+require_relative "patches/hash_compute_if_absent"
 require_relative "patches/make_shareable"
 require_relative "patches/rails_module"
 require_relative "patches/mattr_accessor"
