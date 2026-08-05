@@ -35,7 +35,7 @@ module RactorRailsShim
           alias_method :_rrs_orig_view_url_for, :url_for
           def url_for(options = nil)
             _rrs_orig_view_url_for(options)
-          rescue => e
+          rescue StandardError => e
             raise unless e.message.include?("un-shareable Proc")
             if options.is_a?(Hash) || options.is_a?(ActionController::Parameters)
               full_url_for(options)
@@ -53,7 +53,7 @@ module RactorRailsShim
           alias_method :_rrs_orig_full_url_for, :full_url_for
           def full_url_for(options = nil)
             _rrs_orig_full_url_for(options)
-          rescue => e
+          rescue StandardError => e
             raise unless e.message.include?("un-shareable Proc")
             if options.is_a?(Hash) || options.is_a?(ActionController::Parameters)
               route_name = options.delete :use_route

@@ -582,7 +582,7 @@ module RactorRailsShim
                     (::I18n.respond_to?(:load_path) && ::I18n.load_path) || []
           shareable_lp = Ractor.make_shareable(Array(raw_lp).dup) rescue Array(raw_lp).map(&:to_s).freeze
           const_set(:I18N_LOAD_PATH, shareable_lp) unless RactorRailsShim.const_defined?(:I18N_LOAD_PATH)
-        rescue
+        rescue StandardError
           nil
         end
       end
@@ -1068,7 +1068,7 @@ module RactorRailsShim
           unless Ractor.shareable?(v)
             begin
               enc.const_set(name, Ractor.make_shareable(v))
-            rescue
+            rescue StandardError
               nil
             end
           end

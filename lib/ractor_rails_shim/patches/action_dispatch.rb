@@ -268,7 +268,7 @@ module RactorRailsShim
           begin
             v = utu.const_get(c)
             Ractor.make_shareable(v) if v && !Ractor.shareable?(v)
-          rescue
+          rescue StandardError
             nil
           end
         end
@@ -279,7 +279,7 @@ module RactorRailsShim
       # Freeze it in place so the constant becomes shareable.
       begin
         Ractor.make_shareable(rs.const_get(:RESERVED_OPTIONS))
-      rescue
+      rescue StandardError
         nil
       end
       # Warm the lazy (memoized) caches on every Journey route and its
@@ -326,7 +326,7 @@ module RactorRailsShim
             $VERBOSE = nil
             RactorRailsShim.const_set(:SHAREABLE_ROUTES, routes) unless RactorRailsShim.const_defined?(:SHAREABLE_ROUTES)
           end
-        rescue
+        rescue StandardError
           nil
         ensure
           $VERBOSE = verbose if defined?(verbose)
@@ -386,14 +386,14 @@ module RactorRailsShim
         def call(t, method_name, args, inner_options, url_strategy)
           begin
             controller_options = t.url_options
-          rescue
+          rescue StandardError
             controller_options = RactorRailsShim::URL_OPTIONS_DEFAULTS || {}
           end
           options = controller_options.merge @options
           hash = handle_positional_args(controller_options, inner_options || {}, args, options, @segment_keys)
           begin
             routes = t._routes
-          rescue
+          rescue StandardError
             routes = RactorRailsShim::SHAREABLE_ROUTES
           end
           routes.url_for(hash, route_name, url_strategy, method_name)
@@ -478,7 +478,7 @@ module RactorRailsShim
           verbose = $VERBOSE
           $VERBOSE = nil
           RactorRailsShim.const_set(:URL_HELPERS, Ractor.make_shareable(RactorRailsShim::URL_HELPERS)) unless Ractor.shareable?(RactorRailsShim::URL_HELPERS)
-        rescue
+        rescue StandardError
           nil
         ensure
           $VERBOSE = verbose if defined?(verbose)
@@ -504,7 +504,7 @@ module RactorRailsShim
             defaults = defaults.dup.freeze if defaults.respond_to?(:freeze)
             RactorRailsShim.const_set(:URL_OPTIONS_DEFAULTS, Ractor.make_shareable(defaults))
           end
-        rescue
+        rescue StandardError
           nil
         end
       end
@@ -522,7 +522,7 @@ module RactorRailsShim
                   opts[:port] = req.port if opts[:port].nil? && req.respond_to?(:port)
                   opts[:_recall] = req.path_parameters if req.respond_to?(:path_parameters)
                 end
-              rescue
+              rescue StandardError
                 nil
               end
               opts.freeze
@@ -726,7 +726,7 @@ module RactorRailsShim
           p.send(:offsets)
           p.to_regexp
           p.requirements_for_missing_keys_check if p.respond_to?(:requirements_for_missing_keys_check)
-        rescue
+        rescue StandardError
           # best-effort — a pattern we can't warm will fall back to its own
           # (non-frozen) copy if one exists; ignore unusual shapes.
         end
@@ -762,7 +762,7 @@ module RactorRailsShim
           routes.simulator
           _warm_path_patterns!(routes)
         end
-      rescue => e
+      rescue StandardError => e
         # best-effort
       end
     end
@@ -785,7 +785,7 @@ module RactorRailsShim
         c.freeze
         _swallow("make mime negotiation constant shareable") { ::Ractor.make_shareable(c) }
       end
-    rescue => e
+    rescue StandardError => e
       warn "[ractor-rails-shim] _freeze_mime_negotiation!: #{e.class}: #{e.message}"
     end
 

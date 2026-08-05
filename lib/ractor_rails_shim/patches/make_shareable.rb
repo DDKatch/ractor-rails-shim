@@ -148,7 +148,7 @@ module RactorRailsShim
         seen[o.object_id] = true
         begin
           o.instance_variables.each do |iv|
-            begin; v = o.instance_variable_get(iv); rescue; next; end
+            begin; v = o.instance_variable_get(iv); rescue StandardError; next; end
             if iv == :@logger
               # Replace the app-instance / config logger with the no-op (so the
               # frozen app graph holds no live IO). Best-effort; funnel through
@@ -168,7 +168,7 @@ module RactorRailsShim
               stack << v
             end
           end
-        rescue => e
+        rescue StandardError => e
           # BasicObject or frozen objects don't support instance_variables
         end
         if o.is_a?(Array); o.each { |e| stack << e if e }
@@ -231,7 +231,7 @@ module RactorRailsShim
             if owner_mod && owner_mod.class_variable_defined?("@@#{attr_name}")
               val = owner_mod.class_variable_get("@@#{attr_name}")
             end
-          rescue => e
+          rescue StandardError => e
             # ignore — best-effort read
           end
         end
@@ -242,7 +242,7 @@ module RactorRailsShim
             if owner_mod && owner_mod.instance_variable_defined?("@#{attr_name}")
               val = owner_mod.instance_variable_get("@#{attr_name}")
             end
-          rescue => e
+          rescue StandardError => e
             # ignore — best-effort read
           end
         end
@@ -253,7 +253,7 @@ module RactorRailsShim
         if val.nil? && owner_name == "Rails" && defined?(::Rails)
           begin
             val = ::Rails.public_send(attr_name) if ::Rails.respond_to?(attr_name, false)
-          rescue => e
+          rescue StandardError => e
             # ignore — best-effort read
           end
         end
@@ -310,7 +310,7 @@ module RactorRailsShim
         _replace_locks_and_concurrent_maps!(val)
         Ractor.make_shareable(val)
         val
-      rescue => e
+      rescue StandardError => e
         unless default
           warn "ractor-rails-shim: could not make attribute " \
                "#{owner_name}##{attr_name} shareable (#{e.class}: #{e.message[0,80]}); workers will fall back to default or nil"
@@ -465,10 +465,10 @@ module RactorRailsShim
     def _each_ivar_and_child(o, path)
       begin
         o.instance_variables.each do |iv|
-          begin; v = o.instance_variable_get(iv); rescue; next; end
+          begin; v = o.instance_variable_get(iv); rescue StandardError; next; end
           yield v, "#{path}.#{iv}", iv
         end
-      rescue => e
+      rescue StandardError => e
         # BasicObject or frozen objects don't support instance_variables
       end
       if o.is_a?(Hash)

@@ -116,12 +116,12 @@ module RactorRailsShim
         next unless block
         begin
           value = block.call
-        rescue
+        rescue StandardError
           next
         end
         begin
           value = Ractor.make_shareable(value)
-        rescue
+        rescue StandardError
           value = value.dup.freeze rescue value
         end
         const_name = "SHIM_DEFAULT_#{name.upcase}_VALUE"
@@ -173,7 +173,7 @@ module RactorRailsShim
                 ctrl.respond_to?(:_helpers) ? ctrl._helpers : nil
               )
               registry[ctrl] = vcc if vcc
-            rescue => e
+            rescue StandardError => e
               # skip controllers that can't build (e.g. abstract)
             end
           end
@@ -182,7 +182,7 @@ module RactorRailsShim
           begin
             Ractor.make_shareable(registry)
             self._view_context_registry = registry
-          rescue => e
+          rescue StandardError => e
             # If the registry can't be made shareable, leave it — workers fall
             # back to the empty-cache base.
           end

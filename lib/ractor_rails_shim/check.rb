@@ -40,13 +40,13 @@ module RactorRailsShim
               next if ivar == :@_sandbox # Rails internal, ignored
               begin
                 val = mod.instance_variable_get(ivar)
-              rescue => e
+              rescue StandardError => e
                 next
               end
 
               shareable = begin
                 Ractor.shareable?(val)
-              rescue => e
+              rescue StandardError => e
                 false
               end
               next if shareable
@@ -73,13 +73,13 @@ module RactorRailsShim
               mod.class_variables.each do |cvar|
                 begin
                   val = mod.class_variable_get(cvar)
-                rescue => e
+                rescue StandardError => e
                   next
                 end
 
                 shareable = begin
                   Ractor.shareable?(val)
-                rescue => e
+                rescue StandardError => e
                   false
                 end
                 next if shareable
@@ -98,7 +98,7 @@ module RactorRailsShim
                   kind: :cvar
                 )
               end
-            rescue => e
+            rescue StandardError => e
               # Some modules raise on class_variables enumeration; skip.
               next
             end
@@ -192,7 +192,7 @@ module RactorRailsShim
             end
           end
           nil
-        rescue => e
+        rescue StandardError => e
           nil
         end
       end

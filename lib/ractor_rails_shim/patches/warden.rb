@@ -94,7 +94,7 @@ module RactorRailsShim
           strat = ::Warden::Strategies.instance_variable_get(:@strategies)
           strat = Ractor.make_shareable(strat) if strat && !Ractor.shareable?(strat)
           RactorRailsShim.const_set(:SHAREABLE_WARDEN_STRATEGIES, strat) unless RactorRailsShim.const_defined?(:SHAREABLE_WARDEN_STRATEGIES)
-        rescue
+        rescue StandardError
           nil
         end
       end
@@ -179,7 +179,7 @@ module RactorRailsShim
       mock_req = Struct.new(:env).new(mock_env)
       begin
         proc_obj.call(mock_req)
-      rescue
+      rescue StandardError
       end
       mapping = mock_env["devise.mapping"]
       if mapping

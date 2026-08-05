@@ -61,7 +61,7 @@ module RactorRailsShim
       ac.descendants.each do |klass|
         begin
           registry[klass] = klass.instance_variable_get(:@abstract) if klass.instance_variable_defined?(:@abstract)
-        rescue => e
+        rescue StandardError => e
           # ignore — best-effort
         end
       end

@@ -200,7 +200,7 @@ module RactorRailsShim
         snapshot.freeze
         Ractor.make_shareable(snapshot)
         _reassign_shareable_const(:AR_CONFIGURATIONS_SNAPSHOT, snapshot)
-      rescue => e
+      rescue StandardError => e
         # Best-effort; if we can't capture configs, workers won't be able
         # to auto-init connections. They can call init_worker_ar_connections!
         # manually with explicit configs.
@@ -253,7 +253,7 @@ module RactorRailsShim
               owner_name: ::ActiveRecord::Base,
               role: ::ActiveRecord::Base.current_role || :writing,
               shard: ::ActiveRecord::Base.current_shard || :default)
-          rescue => e
+          rescue StandardError => e
             # Best-effort: if one connection fails, continue with others.
           end
         end
@@ -365,7 +365,7 @@ module RactorRailsShim
         begin
           klass.instance_variable_set(:@relation_delegate_cache,
             Ractor.make_shareable(cache))
-        rescue => e
+        rescue StandardError => e
           # Best-effort: if a cache holds an unshareable delegate class we
           # can't freeze, skip it. The worker will then hit a clear error on
           # the first relation method and we can patch that class specifically.
@@ -420,7 +420,7 @@ module RactorRailsShim
                  klass.page(1).to_a rescue nil
                end },
         ]
-        warm_calls.each { |c| begin; c.call; rescue => e; end }
+        warm_calls.each { |c| begin; c.call; rescue StandardError => e; end }
 
         # Make every class ivar shareable and write it back. The class is
         # still mutable here (in main), so the write is allowed.
@@ -433,11 +433,11 @@ module RactorRailsShim
             next unless replacement
             begin
               klass.instance_variable_set(iv, replacement)
-            rescue => e
+            rescue StandardError => e
               # frozen owner — leave as-is
             end
           end
-        rescue => e
+        rescue StandardError => e
           # BasicObject / frozen owners
         end
       end
@@ -455,7 +455,7 @@ module RactorRailsShim
         end
         shareable = Ractor.make_shareable(pk_map)
         _reassign_shareable_const(:AR_PRIMARY_KEYS_SHAREABLE, shareable)
-      rescue => e
+      rescue StandardError => e
         # best-effort
       end
     end
@@ -473,13 +473,13 @@ module RactorRailsShim
         h = {}
         begin
           v.each_pair { |k, val| h[k] = val }
-        rescue => e
+        rescue StandardError => e
         end
         Ractor.make_shareable(h)
       else
         begin
           Ractor.make_shareable(v)
-        rescue => e
+        rescue StandardError => e
           case v
           when ::Hash then Ractor.make_shareable({})
           when ::Array then Ractor.make_shareable([])
@@ -521,7 +521,7 @@ module RactorRailsShim
                     n.end_with?("Clause")
         begin
           c.empty if c.respond_to?(:empty)
-        rescue => e
+        rescue StandardError => e
         end
         _freeze_class_ivars!(c)
       end
@@ -554,11 +554,11 @@ module RactorRailsShim
           next unless replacement
           begin
             owner.instance_variable_set(iv, replacement)
-          rescue => e
+          rescue StandardError => e
             # frozen owner — leave as-is
           end
         end
-      rescue => e
+      rescue StandardError => e
       end
     end
 
@@ -908,7 +908,7 @@ module RactorRailsShim
           if cfg
             _reassign_shareable_const(:AR_CONFIGURATIONS_SHAREABLE, cfg)
           end
-        rescue => e
+        rescue StandardError => e
           # best-effort
         end
       end
@@ -965,7 +965,7 @@ module RactorRailsShim
           handlers.each { |h| _swallow("make ar db config handler shareable") { Ractor.make_shareable(h) } }
           shareable = Ractor.make_shareable(handlers.dup)
           _reassign_shareable_const(:AR_DB_CONFIG_HANDLERS_SHAREABLE, shareable)
-        rescue => e
+        rescue StandardError => e
           # best-effort
         end
       end
@@ -1014,7 +1014,7 @@ module RactorRailsShim
           transformers.each { |t| _swallow("make ar query transformer shareable") { Ractor.make_shareable(t) } }
           shareable = Ractor.make_shareable(transformers.dup)
           _reassign_shareable_const(:AR_QUERY_TRANSFORMERS_SHAREABLE, shareable)
-        rescue => e
+        rescue StandardError => e
           # best-effort
         end
       end
@@ -1061,7 +1061,7 @@ module RactorRailsShim
             val = ::ActiveRecord.public_send(method_name)
             shareable = Ractor.make_shareable(val.is_a?(::Array) ? val.dup : val)
             _reassign_shareable_const(const_name, shareable)
-          rescue => e
+          rescue StandardError => e
             # best-effort
           end
         end
@@ -1312,7 +1312,7 @@ module RactorRailsShim
       adapters.each do |mod_path, column_logic, table_logic|
         mod = begin
           mod_path.split("::").inject(Object) { |ns, n| ns.const_get(n, false) }
-        rescue
+        rescue StandardError
           nil
         end
         next unless mod
@@ -1369,7 +1369,7 @@ module RactorRailsShim
             RactorRailsShim::CLASS_ATTR_VALUES[:__ractor_rails_shim_ar_default_connection_handler__] = orig_handler
             ActiveSupport::IsolatedExecutionState[dch_key] = orig_handler
           end
-        rescue => e
+        rescue StandardError => e
           # Best-effort
         end
       end

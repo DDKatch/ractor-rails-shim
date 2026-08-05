@@ -38,12 +38,12 @@ module RactorRailsShim
       # 1. Replace the PATH / UNKNOWN lambdas with shareable Method objects.
       begin
         rs.send(:remove_const, :PATH) if rs.const_defined?(:PATH, false)
-      rescue
+      rescue StandardError
       end
       rs.const_set(:PATH, ::ActionDispatch::Http::URL.method(:path_for)) rescue nil
       begin
         rs.send(:remove_const, :UNKNOWN) if rs.const_defined?(:UNKNOWN, false)
-      rescue
+      rescue StandardError
       end
       rs.const_set(:UNKNOWN, ::ActionDispatch::Http::URL.method(:url_for)) rescue nil
 
@@ -134,7 +134,7 @@ module RactorRailsShim
           ::Rails.application.routes
         end
       end
-    rescue
+    rescue StandardError
     end
   end
 end

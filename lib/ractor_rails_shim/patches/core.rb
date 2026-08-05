@@ -131,7 +131,7 @@ module RactorRailsShim
     # Post@column_defaults"). Keep the label short — it's only for grepping.
     def _swallow(label)
       yield
-    rescue => e
+    rescue StandardError => e
       warn "[ractor_rails_shim] #{label}: #{e.class}: #{e.message[0, 120]}" if debug?
       nil
     end
@@ -492,12 +492,12 @@ module RactorRailsShim
             obj = Object.const_get(cpath) rescue next
             begin
               Ractor.make_shareable(obj) unless Ractor.shareable?(obj)
-            rescue
+            rescue StandardError
               next
             end
             map[cpath] = obj if Ractor.shareable?(obj)
           end
-        rescue => e
+        rescue StandardError => e
           warn "[ractor_rails_shim] capture_app_constants: #{e.class}: #{e.message}"
         end
       end
@@ -674,7 +674,7 @@ module RactorRailsShim
         end
         begin
           mod.const_set(name, shareable)
-        rescue
+        rescue StandardError
           nil
         end
       end
@@ -719,7 +719,7 @@ module RactorRailsShim
         shareable = Ractor.make_shareable(val) rescue val
         begin
           mod.const_set(name, shareable)
-        rescue
+        rescue StandardError
           nil
         end
       end
@@ -754,7 +754,7 @@ module RactorRailsShim
           next unless klass.respond_to?(m, true)
           begin
             klass.send(m)
-          rescue
+          rescue StandardError
             nil
           end
         end

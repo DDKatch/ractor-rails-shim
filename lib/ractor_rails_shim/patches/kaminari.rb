@@ -33,7 +33,7 @@ module RactorRailsShim
             begin
               Ractor.make_shareable(cfg)
               shareable_config = cfg
-            rescue => e
+            rescue StandardError => e
               # If the config can't be made shareable (unlikely — it's all
               # integers/symbols/nil), build a fresh one with defaults.
               shareable_config = Ractor.make_shareable(::Kaminari::Config.new)
@@ -41,7 +41,7 @@ module RactorRailsShim
           else
             shareable_config = Ractor.make_shareable(::Kaminari::Config.new)
           end
-        rescue => e
+        rescue StandardError => e
           # Best-effort
         end
       end

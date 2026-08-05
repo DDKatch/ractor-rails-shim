@@ -101,7 +101,7 @@ module RactorRailsShim
       if resolver.respond_to?(:manifest, true)
         begin
           resolver.send(:manifest)
-        rescue
+        rescue StandardError
           nil
         end
       end
