@@ -122,17 +122,6 @@ class AppShareabilizerSpec < Minitest::Spec
     RactorRailsShim::ConstantShareabilizer.reset_applied!
   end
 
-  private
-
-  # Stub a private facade method for the duration of the test. The stub
-  # is restored in the teardown via @stubbed_origins. Accepts the method
-  # name and a block that receives the same args the facade method would.
-  def stub_facade_step(name, &blk)
-    @stubbed_origins ||= {}
-    @stubbed_origins[name] = RactorRailsShim.method(name) unless @stubbed_origins.key?(name)
-    RactorRailsShim.define_singleton_method(name, &blk)
-  end
-
   # --- Issue #23: injected collaborators (POODR §2 Dependencies) ---
   #
   # AppShareabilizer is the composition root that sequences 13 facade
@@ -207,18 +196,18 @@ class AppShareabilizerSpec < Minitest::Spec
     RactorRailsShim::AppShareabilizer.reset_configuration
   end
 
-  it "reset_configuration restores the facade-lookup defaults" do
+  it "reset_configuration restores the role-object-lookup defaults" do
     RactorRailsShim::AppShareabilizer.configure(
       apply_shareable_constants: ->(*) { },
       reassign_shareable_const: ->(s, v) { v }
     )
-    refute_equal RactorRailsShim.method(:_apply_shareable_constants!),
+    refute_equal RactorRailsShim::ConstantShareabilizer.method(:apply!),
                  RactorRailsShim::AppShareabilizer.apply_shareable_constants
     refute_equal RactorRailsShim.method(:_reassign_shareable_const),
                  RactorRailsShim::AppShareabilizer.reassign_shareable_const
 
     RactorRailsShim::AppShareabilizer.reset_configuration
-    assert_equal RactorRailsShim.method(:_apply_shareable_constants!),
+    assert_equal RactorRailsShim::ConstantShareabilizer.method(:apply!),
                  RactorRailsShim::AppShareabilizer.apply_shareable_constants
     assert_equal RactorRailsShim.method(:_reassign_shareable_const),
                  RactorRailsShim::AppShareabilizer.reassign_shareable_const
@@ -228,20 +217,63 @@ class AppShareabilizerSpec < Minitest::Spec
 
   private
 
-  # Stub a private facade method for the duration of the test. The stub
-  # is restored in the teardown via @stubbed_origins. Accepts the method
-  # name and a block that receives the same args the facade method would.
+  # Map a facade step name to the role-object (or facade) method that
+  # AppShareabilizer's default collaborator resolves to. After Issue #31
+  # the defaults call role objects directly; only _precompute_propshaft!,
+  # _warm_journey_routes!, and _reassign_shareable_const stay on the
+  # facade. Stubbing the resolved method (not the facade name) makes the
+  # stub reach AppShareabilizer's default collaborator path.
+  FACADE_STEP_TO_OWNER = {
+    _apply_shareable_constants!: RactorRailsShim::ConstantShareabilizer,
+    _install_all_framework_patches: RactorRailsShim::Installer,
+    _precompute_lazy_ivars: RactorRailsShim::ShareabilityTraversal,
+    _precompute_propshaft!: RactorRailsShim,
+    _generate_ar_attribute_methods!: RactorRailsShim::ShareabilityTraversal,
+    _warm_attribute_method_patterns!: RactorRailsShim::ShareabilityTraversal,
+    _freeze_declared_callbacks!: RactorRailsShim::CallbackCapture,
+    _freeze_shareable_class_ivars!: RactorRailsShim::Freezers::ShareableClassIvarFreezer,
+    _warm_journey_routes!: RactorRailsShim,
+    _neutralize_logger_io!: RactorRailsShim::LoggerIONeutralizer,
+    _replace_unshareable_procs!: RactorRailsShim::ShareabilityTraversal,
+    _replace_locks_and_concurrent_maps!: RactorRailsShim::ShareabilityTraversal,
+    _build_shareable_fallback!: RactorRailsShim::FallbackBuilder
+  }.freeze
+
+  # Map a facade step name to the method name on its owner.
+  FACADE_STEP_TO_METHOD = {
+    _apply_shareable_constants!: :apply!,
+    _install_all_framework_patches: :dispatch_all_framework_patches,
+    _precompute_lazy_ivars: :precompute_lazy_ivars,
+    _precompute_propshaft!: :_precompute_propshaft!,
+    _generate_ar_attribute_methods!: :generate_ar_attribute_methods!,
+    _warm_attribute_method_patterns!: :warm_attribute_method_patterns!,
+    _freeze_declared_callbacks!: :freeze_declared_callbacks!,
+    _freeze_shareable_class_ivars!: :call,
+    _warm_journey_routes!: :_warm_journey_routes!,
+    _neutralize_logger_io!: :call,
+    _replace_unshareable_procs!: :replace_unshareable_procs!,
+    _replace_locks_and_concurrent_maps!: :replace_locks_and_concurrent_maps!,
+    _build_shareable_fallback!: :build!
+  }.freeze
+
+  # Stub a pipeline step for the duration of the test. Resolves the
+  # owner + method name (role object or facade), saves the original,
+  # and replaces it with the block. Restored in teardown via
+  # @stubbed_origins.
   def stub_facade_step(name, &blk)
     @stubbed_origins ||= {}
-    @stubbed_origins[name] = RactorRailsShim.method(name) unless @stubbed_origins.key?(name)
-    RactorRailsShim.define_singleton_method(name, &blk)
+    owner = FACADE_STEP_TO_OWNER.fetch(name)
+    method_name = FACADE_STEP_TO_METHOD.fetch(name)
+    key = [owner, method_name]
+    @stubbed_origins[key] = owner.method(method_name) unless @stubbed_origins.key?(key)
+    owner.define_singleton_method(method_name, &blk)
   end
 
-  # Restore all stubbed facade methods between tests so state doesn't leak.
+  # Restore all stubbed methods between tests so state doesn't leak.
   def teardown
     super
-    @stubbed_origins&.each do |name, orig|
-      RactorRailsShim.define_singleton_method(name, orig)
+    @stubbed_origins&.each do |(owner, method_name), orig|
+      owner.define_singleton_method(method_name, orig)
     end
     @stubbed_origins = nil
   end

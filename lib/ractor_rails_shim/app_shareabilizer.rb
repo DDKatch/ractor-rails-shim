@@ -95,15 +95,15 @@ module RactorRailsShim
     end
 
     def self.apply_shareable_constants
-      @apply_shareable_constants || RactorRailsShim.method(:_apply_shareable_constants!)
+      @apply_shareable_constants || RactorRailsShim::ConstantShareabilizer.method(:apply!)
     end
 
     def self.install_all_framework_patches
-      @install_all_framework_patches || RactorRailsShim.method(:_install_all_framework_patches)
+      @install_all_framework_patches || RactorRailsShim::Installer.method(:dispatch_all_framework_patches)
     end
 
     def self.precompute_lazy_ivars
-      @precompute_lazy_ivars || RactorRailsShim.method(:_precompute_lazy_ivars)
+      @precompute_lazy_ivars || RactorRailsShim::ShareabilityTraversal.method(:precompute_lazy_ivars)
     end
 
     def self.precompute_propshaft
@@ -111,19 +111,19 @@ module RactorRailsShim
     end
 
     def self.generate_ar_attribute_methods
-      @generate_ar_attribute_methods || RactorRailsShim.method(:_generate_ar_attribute_methods!)
+      @generate_ar_attribute_methods || RactorRailsShim::ShareabilityTraversal.method(:generate_ar_attribute_methods!)
     end
 
     def self.warm_attribute_method_patterns
-      @warm_attribute_method_patterns || RactorRailsShim.method(:_warm_attribute_method_patterns!)
+      @warm_attribute_method_patterns || RactorRailsShim::ShareabilityTraversal.method(:warm_attribute_method_patterns!)
     end
 
     def self.freeze_declared_callbacks
-      @freeze_declared_callbacks || RactorRailsShim.method(:_freeze_declared_callbacks!)
+      @freeze_declared_callbacks || RactorRailsShim::CallbackCapture.method(:freeze_declared_callbacks!)
     end
 
     def self.freeze_shareable_class_ivars
-      @freeze_shareable_class_ivars || RactorRailsShim.method(:_freeze_shareable_class_ivars!)
+      @freeze_shareable_class_ivars || RactorRailsShim::Freezers::ShareableClassIvarFreezer.method(:call)
     end
 
     def self.warm_journey_routes
@@ -131,19 +131,19 @@ module RactorRailsShim
     end
 
     def self.neutralize_logger_io
-      @neutralize_logger_io || RactorRailsShim.method(:_neutralize_logger_io!)
+      @neutralize_logger_io || RactorRailsShim::LoggerIONeutralizer.method(:call)
     end
 
     def self.replace_unshareable_procs
-      @replace_unshareable_procs || RactorRailsShim.method(:_replace_unshareable_procs!)
+      @replace_unshareable_procs || RactorRailsShim::ShareabilityTraversal.method(:replace_unshareable_procs!)
     end
 
     def self.replace_locks_and_concurrent_maps
-      @replace_locks_and_concurrent_maps || RactorRailsShim.method(:_replace_locks_and_concurrent_maps!)
+      @replace_locks_and_concurrent_maps || RactorRailsShim::ShareabilityTraversal.method(:replace_locks_and_concurrent_maps!)
     end
 
     def self.build_shareable_fallback
-      @build_shareable_fallback || RactorRailsShim.method(:_build_shareable_fallback!)
+      @build_shareable_fallback || RactorRailsShim::FallbackBuilder.method(:build!)
     end
 
     def self.make_shareable_fn
