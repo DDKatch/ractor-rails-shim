@@ -14,11 +14,15 @@
 #   - install                     register the patch + apply (idempotent)
 #
 # `SHAREABLE_CONSTANTS` stays a constant on `RactorRailsShim` (per-concern
-# files `concat` into it); this object reads it via the facade. The
-# `_swallow` debug funnel, `_introspectable?` helper, `_register_patch`,
-# and the `NoOpLock` constant are collaborators reached through the
-# `RactorRailsShim` facade (matching the Freezers::* extraction pattern) —
-# they will be injected as the later issues extract those roles too.
+# files `concat` into it); this object reads it via the
+# `shareable_constants_registry` seam (default = the facade constant). The
+# `_swallow` debug funnel (`funnel`), `_register_patch` (`register_patch`),
+# `_introspectable?` (`introspectable`), and the `NoOpLock` constant
+# (`noop_lock_class`) are collaborators reached via the configure seam,
+# defaulting to the facade lookups so existing call sites keep working
+# (Issue #23, POODR §2 Dependencies). The `@shareable_constants_done`
+# idempotency flag stays on the facade singleton here — Issue #24 moves
+# it onto this role.
 #
 # The RactorRailsShim singleton keeps facade methods that delegate, so the
 # existing public/private API and naming_convention_spec / shim_spec /
@@ -26,11 +30,63 @@
 
 module RactorRailsShim
   module ConstantShareabilizer
+    @funnel = nil
+    @register_patch = nil
+    @introspectable = nil
+    @noop_lock_class = nil
+    @shareable_constants_registry = nil
+
+    # Inject the callable/class collaborators. `funnel` responds to
+    # `call(label) { block }` (runs the block, rescues StandardError —
+    # matches `_swallow`). `register_patch` responds to `call(name, ver)`.
+    # `introspectable` responds to `call(val)` returning truthy/nil (matches
+    # `_introspectable?`). `noop_lock_class` responds to `.new` (matches
+    # `NoOpLock`). `shareable_constants_registry` is the array of constant
+    # path strings. Passing `nil` for any (or calling
+    # `reset_configuration`) restores the facade-lookup default.
+    def self.configure(funnel: nil, register_patch: nil, introspectable: nil,
+                       noop_lock_class: nil, shareable_constants_registry: nil)
+      @funnel = funnel
+      @register_patch = register_patch
+      @introspectable = introspectable
+      @noop_lock_class = noop_lock_class
+      @shareable_constants_registry = shareable_constants_registry
+    end
+
+    # Restore the default (facade-lookup) collaborators. Test seam.
+    def self.reset_configuration
+      @funnel = nil
+      @register_patch = nil
+      @introspectable = nil
+      @noop_lock_class = nil
+      @shareable_constants_registry = nil
+    end
+
+    def self.funnel
+      @funnel || RactorRailsShim.method(:_swallow)
+    end
+
+    def self.register_patch
+      @register_patch || RactorRailsShim.method(:_register_patch)
+    end
+
+    def self.introspectable
+      @introspectable || RactorRailsShim.method(:_introspectable?)
+    end
+
+    def self.noop_lock_class
+      @noop_lock_class || RactorRailsShim.singleton_class.const_get(:NoOpLock)
+    end
+
+    def self.shareable_constants_registry
+      @shareable_constants_registry || RactorRailsShim::SHAREABLE_CONSTANTS
+    end
+
     # The registry of constant path strings whose values are made shareable
     # at boot. Lives on RactorRailsShim (per-concern files concat into it);
     # this reader delegates so call sites don't reach past the role object.
     def self.shareable_constants
-      RactorRailsShim::SHAREABLE_CONSTANTS
+      shareable_constants_registry
     end
 
     # Register the patch + apply it now if ActiveSupport is loaded. Called at
@@ -39,7 +95,7 @@ module RactorRailsShim
     # and thus ActiveSupport — is defined). Guarded by
     # @shareable_constants_done so both paths are safe.
     def self.install
-      RactorRailsShim._register_patch :shareable_constants, "8.1"
+      register_patch.call(:shareable_constants, "8.1")
       return unless defined?(::ActiveSupport)
 
       apply!
@@ -111,16 +167,16 @@ module RactorRailsShim
     # is_a?/respond_to? (Kernel not included); _introspectable? safely
     # detects this via a guarded respond_to?(:is_a?) check.
     def self.make_value_shareable(val)
-      if RactorRailsShim._introspectable?(val) && val.respond_to?(:synchronize)
-        Ractor.make_shareable(RactorRailsShim.singleton_class.const_get(:NoOpLock).new)
-      elsif !RactorRailsShim._introspectable?(val) || !val.respond_to?(:freeze)
+      if introspectable.call(val) && val.respond_to?(:synchronize)
+        Ractor.make_shareable(noop_lock_class.new)
+      elsif !introspectable.call(val) || !val.respond_to?(:freeze)
         # Non-introspectable (BasicObject without is_a?) OR lacks #freeze
         # (BasicObject subclasses). Replace with a frozen Symbol sentinel —
         # it's compared with `equal?`, and a frozen Symbol is always
         # shareable.
         Ractor.make_shareable(:"__shim_unshareable_sentinel__")
       else
-        RactorRailsShim._swallow("make_value_shareable #{val.class}") { Ractor.make_shareable(val) }
+        funnel.call("make_value_shareable #{val.class}") { Ractor.make_shareable(val) }
       end
     end
 

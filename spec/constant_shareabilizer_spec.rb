@@ -309,4 +309,149 @@ class ConstantShareabilizerSpec < Minitest::Spec
   ensure
     RactorRailsShim::ConstantShareabilizer.define_singleton_method(:shareable_constants, original)
   end
+
+  # --- Issue #23: injected collaborators (POODR §2 Dependencies) ---
+  #
+  # ConstantShareabilizer must be constructible with the collaborators it
+  # currently reaches through the RactorRailsShim facade by global name:
+  #   - `funnel`                    (= `_swallow`)
+  #   - `register_patch`            (= `_register_patch`)
+  #   - `introspectable`            (= `_introspectable?`, a callable predicate)
+  #   - `noop_lock_class`           (= `NoOpLogDev`-style class for Mutex/Monitor)
+  #   - `shareable_constants_registry` (= `SHAREABLE_CONSTANTS` array)
+  # The seam is `configure(...)`; the defaults are the facade lookups so
+  # existing call sites keep working. The `@shareable_constants_done`
+  # idempotency flag stays on the facade singleton here — Issue #24 moves
+  # it onto this role.
+
+  it "responds to configure" do
+    assert_respond_to RactorRailsShim::ConstantShareabilizer, :configure
+  end
+
+  it "responds to reset_configuration" do
+    assert_respond_to RactorRailsShim::ConstantShareabilizer, :reset_configuration
+  end
+
+  it "responds to funnel" do
+    assert_respond_to RactorRailsShim::ConstantShareabilizer, :funnel
+  end
+
+  it "responds to register_patch" do
+    assert_respond_to RactorRailsShim::ConstantShareabilizer, :register_patch
+  end
+
+  it "responds to introspectable" do
+    assert_respond_to RactorRailsShim::ConstantShareabilizer, :introspectable
+  end
+
+  it "responds to noop_lock_class" do
+    assert_respond_to RactorRailsShim::ConstantShareabilizer, :noop_lock_class
+  end
+
+  it "responds to shareable_constants_registry" do
+    assert_respond_to RactorRailsShim::ConstantShareabilizer, :shareable_constants_registry
+  end
+
+  it "make_value_shareable funnels through an injected funnel (labeled)" do
+    funneled = []
+    funnel = ->(label, &blk) { funneled << label; blk&.call rescue StandardError; }
+    RactorRailsShim::ConstantShareabilizer.configure(funnel: funnel)
+    RactorRailsShim::ConstantShareabilizer.make_value_shareable(->(*) { :x })
+    refute_empty funneled
+    assert_match(/make_value_shareable/i, funneled.first)
+  ensure
+    RactorRailsShim::ConstantShareabilizer.reset_configuration
+  end
+
+  it "make_value_shareable uses an injected noop_lock_class for a Mutex" do
+    fake_lock_class = Class.new
+    RactorRailsShim::ConstantShareabilizer.configure(
+      noop_lock_class: fake_lock_class,
+      introspectable: ->(v) { true }
+    )
+    result = RactorRailsShim::ConstantShareabilizer.make_value_shareable(Mutex.new)
+    assert_kind_of fake_lock_class, result, "Mutex should yield an instance of the injected lock class"
+    assert Ractor.shareable?(result), "injected lock instance should be made shareable"
+  ensure
+    RactorRailsShim::ConstantShareabilizer.reset_configuration
+  end
+
+  it "make_value_shareable uses an injected introspectable predicate" do
+    # introspectable returns false → both branches short-circuit; the
+    # BasicObject/sentinel branch fires (no #freeze) and yields a Symbol.
+    RactorRailsShim::ConstantShareabilizer.configure(
+      introspectable: ->(v) { false }
+    )
+    result = RactorRailsShim::ConstantShareabilizer.make_value_shareable(["a"])
+    # Non-introspectable per the injected predicate → sentinel Symbol path.
+    assert_kind_of Symbol, result
+    assert Ractor.shareable?(result)
+  ensure
+    RactorRailsShim::ConstantShareabilizer.reset_configuration
+  end
+
+  it "install registers via an injected register_patch" do
+    registered = []
+    register = ->(name, ver) { registered << [name, ver] }
+    RactorRailsShim::ConstantShareabilizer.configure(register_patch: register)
+    # Suppress the apply! side-effect by stubbing ActiveSupport undefined.
+    had_as = Object.const_defined?(:ActiveSupport)
+    prev_as = had_as ? ::ActiveSupport : nil
+    Object.send(:remove_const, :ActiveSupport) if had_as
+    RactorRailsShim::ConstantShareabilizer.install
+    assert_includes registered.map(&:first), :shareable_constants
+  ensure
+    Object.const_set(:ActiveSupport, prev_as) if had_as
+    RactorRailsShim::ConstantShareabilizer.reset_configuration
+  end
+
+  it "apply! iterates an injected shareable_constants_registry" do
+    # Set up a real constant path the role can resolve + make shareable.
+    mod = Module.new
+    Object.const_set(:ShimCSInject, mod)
+    mod.const_set(:LIST, ["a", "b"])
+    fake_registry = ["ShimCSInject::LIST"]
+    RactorRailsShim::ConstantShareabilizer.configure(
+      shareable_constants_registry: fake_registry
+    )
+    RactorRailsShim.remove_instance_variable(:@shareable_constants_done) if RactorRailsShim.instance_variable_defined?(:@shareable_constants_done)
+    refute Ractor.shareable?(mod::LIST), "setup: LIST should start unshareable"
+
+    RactorRailsShim::ConstantShareabilizer.apply!
+
+    # apply! iterated the injected registry (not the facade constant) and
+    # made our injected constant shareable.
+    assert Ractor.shareable?(mod::LIST), "injected-registry constant should be made shareable"
+    # The done flag set because every path resolved.
+    assert RactorRailsShim.instance_variable_get(:@shareable_constants_done),
+           "done flag should be set when all injected paths resolve"
+  ensure
+    Object.send(:remove_const, :ShimCSInject) if defined?(ShimCSInject)
+    RactorRailsShim.remove_instance_variable(:@shareable_constants_done) if RactorRailsShim.instance_variable_defined?(:@shareable_constants_done)
+    RactorRailsShim::ConstantShareabilizer.reset_configuration
+  end
+
+  it "reset_configuration restores the facade-lookup defaults" do
+    RactorRailsShim::ConstantShareabilizer.configure(
+      funnel: ->(label, &blk) { blk&.call },
+      register_patch: ->(n, v) { },
+      introspectable: ->(v) { true },
+      noop_lock_class: Class.new,
+      shareable_constants_registry: []
+    )
+    refute_equal RactorRailsShim.method(:_swallow), RactorRailsShim::ConstantShareabilizer.funnel
+    refute_equal RactorRailsShim.method(:_register_patch), RactorRailsShim::ConstantShareabilizer.register_patch
+    refute_equal RactorRailsShim.method(:_introspectable?), RactorRailsShim::ConstantShareabilizer.introspectable
+    refute_equal NoOpLock, RactorRailsShim::ConstantShareabilizer.noop_lock_class
+    refute_same RactorRailsShim::SHAREABLE_CONSTANTS, RactorRailsShim::ConstantShareabilizer.shareable_constants_registry
+
+    RactorRailsShim::ConstantShareabilizer.reset_configuration
+    assert_equal RactorRailsShim.method(:_swallow), RactorRailsShim::ConstantShareabilizer.funnel
+    assert_equal RactorRailsShim.method(:_register_patch), RactorRailsShim::ConstantShareabilizer.register_patch
+    assert_equal RactorRailsShim.method(:_introspectable?), RactorRailsShim::ConstantShareabilizer.introspectable
+    assert_equal NoOpLock, RactorRailsShim::ConstantShareabilizer.noop_lock_class
+    assert_same RactorRailsShim::SHAREABLE_CONSTANTS, RactorRailsShim::ConstantShareabilizer.shareable_constants_registry
+  ensure
+    RactorRailsShim::ConstantShareabilizer.reset_configuration
+  end
 end
