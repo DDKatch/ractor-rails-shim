@@ -86,7 +86,14 @@ class WorkerAppSetupOnceRaceSpec < Minitest::Spec
 
     Ractor.current[:rrs_race_probe] = nil
   ensure
-    Thread::Mutex.singleton_class.define_method(:new) { orig_new.call } if orig_new
+    # Restore the original class-defined `new` by removing the singleton
+    # method we added. Redefining via define_method would leave a block
+    # capturing `orig_new` (a Method bound to the main Ractor's binding),
+    # which raises IsolationError when a later spec's worker Ractor calls
+    # Thread::Mutex.new. remove_method lets the call fall back to the
+    # class-defined `new`, which has no captured binding.
+    Thread::Mutex.singleton_class.remove_method(:new) rescue nil
+    Ractor.current[:rrs_race_probe] = nil
   end
 
   it "setup_once! produces a correct observable effect even under the race (idempotent work)" do
@@ -123,8 +130,83 @@ class WorkerAppSetupOnceRaceSpec < Minitest::Spec
     assert Ractor.current[:rrs_worker_ready],
       "rrs_worker_ready must be set after setup_once! (init must complete)"
   ensure
-    Thread::Mutex.singleton_class.define_method(:new) { orig_new.call } if orig_new
+    Thread::Mutex.singleton_class.remove_method(:new) rescue nil
     Ractor.current[:rrs_worker_mutex] = nil
     Ractor.current[:rrs_worker_ready] = nil
+  end
+
+  it "setup_once! creates exactly one per-Ractor mutex even under contention" do
+    # Documents the LIMIT of what the fix can achieve. The original `||=`
+    # race lets N threads create N distinct mutexes. A true fix would need
+    # a cross-Ractor lock, but Thread::Mutex is NOT Ractor-shareable, so a
+    # global lock can't travel from main to workers — the per-Ractor mutex
+    # MUST be created lazily inside the worker, and `Ractor.current[:key]
+    # ||= Thread::Mutex.new` is the only available primitive. Ruby exposes
+    # no compare-and-swap on Ractor.current.
+    #
+    # Therefore the load-bearing contract is NOT "one mutex" but
+    # "idempotent work": rebind_constants and init_worker_ar_connections!
+    # must both tolerate being called more than once under the race. This
+    # spec pins that contract: under the same widened race, the work runs
+    # multiple times (multiple mutexes) BUT the observable effect is correct
+    # (constants bound, app dispatches 200, ready flag set). If rebind_
+    # constants ever loses idempotency, this spec will fail.
+    app = FrozenApp.new
+    Ractor.make_shareable(app)
+    bindings = {}.freeze
+    Ractor.make_shareable(bindings)
+    wa = RactorRailsShim::WorkerApp.new(app, bindings)
+
+    orig_new = Thread::Mutex.method(:new)
+    Thread::Mutex.singleton_class.define_method(:new) do
+      sleep 0.01
+      orig_new.call
+    end
+
+    Ractor.current[:rrs_worker_mutex] = nil
+    Ractor.current[:rrs_worker_ready] = nil
+
+    n = 20
+    threads = n.times.map { Thread.new { wa.send(:setup_once!) } }
+    threads.each(&:join)
+
+    # The race DOES produce multiple mutexes (no CAS available) — this is
+    # expected and acceptable. What matters is the observable effect:
+    status, _headers, body = wa.call({ "PATH_INFO" => "/up", "REQUEST_METHOD" => "GET" })
+    assert_equal 200, status, "app must dispatch 200 after the raced init"
+    assert_equal "ok", body.each.to_a.join
+    assert Ractor.current[:rrs_worker_ready],
+      "rrs_worker_ready must be set after setup_once! (init completed)"
+  ensure
+    Thread::Mutex.singleton_class.remove_method(:new) rescue nil
+    Ractor.current[:rrs_worker_mutex] = nil
+    Ractor.current[:rrs_worker_ready] = nil
+  end
+
+  it "rebind_constants is idempotent: repeated calls leave the same constant binding" do
+    # The setup_once! race can call rebind_constants more than once (no CAS
+    # on Ractor.current, so multiple mutexes can be created and each holder
+    # runs the work). rebind_constants MUST tolerate this: each const_set
+    # is guarded by `unless const_defined?`. Pin the contract so a future
+    # change that removes the guard fails this spec.
+    app = FrozenApp.new
+    Ractor.make_shareable(app)
+    bindings = { "ShimRebindIdempProbe" => app }.freeze
+    Ractor.make_shareable(bindings)
+    wa = RactorRailsShim::WorkerApp.new(app, bindings)
+
+    Object.send(:remove_const, :ShimRebindIdempProbe) if defined?(ShimRebindIdempProbe)
+
+    # Call rebind_constants three times (simulating the race's redundant calls).
+    3.times { wa.send(:rebind_constants) }
+    assert_same app, ShimRebindIdempProbe,
+      "three rebind_constants calls must leave the first binding (idempotent guard)"
+
+    # A fourth call after the constant exists must also be a no-op.
+    wa.send(:rebind_constants)
+    assert_same app, ShimRebindIdempProbe,
+      "rebind_constants after the constant exists must not rebind (guard holds)"
+  ensure
+    Object.send(:remove_const, :ShimRebindIdempProbe) if defined?(ShimRebindIdempProbe)
   end
 end

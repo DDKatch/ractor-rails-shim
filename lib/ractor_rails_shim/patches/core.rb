@@ -854,22 +854,19 @@ module RactorRailsShim
       # All threads inside a worker Ractor share Ractor.current, so a single
       # per-Ractor mutex serializes the one-time init across the worker's
       # threads. `Ractor.current[:key] ||= Thread::Mutex.new` is NOT atomic
-      # (it's a read-then-write; under a widened window N racing threads
-      # produce N distinct mutexes — verified by spec). The race is
-      # benign here for two reasons:
-      #   1. On MRI the GIL serializes the Ruby-level critical section,
-      #      so the `:rrs_worker_ready` flag check inside `synchronize`
-      #      effectively gates the work as long as `rebind_constants`
-      #      and `init_worker_ar_connections!` don't yield.
-      #   2. Both are idempotent: `rebind_constants` guards each
-      #      `const_set` with `unless const_defined?`, and
-      #      `init_worker_ar_connections!` returns early if the
-      #      connection handler is already established. So redundant
-      #      calls under the race are wasteful but not incorrect.
-      # If `rebind_constants` ever becomes non-idempotent (or a future
-      # Ruby runtime removes the GIL), replace this with a true
-      # compare-and-swap on `Ractor.current` (Ruby doesn't expose one
-      # today) or move init into a per-Ractor boot hook if kino adds one.
+      # (read-then-write; under a widened window N racing threads produce N
+      # distinct mutexes — verified by spec). The race is benign ONLY because
+      # the gated work is idempotent:
+      #   - `rebind_constants` guards each `const_set` with
+      #     `unless const_defined?`, so a redundant call is a no-op.
+      #   - `init_worker_ar_connections!` returns early if the connection
+      #     handler is already established.
+      # A per-Ractor mutex can't be pre-created (it isn't Ractor-shareable, so
+      # it can't travel from main to workers), and a global cross-Ractor lock
+      # is impossible (Mutex isn't shareable either). The idempotency contract
+      # is therefore load-bearing: if either step ever loses idempotency,
+      # redundant calls under the race would become incorrect. The spec
+      # `rebind_constants is idempotent under repeated calls` pins this.
       m = Ractor.current[:rrs_worker_mutex] ||= Thread::Mutex.new
       m.synchronize do
         return if Ractor.current[:rrs_worker_ready]
