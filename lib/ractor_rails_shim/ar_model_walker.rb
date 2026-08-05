@@ -22,14 +22,38 @@
 #     classes; default is to yield them (ClassIvarFreezer must NOT skip)
 #   - returns the count of yielded models
 #
-# `_swallow` is reached via the `RactorRailsShim` facade (the dependency
-# injection seam established in Issue #13) until it is itself extracted.
+# `_swallow` is reached via the `funnel` collaborator. The default is the
+# facade lookup (`RactorRailsShim.method(:_swallow)`) so existing call
+# sites keep working; `configure(funnel:)` injects a different funnel so
+# the role is independently constructible and specable without the
+# `RactorRailsShim` god module loaded (Issue #23, POODR §2 Dependencies).
 module RactorRailsShim
   module ARModelWalker
+    @funnel = nil
+
+    # Inject the `funnel` collaborator — a callable responding to
+    # `call(label) { block }` that runs the block and rescues
+    # StandardError (matching `_swallow`). Passing `nil` (or calling
+    # `reset_configuration`) restores the facade-lookup default.
+    def self.configure(funnel:)
+      @funnel = funnel
+    end
+
+    # Restore the default (facade-lookup) funnel. Test seam.
+    def self.reset_configuration
+      @funnel = nil
+    end
+
+    # The active funnel: the injected one if configured, else the
+    # facade lookup (`RactorRailsShim.method(:_swallow)`).
+    def self.funnel
+      @funnel || RactorRailsShim.method(:_swallow)
+    end
+
     # Iterate every loaded ActiveRecord model — Base itself plus its
     # descendants — yielding each to the block exactly once. Per-class
-    # failures are funneled through `RactorRailsShim._swallow` so the walk
-    # continues past one bad model.
+    # failures are funneled through `funnel` so the walk continues past
+    # one bad model.
     #
     # Options:
     #   skip_abstract: true  — skip classes whose `abstract_class?` is true
@@ -57,7 +81,7 @@ module RactorRailsShim
         begin
           yield klass
         rescue StandardError => e
-          RactorRailsShim._swallow("ARModelWalker #{klass}") { raise e }
+          funnel.call("ARModelWalker #{klass}") { raise e }
         end
         count += 1
       end

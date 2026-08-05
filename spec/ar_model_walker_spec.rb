@@ -202,4 +202,64 @@ class ARModelWalkerSpec < Minitest::Spec
   ensure
     Object.const_set(:ActiveRecord, prev) if prev
   end
+
+  # --- Issue #23: injected funnel collaborator (POODR §2 Dependencies) ---
+  #
+  # ARModelWalker must be constructible with its `funnel` collaborator (the
+  # `_swallow` role) instead of reaching it through the `RactorRailsShim`
+  # facade by global name. The seam is `configure(funnel:)`; the default is
+  # the facade lookup so existing call sites keep working during migration.
+  # The funnel contract: a callable responding to `call(label) { block }`
+  # that runs the block and rescues StandardError (matching `_swallow`).
+
+  it "ARModelWalker responds to configure(funnel:)" do
+    assert_respond_to RactorRailsShim::ARModelWalker, :configure
+  end
+
+  it "each_model funnels per-class failures through an injected funnel" do
+    funneled = []
+    funnel = ->(label, &blk) { funneled << label; blk&.call rescue StandardError; }
+    RactorRailsShim::ARModelWalker.configure(funnel: funnel)
+    bad = Class.new
+    with_fake_ar([bad]) do |base|
+      RactorRailsShim::ARModelWalker.each_model { |k| raise "boom" if k == bad }
+    end
+    # Only the raising model's failure label is funneled; base (no raise) is not.
+    assert_equal ["ARModelWalker #{bad}"], funneled
+  ensure
+    RactorRailsShim::ARModelWalker.reset_configuration
+  end
+
+  it "an injected funnel lets the walk continue past a raising model" do
+    good = Class.new
+    bad = Class.new
+    funnel = ->(label, &blk) { blk&.call rescue StandardError; }
+    RactorRailsShim::ARModelWalker.configure(funnel: funnel)
+    with_fake_ar([good, bad]) do |base|
+      call_count = 0
+      count = RactorRailsShim::ARModelWalker.each_model do |k|
+        call_count += 1
+        raise "boom" if k == bad
+      end
+      # Base + good + bad all visited; bad raised but the walk continued.
+      assert_equal 3, call_count
+      assert_equal 3, count
+    end
+  ensure
+    RactorRailsShim::ARModelWalker.reset_configuration
+  end
+
+  it "reset_configuration restores the facade-lookup default funnel" do
+    RactorRailsShim::ARModelWalker.configure(funnel: ->(label, &blk) { blk&.call })
+    injected = RactorRailsShim::ARModelWalker.funnel
+    assert_kind_of Proc, injected
+    refute_kind_of Method, injected
+    RactorRailsShim::ARModelWalker.reset_configuration
+    default = RactorRailsShim::ARModelWalker.funnel
+    # The default is the facade lookup — a bound Method on RactorRailsShim.
+    assert_kind_of Method, default
+    assert_equal RactorRailsShim.method(:_swallow), default
+  ensure
+    RactorRailsShim::ARModelWalker.reset_configuration
+  end
 end
