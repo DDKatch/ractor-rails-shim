@@ -265,8 +265,14 @@ module RactorRailsShim
     # Public wrapper is `prepare_for_ractors!` above.
     def _apply_shareable_constants!
       return if @shareable_constants_done
-      shareable_constants.each { |path| make_constant_shareable(path) }
-      @shareable_constants_done = true
+      # Only set the done flag when every registered constant was made
+      # shareable (or already was). If any returned false (constant doesn't
+      # exist yet), leave the flag unset so a later call (from
+      # make_app_shareable! or prepare_for_ractors!) retries the now-loadable
+      # constants — otherwise workers hit IsolationError on the unshareable
+      # values that were missed on the first pass.
+      all_resolved = shareable_constants.map { |path| make_constant_shareable(path) }.all?
+      @shareable_constants_done = true if all_resolved
     end
 
     # Resolve a constant path string to a value, and if it exists and is
