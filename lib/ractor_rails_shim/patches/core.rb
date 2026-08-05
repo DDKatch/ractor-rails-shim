@@ -327,12 +327,19 @@ module RactorRailsShim
       end
     end
 
+    # Resolve a constant path string (e.g. "A::B::C") to its value, returning
+    # nil if any segment isn't defined. Replaces dense rescue/& chains like:
+    #   (Object.const_get(:A) rescue nil)&.const_get(:B, false) rescue nil
+    def _safe_const_get(path)
+      path.split("::").inject(Object) { |ns, n| ns.const_get(n) } rescue nil
+    end
+
     # Split "A::B::C" into [A::B (module), :C]. Returns [nil, nil] if the
     # parent isn't defined.
     def split_const_path(path)
       parts = path.split("::")
       return [Object, parts.first.to_sym] if parts.size == 1
-      parent = parts[0...-1].inject(Object) { |ns, n| ns.const_get(n) } rescue nil
+      parent = _safe_const_get(parts[0...-1].join("::"))
       return [nil, nil] unless parent
       [parent, parts.last.to_sym]
     end
@@ -637,7 +644,7 @@ module RactorRailsShim
     # unshareable values that a worker Ractor would otherwise fail to read
     # (Ractor::IsolationError). Freezing them in main yields shareable values.
     def _freeze_global_class_ivars!
-      classes = %w[Time Date DateTime I18n].filter_map { |n| Object.const_get(n) rescue nil }
+      classes = %w[Time Date DateTime I18n].filter_map { |n| _safe_const_get(n) }
       classes.each do |klass|
         klass.instance_variables.each do |ivar|
           val = klass.instance_variable_get(ivar)
@@ -656,7 +663,7 @@ module RactorRailsShim
     # done in the MAIN Ractor, where const_set is allowed.
     def _freeze_global_constants!
       constants = %w[Time Date DateTime].filter_map do |n|
-        mod = Object.const_get(n) rescue nil
+        mod = _safe_const_get(n)
         mod.is_a?(Module) ? [mod, :DATE_FORMATS] : nil
       end
       constants.each do |mod, name|
@@ -709,8 +716,7 @@ module RactorRailsShim
 
       require "active_support/message_pack"
 
-      mod = (Object.const_get(:ActiveSupport) rescue nil)&.const_get(:Messages, false) rescue nil
-      mod = mod&.const_get(:Metadata, false) rescue nil
+      mod = _safe_const_get("ActiveSupport::Messages::Metadata")
       return unless mod.is_a?(Module)
       %i[ENVELOPE_SERIALIZERS TIMESTAMP_SERIALIZERS].each do |name|
         next unless mod.const_defined?(name, false)

@@ -227,7 +227,7 @@ module RactorRailsShim
         # slot is nil (the seed only set the default; the live value may differ).
         if val.nil? && owner_name && attr_name.is_a?(Symbol)
           begin
-            owner_mod = owner_name.split("::").inject(Object) { |ns, n| ns.const_get(n) } rescue nil
+            owner_mod = RactorRailsShim._safe_const_get(owner_name)
             if owner_mod && owner_mod.class_variable_defined?("@@#{attr_name}")
               val = owner_mod.class_variable_get("@@#{attr_name}")
             end
@@ -238,7 +238,7 @@ module RactorRailsShim
         # For raw class ivars (PathRegistry, etc.): read @<attr_name> in main.
         if val.nil? && owner_name && attr_name.is_a?(Symbol)
           begin
-            owner_mod = owner_name.split("::").inject(Object) { |ns, n| ns.const_get(n) } rescue nil
+            owner_mod = RactorRailsShim._safe_const_get(owner_name)
             if owner_mod && owner_mod.instance_variable_defined?("@#{attr_name}")
               val = owner_mod.instance_variable_get("@#{attr_name}")
             end
@@ -664,7 +664,7 @@ module RactorRailsShim
     # lazily (which would raise FrozenError on the frozen class).
     def _freeze_shareable_class_ivars!
       SHAREABLE_CLASS_IVARS.each do |(class_name, ivar)|
-        mod = class_name.split("::").inject(Object) { |ns, n| ns.const_get(n) } rescue nil
+        mod = RactorRailsShim._safe_const_get(class_name)
         next unless mod && mod.instance_variable_defined?(ivar)
         val = mod.instance_variable_get(ivar)
         next if val.nil?
