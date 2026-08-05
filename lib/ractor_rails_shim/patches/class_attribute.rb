@@ -19,6 +19,16 @@
 # initialize!, so the default is only read as a fallback.
 
 module RactorRailsShim
+  # Frozen shared sentinel for the `__callbacks` class_attribute's
+  # missing-slot default. Rails callers index the result
+  # (`__callbacks[:process_action]`), so a missing slot must return an
+  # empty Hash rather than nil. A single frozen constant avoids the
+  # per-read `{}` allocation the original reader had. Defined on the
+  # module (not the singleton class) so it's readable as
+  # `RactorRailsShim::EMPTY_CALLBACKS_HASH` from the eval'd method
+  # bodies. Made Ractor-shareable so worker Ractors can read it too.
+  EMPTY_CALLBACKS_HASH = Ractor.make_shareable({}.freeze)
+
   class << self
     def install_class_attribute
       _register_patch :class_attribute, "8.1"
@@ -96,6 +106,18 @@ module RactorRailsShim
           # need their own mutable value call the writer, which writes their
           # IES slot and shadows the fallback.
           target = owner.singleton_class? ? owner : owner.singleton_class
+          # Static missing-slot default: inline a frozen shared Hash for
+          # the `__callbacks` attribute (Rails indexes the result, so nil
+          # would NoMethodError), nil for everything else. Decided ONCE
+          # at method-definition time from the public `name` — the
+          # previous reader compiled a runtime ternary that compared
+          # the namespaced name to :__callbacks (always false, since
+          # namespaced_name is `__class_attr_<name>`), so the `{}`
+          # branch was dead code AND the ternary allocated a Symbol
+          # via `namespaced_name.inspect` on every read. Inlining the
+          # decision removes both the dead branch and the per-read
+          # Symbol interpolation.
+          missing_default = (name == :__callbacks) ? "RactorRailsShim::EMPTY_CALLBACKS_HASH" : "nil"
           if RactorRailsShim.thread_mode?
             # Thread (Puma/Falcon) mode: route through a SHARED (process-wide)
             # store keyed by the actual class's object_id, walking ancestors
@@ -121,7 +143,7 @@ module RactorRailsShim
                   v = RactorRailsShim::CLASS_ATTR_VALUES[:"ractor_rails_shim_class_attr_\#{anc.object_id}_#{namespaced_name}"]
                   return v if RactorRailsShim::CLASS_ATTR_VALUES.key?(:"ractor_rails_shim_class_attr_\#{anc.object_id}_#{namespaced_name}")
                 end
-                #{namespaced_name.inspect} == :__callbacks ? {} : nil
+                #{missing_default}
               end
 
               def #{namespaced_name}=(new_value)
@@ -139,7 +161,7 @@ module RactorRailsShim
                     v = RactorRailsShim::CLASS_ATTR_VALUES[:"ractor_rails_shim_class_attr_\#{anc.object_id}_#{namespaced_name}"]
                     return v if RactorRailsShim::CLASS_ATTR_VALUES.key?(:"ractor_rails_shim_class_attr_\#{anc.object_id}_#{namespaced_name}")
                   end
-                  #{namespaced_name.inspect} == :__callbacks ? {} : nil
+                  #{missing_default}
                 end
 
                 def #{name}=(new_value)
