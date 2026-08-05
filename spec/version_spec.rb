@@ -135,6 +135,21 @@ class VersionSpec < Minitest::Spec
 
   it "prepare_for_ractors! registers the per-request accessor patches" do
     RactorRailsShim::PATCH_VERSIONS.clear
+    # Reset the _install_*_patch idempotency flags: other specs in the same
+    # process (e.g. framework_patch_dispatch_spec) call
+    # _install_all_framework_patches, which sets every @*_patched flag. Those
+    # flags guard BEFORE _register_patch in the _install_*_patch methods (unlike
+    # install_mattr_accessor, which registers before its guard), so a stale flag
+    # makes prepare_for_ractors! skip registration entirely and the registry
+    # stays empty. Clear them so this test sees a fresh dispatch.
+    RactorRailsShim.singleton_class.instance_variables.each do |iv|
+      next unless iv.to_s.end_with?("_patched")
+      RactorRailsShim.singleton_class.instance_variable_set(iv, nil)
+    end
+    RactorRailsShim.instance_variables.each do |iv|
+      next unless iv.to_s.end_with?("_patched")
+      RactorRailsShim.instance_variable_set(iv, nil)
+    end
     RactorRailsShim.prepare_for_ractors!
     expected = %i[rack_request inflector parameter_encoding path_registry
                   abstract_controller error_reporter lookup_context i18n
