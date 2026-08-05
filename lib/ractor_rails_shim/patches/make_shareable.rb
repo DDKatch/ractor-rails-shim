@@ -49,7 +49,7 @@ module RactorRailsShim
     #
     # Returns the shareable app. Raises on failure (e.g. if a Proc can't be
     # replaced — add the missing constant to shareable_constants first).
-    def make_app_shareable!(app = Rails.application)
+    def make_app_shareable!(app)
       AppShareabilizer.make_shareable!(app)
     end
   end
