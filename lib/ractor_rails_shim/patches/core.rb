@@ -419,29 +419,12 @@ module RactorRailsShim
     # share a frozen Attribute and raise FrozenError on first read/write. This
     # patch makes a frozen receiver yield a fresh, mutable Attribute so writes
     # (POST/create) work in workers. No-op in normal (unfrozen) Rails.
+    # Delegates to `RactorRailsShim::Patches::ActiveModelAttribute.install`
+    # (extracted Step 22.2, Issue #22). The idempotency flag now lives on the
+    # role object. See `Patches::ActiveModelAttribute` for the contract (the
+    # three prepend targets + the ActiveModel::Attribute guard).
     def _install_active_model_attribute_patch
-      return @am_attribute_patched if defined?(@am_attribute_patched) && @am_attribute_patched
-      @am_attribute_patched = true
-      return unless defined?(::ActiveModel::Attribute)
-      ::ActiveModel::Attribute.include(::RactorRailsShim::ActiveModelAttributePatch)
-      if defined?(::ActiveModel::AttributeRegistration) &&
-         ::ActiveModel::AttributeRegistration.const_defined?(:ClassMethods)
-        ::ActiveModel::AttributeRegistration::ClassMethods.prepend(
-          ::RactorRailsShim::ActiveModelAttributeRegistrationPatch
-        )
-      end
-      if defined?(::ActiveRecord::Attributes) &&
-         ::ActiveRecord::Attributes.const_defined?(:ClassMethods)
-        ::ActiveRecord::Attributes::ClassMethods.prepend(
-          ::RactorRailsShim::ActiveRecordAttributesPatch
-        )
-      end
-      if defined?(::ActiveRecord::ModelSchema) &&
-         ::ActiveRecord::ModelSchema.const_defined?(:ClassMethods)
-        ::ActiveRecord::ModelSchema::ClassMethods.prepend(
-          ::RactorRailsShim::ActiveRecordModelSchemaPatch
-        )
-      end
+      Patches::ActiveModelAttribute.install
     end
 
     # The shim's make_app_shareable! replaces Concurrent::Map instance variables

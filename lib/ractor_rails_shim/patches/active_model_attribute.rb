@@ -111,4 +111,61 @@ module RactorRailsShim
       end
     end
   end
+
+  # `RactorRailsShim::Patches::ActiveModelAttribute` — the role object that
+  # owns the install step for the three ActiveModel/ActiveRecord attribute
+  # patches above (extracted from the facade god module in Step 22.2,
+  # Issue #22; POODR §1 SRP).
+  #
+  # The three `prepend`/`include` calls live here; only their home changes
+  # (they were inlined on the facade's `_install_active_model_attribute_
+  # patch`). The facade method now delegates to `.install` until Issue #31.
+  #
+  # The idempotency flag (`@installed`) lives on this object, not on the
+  # facade. The guard `return unless defined?(::ActiveModel::Attribute)` is
+  # preserved — when ActiveModel is not loaded (e.g. the shim's own unit
+  # specs), install is a no-op that still records `installed? = true` (it
+  # ran to completion, the precondition just wasn't met).
+  module Patches
+    module ActiveModelAttribute
+      @installed = false
+      @mutex = Mutex.new
+
+      def self.install
+        @mutex.synchronize do
+          return true if @installed
+          @installed = true
+          next unless defined?(::ActiveModel::Attribute)
+          ::ActiveModel::Attribute.include(::RactorRailsShim::ActiveModelAttributePatch)
+          if defined?(::ActiveModel::AttributeRegistration) &&
+             ::ActiveModel::AttributeRegistration.const_defined?(:ClassMethods)
+            ::ActiveModel::AttributeRegistration::ClassMethods.prepend(
+              ::RactorRailsShim::ActiveModelAttributeRegistrationPatch
+            )
+          end
+          if defined?(::ActiveRecord::Attributes) &&
+             ::ActiveRecord::Attributes.const_defined?(:ClassMethods)
+            ::ActiveRecord::Attributes::ClassMethods.prepend(
+              ::RactorRailsShim::ActiveRecordAttributesPatch
+            )
+          end
+          if defined?(::ActiveRecord::ModelSchema) &&
+             ::ActiveRecord::ModelSchema.const_defined?(:ClassMethods)
+            ::ActiveRecord::ModelSchema::ClassMethods.prepend(
+              ::RactorRailsShim::ActiveRecordModelSchemaPatch
+            )
+          end
+        end
+        true
+      end
+
+      def self.installed?
+        @installed
+      end
+
+      def self.reset_installed_for_test!
+        @mutex.synchronize { @installed = false }
+      end
+    end
+  end
 end
