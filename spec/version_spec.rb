@@ -117,10 +117,19 @@ class VersionSpec < Minitest::Spec
   it "install registers patches in PATCH_VERSIONS tagged with 8.1" do
     RactorRailsShim::PATCH_VERSIONS.clear
     RactorRailsShim.instance_variable_set(:@installed, false)
-    # Reset idempotency flags so install re-registers (install is idempotent;
-    # the flags guard re-application, but registration happens before the guard
-    # returns for the _install_* methods — those are exercised via
-    # prepare_for_ractors! below).
+    # Reset the install_* idempotency flags so install re-registers. The
+    # flags guard re-application, but registration happens before the guard
+    # returns — a stale flag from a prior test makes install skip registration
+    # and PATCH_VERSIONS stays empty. Mirrors the reset in prepare_for_ractors!
+    # below (which resets the _install_*_patch flags too).
+    RactorRailsShim.singleton_class.instance_variables.each do |iv|
+      next unless iv.to_s.end_with?("_patched")
+      RactorRailsShim.singleton_class.instance_variable_set(iv, nil)
+    end
+    RactorRailsShim.instance_variables.each do |iv|
+      next unless iv.to_s.end_with?("_patched")
+      RactorRailsShim.instance_variable_set(iv, nil)
+    end
     RactorRailsShim.install
     # The early-boot patches (called directly by install) should be registered.
     assert_includes RactorRailsShim::PATCH_VERSIONS, :mattr_accessor

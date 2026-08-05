@@ -51,7 +51,7 @@ module RactorRailsShim
       ::ActiveSupport::Callbacks.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def run_callbacks_with_nil_safe(kind, type = nil)
           kind = kind.to_sym
-          if RactorRailsShim.thread_mode? && kind == :process_action &&
+          if RactorRailsShim.storage_strategy.replay_callbacks_always? && kind == :process_action &&
              defined?(::RactorRailsShim::SHAREABLE_DECLARED_CALLBACKS)
             # Thread (Puma/Falcon) mode: the eager-load class_attribute leak
             # corrupts __callbacks, so ALWAYS replay the captured symbolic
@@ -105,7 +105,7 @@ module RactorRailsShim
             # loading `@post`) render correctly. Proc/lambda filters
             # are not captured (self-capturing, unshareable) and are
             # skipped — a known limitation.
-            if (RactorRailsShim.thread_mode? || !Ractor.main?) && kind.to_sym == :process_action &&
+            if (RactorRailsShim.storage_strategy.replay_callbacks_always? || RactorRailsShim.storage_strategy.replay_callbacks_on_empty?) && kind.to_sym == :process_action &&
                defined?(::RactorRailsShim::SHAREABLE_DECLARED_CALLBACKS)
               table = ::RactorRailsShim::SHAREABLE_DECLARED_CALLBACKS
               action = (self.action_name rescue nil)

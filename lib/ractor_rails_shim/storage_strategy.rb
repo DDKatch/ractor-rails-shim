@@ -48,6 +48,20 @@ module RactorRailsShim
           RactorRailsShim::CLASS_ATTR_VALUES[key] = value if ::Ractor.main?
           value
         end
+
+        # Thread mode serves requests in the main Ractor, where the eager-
+        # load class_attribute leak corrupts __callbacks, so captured
+        # symbolic filters are ALWAYS replayed (ignoring __callbacks).
+        def replay_callbacks_always?
+          false
+        end
+
+        # Ractor mode: replay captured callbacks only when __callbacks is
+        # empty (the worker-Ractor case — workers get the empty default).
+        # In the main Ractor, __callbacks is live and replay is skipped.
+        def replay_callbacks_on_empty?
+          !::Ractor.main?
+        end
       end
     end
 
@@ -91,6 +105,19 @@ module RactorRailsShim
           RactorRailsShim::CLASS_ATTR_VALUES[:"ractor_rails_shim_class_attr_#{owner.object_id}_#{suffix}"] = value
           value
         end
+
+        # Thread mode: the eager-load class_attribute leak corrupts
+        # __callbacks, so ALWAYS replay the captured symbolic filters
+        # (ignoring __callbacks entirely).
+        def replay_callbacks_always?
+          true
+        end
+
+        # Thread mode always replays, so the on-empty branch is unreachable
+        # (the always branch returns first). Provided for contract parity.
+        def replay_callbacks_on_empty?
+          true
+        end
       end
     end
   end
@@ -98,10 +125,14 @@ module RactorRailsShim
   class << self
     # The active storage strategy (either `StorageStrategy::Ractor` or
     # `StorageStrategy::Thread`). Set once at install time from
-    # `RunMode.thread?` (see `Installer`). Defaults to the Ractor strategy
-    # before install (the common case).
-    attr_accessor :storage_strategy
+    # `RunMode.thread?` (see `Installer`). Can also be set directly by tests.
+    # When unset, derives lazily from `RunMode.thread?` so a stale strategy
+    # can't leak across tests that reset `RunMode`.
+    attr_writer :storage_strategy
+
+    def storage_strategy
+      return @storage_strategy if defined?(@storage_strategy)
+      RactorRailsShim::RunMode.thread? ? StorageStrategy::Thread : StorageStrategy::Ractor
+    end
   end
-  # Default: Ractor mode (install overrides to Thread when RunMode.thread?).
-  self.storage_strategy = StorageStrategy::Ractor
 end
