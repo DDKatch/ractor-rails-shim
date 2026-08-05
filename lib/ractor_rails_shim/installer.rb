@@ -5,9 +5,8 @@
 #
 # Owns the install entry point and the framework-patch dispatcher:
 #   - install                          the top-level entry: version check,
-#                                       run-mode resolve, branch by mode,
-#                                       call the early-boot install_*
-#                                       methods, set @installed
+#                                       run-mode resolve, select strategy,
+#                                       call the strategy, set @installed
 #   - installed?                       reader for the @installed flag
 #   - dispatch_all_framework_patches  auto-discover + call every
 #                                       _install_*_patch singleton method
@@ -51,61 +50,11 @@ module RactorRailsShim
     # facade (the methods live in their per-concern patch files).
     def self.install
       RactorRailsShim._check_version_support
-      # Resolve the run mode (Ractor vs thread-server). Configuration is
-      # owned by RunMode — explicit `thread_mode=` wins; otherwise we fall
-      # back to ENV["SERVER"]. Lifted out of the old inline ENV read so
-      # install is no longer non-deterministic on ambient ENV with no
-      # visible config surface.
       RactorRailsShim::RunMode.resolve!
-
-      # The storage strategy derives lazily from `RunMode.thread?` (see
-      # `StorageStrategy#storage_strategy`), so no explicit assignment here.
-      # `install_class_attribute` and the eval'd heredoc read
-      # `RactorRailsShim.storage_strategy`, which returns Thread or Ractor
-      # based on the resolved run mode. Tests that reset `RunMode` get the
-      # correct strategy automatically (no stale stored value).
-
-      if RactorRailsShim.thread_mode?
-        # Minimal install for thread (Puma/Falcon) servers: only the
-        # class_attribute isolation fix + nil-safe callback replay. The
-        # other patches route framework globals through per-Ractor IES,
-        # which is empty on Puma's request threads and would break the app,
-        # so they are skipped; the original Rails globals are thread-safe
-        # and used as-is.
-        RactorRailsShim.install_class_attribute
-        RactorRailsShim.install_execution_wrapper
-        # Capture each controller's OWN declared before_action/after_action
-        # filters at declaration time (during eager load) by intercepting
-        # ActiveSupport::Callbacks.set_callback. This must be installed
-        # BEFORE eager load so declarations are captured as they happen —
-        # the class_attribute callback chain is corrupted by an eager-load
-        # leak under Ruby 4.0.5 + Rails 8.1.3 + Devise, so reading
-        # __callbacks later yields a wrong, unshareable chain. Install
-        # requires active_support/callbacks to be loaded, so require it
-        # first; install runs before the app's eager_load, so every
-        # controller declaration is captured.
-        require "active_support/callbacks" rescue nil
-        RactorRailsShim._install_callback_declaration_capture!
-      else
-        RactorRailsShim.install_mattr_accessor
-        RactorRailsShim.install_class_attribute
-        RactorRailsShim.install_zeitwerk_registry
-        RactorRailsShim.install_rubygems
-        RactorRailsShim.install_rails_module
-        RactorRailsShim.install_shareable_constants
-        RactorRailsShim.install_execution_wrapper
-        require "active_support/callbacks" rescue nil
-        RactorRailsShim._install_callback_declaration_capture!
-        # Patch ActionView::Base.with_empty_template_cache EARLY (before
-        # eager load) so production's DetailsKey.view_context_class uses the
-        # block-free version. The framework's original defines
-        # compiled_method_container via define_method(&block) — an
-        # un-shareable Proc that breaks worker Ractors. on_load fires as
-        # soon as ActionView is required, well before the app's eager_load.
-        ActiveSupport.on_load(:action_view) do
-          RactorRailsShim._install_with_empty_template_cache_patch
-        end
-      end
+      strategy = RactorRailsShim::RunMode.thread? ?
+        RactorRailsShim::InstallStrategy::Thread :
+        RactorRailsShim::InstallStrategy::Ractor
+      strategy.install
       @installed = true
       true
     end
