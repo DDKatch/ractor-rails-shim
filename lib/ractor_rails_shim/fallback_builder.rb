@@ -93,15 +93,15 @@ module RactorRailsShim
     end
 
     def self.class_attributes
-      @class_attributes || RactorRailsShim::CLASS_ATTRIBUTES
+      @class_attributes || RactorRailsShim::Registry.class_attributes
     end
 
     def self.class_attr_values
-      @class_attr_values || RactorRailsShim::CLASS_ATTR_VALUES
+      @class_attr_values || RactorRailsShim::Registry.class_attr_values
     end
 
     def self.shareable_mattr_defaults
-      @shareable_mattr_defaults || RactorRailsShim::SHAREABLE_MATTR_DEFAULTS
+      @shareable_mattr_defaults || RactorRailsShim::Registry.shareable_mattr_defaults
     end
 
     def self.storage

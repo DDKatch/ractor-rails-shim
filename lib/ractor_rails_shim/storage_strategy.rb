@@ -38,14 +38,14 @@ module RactorRailsShim
         def lookup(owner, key, missing_default)
           v = RactorRailsShim.storage[key]
           return v if RactorRailsShim.storage.key?(key)
-          fb = RactorRailsShim::SHAREABLE_FALLBACK[key]
+          fb = RactorRailsShim::Registry.shareable_fallback[key]
           return fb unless fb.nil?
-          RactorRailsShim::CLASS_ATTR_VALUES[key] if ::Ractor.main?
+          RactorRailsShim::Registry.class_attr_values[key] if ::Ractor.main?
         end
 
         def store(owner, key, value)
           RactorRailsShim.storage[key] = value
-          RactorRailsShim::CLASS_ATTR_VALUES[key] = value if ::Ractor.main?
+          RactorRailsShim::Registry.class_attr_values[key] = value if ::Ractor.main?
           value
         end
 
@@ -95,14 +95,14 @@ module RactorRailsShim
           suffix = _suffix_from_key(key)
           owner.ancestors.each do |anc|
             k = :"ractor_rails_shim_class_attr_#{anc.object_id}_#{suffix}"
-            return RactorRailsShim::CLASS_ATTR_VALUES[k] if RactorRailsShim::CLASS_ATTR_VALUES.key?(k)
+            return RactorRailsShim::Registry.class_attr_values[k] if RactorRailsShim::Registry.class_attr_values.key?(k)
           end
           missing_default
         end
 
         def store(owner, key, value)
           suffix = _suffix_from_key(key)
-          RactorRailsShim::CLASS_ATTR_VALUES[:"ractor_rails_shim_class_attr_#{owner.object_id}_#{suffix}"] = value
+          RactorRailsShim::Registry.class_attr_values[:"ractor_rails_shim_class_attr_#{owner.object_id}_#{suffix}"] = value
           value
         end
 

@@ -91,7 +91,7 @@ module RactorRailsShim
     end
 
     def self.shareable_constants_registry
-      @shareable_constants_registry || RactorRailsShim::SHAREABLE_CONSTANTS
+      @shareable_constants_registry || RactorRailsShim::Registry.shareable_constants
     end
 
     # The registry of constant path strings whose values are made shareable
