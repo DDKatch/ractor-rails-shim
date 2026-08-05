@@ -44,6 +44,7 @@ require_relative "shareability_traversal"
 require_relative "fallback_builder"
 require_relative "worker_app"
 require_relative "worker_app_factory"
+require_relative "callback_capture"
 
 # Naming convention for the patch methods on RactorRailsShim's singleton class:
 #

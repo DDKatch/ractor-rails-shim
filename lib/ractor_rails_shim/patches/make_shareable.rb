@@ -400,106 +400,40 @@ module RactorRailsShim
       end
     end
 
+    # Freeze (make Ractor-shareable) the captured declared-callbacks table.
+    # Delegates to CallbackCapture.freeze_declared_callbacks! (extracted
+    # Issue #13, Step 13.5). See CallbackCapture for the contract.
     def _freeze_declared_callbacks!
-      table = (@declared_callbacks || {})
-      # Deep-freeze (make shareable) so worker Ractors can read the constant.
-      # Entries are Hashes of Symbols/booleans/nil/Arrays — all natively
-      # shareable. A non-frozen constant raises Ractor::IsolationError when a
-      # worker reads it.
-      _swallow("freeze declared callbacks") do
-        Ractor.make_shareable(table)
-        _reassign_shareable_const(:SHAREABLE_DECLARED_CALLBACKS, table)
-      end
+      CallbackCapture.freeze_declared_callbacks!
     end
 
-    # Record a single declared symbolic filter. Called from the
-    # set_callback interceptor during eager load (main Ractor only).
+    # Record a single declared symbolic filter. Delegates to
+    # CallbackCapture.record_declared_callback (extracted Issue #13, Step
+    # 13.5). Called from the set_callback interceptor during eager load.
     def _record_declared_callback(klass_id, kind, filter, only, except)
-      @declared_callbacks ||= {}
-      (@declared_callbacks[klass_id] ||= []) << {
-        kind: kind,
-        filter: filter,
-        only: (only.freeze if only),
-        except: (except.freeze if except)
-      }
+      CallbackCapture.record_declared_callback(klass_id, kind, filter, only, except)
     end
 
-    # Install an interceptor on ActiveSupport::Callbacks.set_callback that
-    # records, per declaring class, every symbolic `:process_action` filter
-    # it declares. This must run BEFORE eager load (so declarations are
-    # captured as they happen) — install wires it via
-    # ActiveSupport.on_load(:active_support).
+    # Install an interceptor on ActiveSupport::Callbacks.set_callback.
+    # Delegates to CallbackCapture.install_callback_declaration_capture!
+    # (extracted Issue #13, Step 13.5). See CallbackCapture for the contract.
     def _install_callback_declaration_capture!
-      return if @callback_capture_installed
-      @callback_capture_installed = true
-      # ActiveSupport::Callbacks may not be loaded yet at on_load(:active_support)
-      # time (it's required lazily). Require it so the ClassMethods module with
-      # set_callback exists before we alias it.
-      require "active_support/callbacks" rescue nil
-      mod = (defined?(::ActiveSupport::Callbacks) &&
-             ::ActiveSupport::Callbacks.const_defined?(:ClassMethods)) ?
-            ::ActiveSupport::Callbacks::ClassMethods : nil
-      return unless mod && mod.method_defined?(:set_callback)
-      mod.alias_method(:_rrs_orig_set_callback, :set_callback)
-      mod.module_eval <<-RUBY, __FILE__, __LINE__ + 1
-        def set_callback(name, *filters, &block)
-          if name == :process_action && filters.length >= 2 && filters[0].is_a?(Symbol)
-            kind = filters[0]
-            filter = filters[1]
-            if filter.is_a?(Symbol) &&
-               self.is_a?(::Class) &&
-               self.ancestors.include?(::AbstractController::Base)
-              # Rails converts `only:`/`except:` into an ActionFilter object
-              # stored in the callback's `:if`/`:unless` options (NOT a bare
-              # `:only` key). Read the constraint back from the ActionFilter's
-              # @conditional_key (:only/:except) and @actions (a Set of action
-              # name Strings) via the extracted, version-gated helper.
-              opts = filters.find { |f| f.is_a?(Hash) }
-              only = nil
-              except = nil
-              if opts
-                [opts[:if], opts[:unless]].each do |arr|
-                  next unless arr.is_a?(Array)
-                  arr.each do |af|
-                    ck, acts = ::RactorRailsShim._read_action_filter_constraints(af)
-                    next unless ck && acts
-                    only = acts if ck == :only
-                    except = acts if ck == :except
-                  end
-                end
-              end
-              ::RactorRailsShim._record_declared_callback(
-                self.object_id, kind, filter, only, except)
-            end
-          end
-          _rrs_orig_set_callback(name, *filters, &block)
-        end
-      RUBY
-      @callback_capture_installed = true
+      CallbackCapture.install_callback_declaration_capture!
     end
 
-    # Read @conditional_key and @actions off an ActionFilter instance (Rails
-    # internal ivars). Returns [conditional_key, actions_as_symbols]. On a
-    # Rails version where the ivars are renamed/absent, returns [nil, nil].
-    # A missing ivar means callbacks run for actions they shouldn't
-    # (security-relevant). instance_variable_get returns nil for a missing
-    # ivar without raising, so we check instance_variable_defined? and emit
-    # a labeled warning via _swallow when debug=true so a silent Rails rename
-    # is visible during diagnosis.
+    # Read @conditional_key and @actions off an ActionFilter instance.
+    # Delegates to CallbackCapture.read_action_filter_constraints (extracted
+    # Issue #13, Step 13.5). See CallbackCapture for the version-gated
+    # contract.
     def _read_action_filter_constraints(af)
-      ck = _read_ivar_or_warn(af, :@conditional_key, "action filter constraints")
-      acts = _read_ivar_or_warn(af, :@actions, "action filter constraints")
-      acts = acts.to_a.map(&:to_sym) if acts && acts.respond_to?(:to_a)
-      [ck, acts]
+      CallbackCapture.read_action_filter_constraints(af)
     end
 
-    # Read an ivar; if it's undefined and debug? is true, emit a labeled
-    # warning so a silent Rails internal rename surfaces during diagnosis.
-    # Returns the ivar value or nil.
+    # Read an ivar; if undefined and debug? is true, emit a labeled warning.
+    # Delegates to CallbackCapture.read_ivar_or_warn (extracted Issue #13,
+    # Step 13.5).
     def _read_ivar_or_warn(obj, ivar, label)
-      return obj.instance_variable_get(ivar) if obj.instance_variable_defined?(ivar)
-      _swallow(label) { warn "[ractor_rails_shim] #{label}: missing ivar #{ivar} on #{obj.class}" } if debug?
-      nil
+      CallbackCapture.read_ivar_or_warn(obj, ivar, label)
     end
 
     def _collect_controller_classes(app)
