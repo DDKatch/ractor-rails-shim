@@ -95,8 +95,9 @@ module RactorRailsShim
       true
     end
 
-    # Best-effort shareable replacement for a constant value. Monitor/Mutex
-    # become a NoOpLock (never contended post-boot). BasicObject instances
+    # Best-effort shareable replacement for a constant value. Any object that
+    # responds to `:synchronize` (the duck type for a Mutex-like lock — covers
+    # Monitor, Mutex, and third-party lock classes alike) becomes a NoOpLock
     # (used as sentinel sentinels, e.g. PRIMARY_KEY_NOT_SET) can't be frozen
     # (BasicObject has no #freeze method) — replace with a frozen Symbol.
     # Everything else is deep-frozen via Ractor.make_shareable; if that
@@ -110,7 +111,7 @@ module RactorRailsShim
     # is_a?/respond_to? (Kernel not included); _introspectable? safely
     # detects this via a guarded respond_to?(:is_a?) check.
     def self.make_value_shareable(val)
-      if RactorRailsShim._introspectable?(val) && (val.is_a?(::Monitor) || val.is_a?(::Mutex))
+      if RactorRailsShim._introspectable?(val) && val.respond_to?(:synchronize)
         Ractor.make_shareable(RactorRailsShim.singleton_class.const_get(:NoOpLock).new)
       elsif !RactorRailsShim._introspectable?(val) || !val.respond_to?(:freeze)
         # Non-introspectable (BasicObject without is_a?) OR lacks #freeze

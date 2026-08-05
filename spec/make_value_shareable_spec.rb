@@ -106,4 +106,28 @@ class MakeValueShareableSpec < Minitest::Spec
     result = RactorRailsShim._make_value_shareable(basic)
     assert Ractor.shareable?(result)
   end
+
+  # --- Duck-typed lock detection (Issue #17) ---
+  # The lock replacement should key on the `synchronize` message (the duck
+  # type for a Mutex-like lock), not on concrete `is_a?(Monitor)||is_a?(Mutex)`
+  # checks. A plain class that only defines `synchronize` is treated as a lock
+  # and replaced with a shareable NoOpLock — this future-proofs against
+  # third-party lock classes (e.g. Concurrent::LockableRuby Mutex variants,
+  # async's Async::Semaphore) that are structurally locks but not subclasses.
+
+  it "returns a shareable NoOpLock for a duck-typed lock (responds to :synchronize)" do
+    fake_lock_class = Class.new do
+      def synchronize; yield; end
+    end
+    result = RactorRailsShim._make_value_shareable(fake_lock_class.new)
+    assert_kind_of NoOpLock, result
+    assert Ractor.shareable?(result)
+  end
+
+  it "does NOT treat a plain object without :synchronize as a lock" do
+    plain = Class.new { def foo; end }.new
+    result = RactorRailsShim._make_value_shareable(plain)
+    # Not a lock → routed to make_shareable (deep-frozen), not NoOpLock.
+    refute_kind_of NoOpLock, result
+  end
 end
