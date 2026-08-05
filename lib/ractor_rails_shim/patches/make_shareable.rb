@@ -379,23 +379,13 @@ module RactorRailsShim
       CallbackCapture.read_ivar_or_warn(obj, ivar, label)
     end
 
+    # Collect the set of loaded controller classes from the app's routes
+    # table and ApplicationController.descendants. Delegates to
+    # `RactorRailsShim::ControllerCollector.call(app)` (extracted Step
+    # 22.4, Issue #22). See `ControllerCollector` for the contract (two
+    # _swallow-funneled branches, compact.uniq dedup).
     def _collect_controller_classes(app)
-      classes = []
-      _swallow("collect controller classes") do
-        router = (app.respond_to?(:routes) ? app.routes : nil) || (defined?(::Rails) && ::Rails.application && ::Rails.application.routes)
-        router.routes.each do |r|
-          c = r.defaults[:controller] rescue nil
-          next unless c && c.respond_to?(:camelize)
-          klass = "#{c.camelize}Controller".safe_constantize rescue nil
-          classes << klass if klass
-        end
-      end
-      _swallow("collect controller classes (descendants)") do
-        if defined?(::ApplicationController) && ::ApplicationController.respond_to?(:descendants)
-          classes.concat(::ApplicationController.descendants)
-        end
-      end
-      classes.compact.uniq
+      ControllerCollector.call(app)
     end
   end
 end
