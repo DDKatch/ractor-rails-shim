@@ -100,7 +100,7 @@ module RactorRailsShim
           if Ractor.main?
             super
           else
-            RactorRailsShim.const_defined?(:SHAREABLE_APP) ? RactorRailsShim::SHAREABLE_APP : nil
+            RactorRailsShim::AppShareabilizer.const_defined?(:SHAREABLE_APP) ? RactorRailsShim::AppShareabilizer::SHAREABLE_APP : nil
           end
         end
 

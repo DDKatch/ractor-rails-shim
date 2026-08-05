@@ -293,8 +293,8 @@ class AppShareabilizerSpec < Minitest::Spec
     app = Object.new
     RactorRailsShim::AppShareabilizer.reset_stashed!
     RactorRailsShim::AppShareabilizer.stash!(app)
-    assert RactorRailsShim.const_defined?(:SHAREABLE_APP, false),
-           "SHAREABLE_APP should be defined after stash!"
+    assert RactorRailsShim::AppShareabilizer.const_defined?(:SHAREABLE_APP, false),
+           "SHAREABLE_APP should be defined on AppShareabilizer after stash!"
   ensure
     RactorRailsShim::AppShareabilizer.reset_stashed!
   end
@@ -306,7 +306,7 @@ class AppShareabilizerSpec < Minitest::Spec
     RactorRailsShim::AppShareabilizer.stash!(app1)
     RactorRailsShim::AppShareabilizer.stash!(app2)
     # First stash wins — const_defined? guard
-    assert RactorRailsShim.const_defined?(:SHAREABLE_APP, false)
+    assert RactorRailsShim::AppShareabilizer.const_defined?(:SHAREABLE_APP, false)
   ensure
     RactorRailsShim::AppShareabilizer.reset_stashed!
   end

@@ -29,9 +29,9 @@
 #
 # The collaborators are reached through the configure seam, defaulting to
 # the facade lookups so existing call sites keep working (Issue #23, POODR
-# §2 Dependencies). The `ConstantShareabilizer.applied?` gate and the
-# `SHAREABLE_APP` stash still live on the facade; Issue #29 will move the
-# stash to its owner.
+# §2 Dependencies). Issue #36b (Round 4): the SHAREABLE_APP stash lives on
+# AppShareabilizer itself (the role owns its output state), NOT on the
+# facade. The ConstantShareabilizer.applied? gate lives on the role.
 
 module RactorRailsShim
   module AppShareabilizer
@@ -176,13 +176,21 @@ module RactorRailsShim
       app
     end
 
-    # One-shot stash of the app as SHAREABLE_APP. Idempotent: first call
-    # wins (via const_defined? guard). Main-Ractor-only by contract —
-    # workers must not reassign the constant. Returns the app.
+    # One-shot stash of the app as SHAREABLE_APP on this role module.
+    # Idempotent: first call wins (via const_defined? guard). Main-Ractor-
+    # only by contract — workers must not reassign the constant. Returns
+    # the app. Issue #36b: the constant lives on AppShareabilizer, not the
+    # facade; the reassign_shareable_const seam is bypassed because it
+    # writes to the facade, not the role.
     def self.stash!(app)
-      return app if RactorRailsShim.const_defined?(:SHAREABLE_APP, false)
+      return app if const_defined?(:SHAREABLE_APP, false)
       return app unless Ractor.main?
-      reassign_shareable_const.call(:SHAREABLE_APP, app)
+      verbose, $VERBOSE = $VERBOSE, nil
+      begin
+        const_set(:SHAREABLE_APP, app)
+      ensure
+        $VERBOSE = verbose
+      end
       @stashed = true
       app
     end
@@ -193,7 +201,7 @@ module RactorRailsShim
 
     def self.reset_stashed!
       @stashed = false
-      RactorRailsShim.send(:remove_const, :SHAREABLE_APP) if RactorRailsShim.const_defined?(:SHAREABLE_APP, false)
+      remove_const(:SHAREABLE_APP) if const_defined?(:SHAREABLE_APP, false)
     end
   end
 end
