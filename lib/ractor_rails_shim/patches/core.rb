@@ -249,21 +249,18 @@ module RactorRailsShim
 
     # --- Generic constant-sharing utilities (moved from rails_module.rb) -----
     # These are framework-agnostic; SHAREABLE_CONSTANTS lives here too, so the
-    # whole constant-shareability machinery is owned by core.rb.
+    # whole constant-shareability machinery is owned by core.rb. The machinery
+    # itself is extracted to RactorRailsShim::ConstantShareabilizer (Issue #13,
+    # Step 13.1); the methods below are facade delegations preserving the
+    # existing public/private API and the naming-convention / shim / safe_const
+    # _get / make_value_shareable specs.
 
     def shareable_constants
-      SHAREABLE_CONSTANTS
+      ConstantShareabilizer.shareable_constants
     end
 
     def install_shareable_constants
-      # Called at install time; if ActiveSupport isn't loaded yet, the
-      # constants don't exist. We re-run from patch_rails_module! (which
-      # fires once Rails — and thus ActiveSupport — is defined). Guarded
-      # by @shareable_constants_done so both paths are safe.
-      _register_patch :shareable_constants, "8.1"
-      return unless defined?(::ActiveSupport)
-
-      _apply_shareable_constants!
+      ConstantShareabilizer.install
     end
 
     # Run after Rails is fully booted (after Rails.application.initialize!)
@@ -271,97 +268,55 @@ module RactorRailsShim
     # registered constant shareable; constants that didn't exist at install
     # time (e.g. Rails::Railtie, loaded after `module Rails` opens) get
     # fixed here. Safe to call multiple times; already-shareable constants
-    # are no-ops.
-    #
-    # This MUST run in the main Ractor (const_set writes the constant table).
-    # Public wrapper is `prepare_for_ractors!` above.
+    # are no-ops. MUST run in the main Ractor (const_set writes the constant
+    # table). Public wrapper is `prepare_for_ractors!` above. Delegates to
+    # ConstantShareabilizer.apply! (extracted Issue #13, Step 13.1).
     def _apply_shareable_constants!
-      return if @shareable_constants_done
-      # Only set the done flag when every registered constant was made
-      # shareable (or already was). If any returned false (constant doesn't
-      # exist yet), leave the flag unset so a later call (from
-      # make_app_shareable! or prepare_for_ractors!) retries the now-loadable
-      # constants — otherwise workers hit IsolationError on the unshareable
-      # values that were missed on the first pass.
-      all_resolved = shareable_constants.map { |path| make_constant_shareable(path) }.all?
-      @shareable_constants_done = true if all_resolved
+      ConstantShareabilizer.apply!
     end
 
     # Resolve a constant path string to a value, and if it exists and is
     # not already shareable, replace it with its shareable (deep-frozen)
     # version. Returns true if the constant was made shareable (or already
-    # was); false if it doesn't exist yet (caller may retry).
+    # was); false if it doesn't exist yet (caller may retry). Delegates to
+    # ConstantShareabilizer.make_shareable (extracted Issue #13, Step 13.1).
     def make_constant_shareable(const_path)
-      owner, name = split_const_path(const_path)
-      return false unless owner && name
-      return true if owner.const_defined?(name, false) == false
-
-      val = owner.const_get(name, false)
-      return true if Ractor.shareable?(val)
-
-      shareable = _make_value_shareable(val)
-      return true unless shareable
-
-      # Deep-freeze and reassign. Ractor.make_shareable mutates `val` in
-      # place (freezing it and its reachable objects) and returns it.
-      # const_set warns "already initialized constant" because Rails'
-      # environment_inquirer.rb defined the constant first. The reassign is
-      # intentional (we're replacing the mutable value with its frozen
-      # shareable twin), so silence that one warning.
-      verbose, $VERBOSE = $VERBOSE, nil
-      begin
-        owner.const_set(name, shareable)
-      ensure
-        $VERBOSE = verbose
-      end
-      true
+      ConstantShareabilizer.make_shareable(const_path)
     end
 
     # Best-effort shareable replacement for a constant value. Monitor/Mutex
     # become a NoOpLock (never contended post-boot). BasicObject instances
     # (used as sentinel sentinels, e.g. PRIMARY_KEY_NOT_SET) can't be frozen
     # (BasicObject has no #freeze method) — replace with a frozen Symbol.
-    # Everything else is deep-frozen via Ractor.make_shareable; if that fails
-    # (e.g. a Proc, or a Concurrent::Map / TypeMap holding Procs — both
-    # intrinsically unshareable and needing upstream Rails changes), returns
-    # nil and the constant is left as-is (the worker will raise a clear
-    # IsolationError on read).
-    #
-    # Uses the existing _introspectable? helper (make_shareable.rb) instead of
-    # ad-hoc `rescue false` guards. BasicObject subclasses don't define
-    # is_a?/respond_to? (Kernel not included); _introspectable? safely detects
-    # this via a guarded respond_to?(:is_a?) check.
+    # Everything else is deep-frozen via Ractor.make_shareable; if that
+    # fails (e.g. a Proc, or a Concurrent::Map / TypeMap holding Procs —
+    # both intrinsically unshareable and needing upstream Rails changes),
+    # returns nil and the constant is left as-is (the worker will raise a
+    # clear IsolationError on read). Delegates to
+    # ConstantShareabilizer.make_value_shareable (extracted Issue #13,
+    # Step 13.1). Uses the existing _introspectable? helper (make_shareable.rb)
+    # instead of ad-hoc `rescue false` guards.
     def _make_value_shareable(val)
-      if _introspectable?(val) && (val.is_a?(::Monitor) || val.is_a?(::Mutex))
-        Ractor.make_shareable(NoOpLock.new)
-      elsif !_introspectable?(val) || !val.respond_to?(:freeze)
-        # Non-introspectable (BasicObject without is_a?) OR lacks #freeze
-        # (BasicObject subclasses). Replace with a frozen Symbol sentinel —
-        # it's compared with `equal?`, and a frozen Symbol is always shareable.
-        Ractor.make_shareable(:"__shim_unshareable_sentinel__")
-      else
-        _swallow("make_value_shareable #{val.class}") { Ractor.make_shareable(val) }
-      end
+      ConstantShareabilizer.make_value_shareable(val)
     end
 
     # Resolve a constant path string (e.g. "A::B::C") to its value, returning
-    # nil if any segment isn't defined. When inherit is false, each segment is
-    # looked up only in its parent's own constant table (const_get name, false),
-    # matching the original no-inherit lookups in _freeze_messages_constants!.
-    # Replaces dense rescue/& chains like:
+    # nil if any segment isn't defined. When inherit is false, each segment
+    # is looked up only in its parent's own constant table (const_get name,
+    # false), matching the original no-inherit lookups in
+    # _freeze_messages_constants!. Replaces dense rescue/& chains like:
     #   (Object.const_get(:A) rescue nil)&.const_get(:B, false) rescue nil
+    # Delegates to ConstantShareabilizer.safe_const_get (extracted Issue
+    # #13, Step 13.1).
     def _safe_const_get(path, inherit: true)
-      path.split("::").inject(Object) { |ns, n| ns.const_get(n, inherit) } rescue nil
+      ConstantShareabilizer.safe_const_get(path, inherit: inherit)
     end
 
     # Split "A::B::C" into [A::B (module), :C]. Returns [nil, nil] if the
-    # parent isn't defined.
+    # parent isn't defined. Delegates to ConstantShareabilizer.split_const_path
+    # (extracted Issue #13, Step 13.1).
     def split_const_path(path)
-      parts = path.split("::")
-      return [Object, parts.first.to_sym] if parts.size == 1
-      parent = _safe_const_get(parts[0...-1].join("::"))
-      return [nil, nil] unless parent
-      [parent, parts.last.to_sym]
+      ConstantShareabilizer.split_const_path(path)
     end
 
     # _install_*_patch methods called from OTHER install paths, not from the

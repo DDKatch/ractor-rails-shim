@@ -39,6 +39,7 @@ require_relative "version_check"
 require_relative "version_policy"
 require_relative "run_mode"
 require_relative "freezers"
+require_relative "constant_shareabilizer"
 
 # Naming convention for the patch methods on RactorRailsShim's singleton class:
 #
