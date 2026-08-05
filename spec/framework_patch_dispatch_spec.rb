@@ -155,15 +155,19 @@ class FrameworkPatchDispatchSpec < Minitest::Spec
   it "dispatches exactly the same set of patches as the original hardcoded list" do
     # Stub every _install_*_patch method to record its name when called,
     # without actually executing the patch logic (which requires Rails).
+    # Save each original method so the ensure block can restore it WITHOUT
+    # re-requiring the patch files (which would reset SHAREABLE_CONSTANTS
+    # et al. to empty and corrupt state for subsequent specs).
     called = []
     stubbed = []
+    originals = {}
     (RactorRailsShim.singleton_class.instance_methods(false) +
      RactorRailsShim.singleton_class.private_instance_methods(false))
       .map(&:to_sym)
       .select { |m| m.to_s.start_with?("_install_") && m.to_s.end_with?("_patch") }
       .reject { |m| m == :_install_all_framework_patches || NON_DISPATCHED.include?(m) }
       .each do |m|
-      original = RactorRailsShim.method(m)
+      originals[m] = RactorRailsShim.method(m)
       stubbed << m
       RactorRailsShim.define_singleton_method(m) { called << m }
     end
@@ -178,13 +182,11 @@ class FrameworkPatchDispatchSpec < Minitest::Spec
                  "(missing: #{(expected_set - called_set).inspect}, " \
                  "extra: #{(called_set - expected_set).inspect})"
   ensure
-    # Remove stubs so subsequent tests see the real methods. Re-require the
-    # patch files to restore original definitions.
-    stubbed&.each { |m| RactorRailsShim.singleton_class.remove_method(m) rescue nil }
-    # Re-load patch files to restore real method definitions
-    $LOADED_FEATURES
-      .select { |f| f.include?("ractor_rails_shim/patches/") }
-      .each { |f| $LOADED_FEATURES.delete(f) }
-    require_relative "../lib/ractor_rails_shim/patches"
+    # Restore each original method. define_singleton_method with the saved
+    # Method object re-binds it without re-executing the patch file's
+    # module body (no constant redefinition, no state reset).
+    originals&.each do |m, orig|
+      RactorRailsShim.define_singleton_method(m, orig)
+    end
   end
 end

@@ -740,34 +740,11 @@ module RactorRailsShim
     # once warmed), so pre-populating them here lets workers read via `||=`
     # without ever setting the class ivar. (Class ivars holding unshareable
     # values are handled by _freeze_active_record_class_ivars!.)
+    # Delegates to RactorRailsShim::Freezers::CacheWarmer (extracted Issue #1);
+    # kept as a facade method for the existing prepare_for_ractors! call site
+    # and the naming-convention spec.
     def _warm_active_record_class_caches!
-      return unless defined?(::ActiveRecord::Base)
-      models = [::ActiveRecord::Base] + (::ActiveRecord::Base.descendants rescue [])
-      warmers = %i[
-        timestamp_attributes_for_create_in_model
-        timestamp_attributes_for_update_in_model
-        all_timestamp_attributes_in_model
-        sequence_name
-        columns
-        column_names
-        attribute_names
-        column_defaults
-        symbol_column_to_string_name_hash
-        returning_columns_for_insert
-        yaml_encoder
-        attribute_types
-      ]
-      models.each do |klass|
-        next if klass.abstract_class?
-        warmers.each do |m|
-          next unless klass.respond_to?(m, true)
-          begin
-            klass.send(m)
-          rescue StandardError
-            nil
-          end
-        end
-      end
+      RactorRailsShim::Freezers::CacheWarmer.call
     end
   end
   # A shareable Rack wrapper that performs per-worker initialization lazily,
