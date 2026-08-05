@@ -34,6 +34,7 @@ begin
 rescue LoadError
   # ActiveSupport not installed — the fallback below provides the same API.
 end
+require_relative "storage"
 require_relative "fallback_ies"
 require_relative "version_check"
 require_relative "version_policy"
