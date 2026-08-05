@@ -449,4 +449,84 @@ class ShareabilityTraversalSpec < Minitest::Spec
   ensure
     RactorRailsShim::ShareabilityTraversal.reset_configuration
   end
+
+  # --- Issue #30: CONTAINER_WALKERS dispatch table ---
+
+  it "CONTAINER_WALKERS has entries for Hash, Array, Set, Struct" do
+    t = RactorRailsShim::ShareabilityTraversal
+    assert t.const_defined?(:CONTAINER_WALKERS, false), "CONTAINER_WALKERS should exist"
+    walkers = t.const_get(:CONTAINER_WALKERS)
+    assert_includes walkers.keys, Hash
+    assert_includes walkers.keys, Array
+    assert_includes walkers.keys, ::Set
+    assert_includes walkers.keys, ::Struct
+  end
+
+  it "each_ivar_and_child walks Hash entries via CONTAINER_WALKERS" do
+    t = RactorRailsShim::ShareabilityTraversal
+    h = { a: 1, b: :sym }
+    children = []
+    t.each_ivar_and_child(h) { |v, iv| children << [v, iv] }
+    # Hash yields keys and values
+    assert children.any? { |v, _| v == :a }, "should yield Hash key :a"
+    assert children.any? { |v, _| v == 1 }, "should yield Hash value 1"
+  end
+
+  it "each_ivar_and_child walks Array entries via CONTAINER_WALKERS" do
+    t = RactorRailsShim::ShareabilityTraversal
+    a = [1, 2, 3]
+    children = []
+    t.each_ivar_and_child(a) { |v, iv| children << [v, iv] }
+    values = children.map(&:first)
+    assert_includes values, 1
+    assert_includes values, 2
+    assert_includes values, 3
+  end
+
+  it "each_ivar_and_child walks Set entries via CONTAINER_WALKERS" do
+    t = RactorRailsShim::ShareabilityTraversal
+    s = Set.new([:x, :y])
+    children = []
+    t.each_ivar_and_child(s) { |v, iv| children << [v, iv] }
+    values = children.map(&:first)
+    assert_includes values, :x
+    assert_includes values, :y
+  end
+
+  it "each_ivar_and_child walks Struct members via CONTAINER_WALKERS" do
+    t = RactorRailsShim::ShareabilityTraversal
+    klass = Struct.new(:name, :age)
+    obj = klass.new("Alice", 30)
+    children = []
+    t.each_ivar_and_child(obj) { |v, iv| children << [v, iv] }
+    values = children.map(&:first)
+    assert_includes values, "Alice"
+    assert_includes values, 30
+  end
+
+  it "each_ivar_and_child walks custom Enumerable via fallback" do
+    t = RactorRailsShim::ShareabilityTraversal
+    custom = Class.new do
+      include Enumerable
+      def each(&b)
+        yield :from_custom
+        yield :also_custom
+      end
+    end.new
+    children = []
+    t.each_ivar_and_child(custom) { |v, iv| children << [v, iv] }
+    values = children.map(&:first)
+    assert_includes values, :from_custom
+    assert_includes values, :also_custom
+  end
+
+  it "each_ivar_and_child walks Hash default_proc" do
+    t = RactorRailsShim::ShareabilityTraversal
+    h = Hash.new { |h, k| h[k] = :default }
+    children = []
+    t.each_ivar_and_child(h) { |v, iv| children << [v, iv] }
+    dp_entries = children.select { |_, iv| iv == :__default_proc__ }
+    assert_equal 1, dp_entries.size, "should yield exactly one default_proc entry"
+    assert dp_entries.first.first.is_a?(Proc), "default_proc entry should be a Proc"
+  end
 end

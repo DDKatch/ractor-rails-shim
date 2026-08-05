@@ -152,6 +152,21 @@ module RactorRailsShim
       @mapper_loc || RactorRailsShim::MAPPER_LOC
     end
 
+    # Container dispatch table: maps container class to a walker lambda.
+    # Replaces the is_a? chain in each_ivar_and_child (Issue #30, POODR §4a
+    # Duck Typing). Each lambda takes an object and a block, yielding
+    # [child, ivar_or_nil] pairs.
+    CONTAINER_WALKERS = {
+      Hash => ->(o, &b) {
+        o.each { |k, v| b.call(k, nil); b.call(v, nil) }
+        dp = o.default_proc
+        b.call(dp, :__default_proc__) if dp
+      },
+      Array => ->(o, &b) { o.each { |e| b.call(e, nil) } },
+      Set => ->(o, &b) { o.each { |e| b.call(e, nil) } },
+      Struct => ->(o, &b) { o.each_pair { |_n, v| b.call(v, nil) } },
+    }.freeze
+
     # BasicObject (and its subclasses) don't define respond_to?, so calling
     # o.respond_to? on one raises NoMethodError. Use this to safely test
     # whether an object can be introspected (is_a?, instance_variables, ...).
@@ -176,13 +191,11 @@ module RactorRailsShim
 
     # Enumerate every child reference of `o` for the graph traversals:
     #   - instance variables (yields [value, iv])
-    #   - Array / Set / Enumerable members (yields [member, nil])
-    #   - Hash pairs (yields [key, nil] and [val, nil])
-    #   - Hash#default_proc (yields [proc, :__default_proc__])
-    #   - Struct members (yields [value, nil] via #each_pair)
+    #   - container entries via CONTAINER_WALKERS (Array, Hash, Set, Struct)
+    #   - Enumerable fallback for other Enumerable types
     #
     # Centralized so collect_procs and replace_locks_and_concurrent_maps!
-    # share the same container coverage (Array, Hash, Set, Struct).
+    # share the same container coverage.
     def self.each_ivar_and_child(o)
       begin
         o.instance_variables.each do |iv|
@@ -192,26 +205,11 @@ module RactorRailsShim
       rescue StandardError => e
         # BasicObject or frozen objects don't support instance_variables
       end
-      if o.is_a?(Hash)
-        o.each do |k, val|
-          yield k, nil
-          yield val, nil
-        end
-        dp = o.default_proc
-        yield dp, :__default_proc__ if dp
-      elsif o.is_a?(Array)
-        o.each_with_index { |e, i| yield e, nil }
-      elsif o.is_a?(::Set)
-        o.each_with_index { |e, i| yield e, nil }
-      elsif o.is_a?(::Struct)
-        o.each_pair { |name, val| yield val, nil }
+      walker = CONTAINER_WALKERS.find { |klass, _| o.is_a?(klass) }&.last
+      if walker
+        walker.call(o) { |c, iv| yield c, iv }
       elsif enumerable_but_not_basic?(o)
-        # Generic Enumerable fallback (Range, Enumerator, custom Enumerable
-        # mixes). Skip String/Hash/Array/Set/Struct — already handled. Best
-        # effort; rescue per-element in case #each raises for some members.
-        o.each do |e|
-          yield e, nil
-        end rescue nil
+        o.each { |e| yield e, nil } rescue nil
       end
     end
 
