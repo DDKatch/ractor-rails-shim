@@ -65,6 +65,7 @@ module RactorRailsShim
     # ActiveSupport.on_load(:active_support) hook in `install`.
     def self.install_callback_declaration_capture!
       return if RactorRailsShim.instance_variable_get(:@callback_capture_installed)
+      RactorRailsShim._register_patch :action_filter_introspection, "8.1"
       RactorRailsShim.instance_variable_set(:@callback_capture_installed, true)
       # ActiveSupport::Callbacks may not be loaded yet at
       # on_load(:active_support) time (it's required lazily). Require it so
@@ -127,13 +128,27 @@ module RactorRailsShim
       [ck, acts]
     end
 
-    # Read an ivar; if it's undefined and debug? is true, emit a labeled
-    # warning so a silent Rails internal rename surfaces during diagnosis.
-    # Returns the ivar value or nil.
+    # Read an ivar; if it's undefined, behavior is gated by VersionPolicy:
+    #   :strict — raise UnsupportedVersionError (a missing ivar means
+    #             callbacks run for actions they shouldn't; failing loud
+    #             pins the security-relevant failure mode instead of
+    #             silently mis-routing callbacks)
+    #   :warn   — emit a labeled warning via _swallow when debug? so a silent
+    #             Rails internal rename surfaces during diagnosis
+    #   :off    — silent nil
+    # Returns the ivar value or nil (under :warn/:off).
     def self.read_ivar_or_warn(obj, ivar, label)
       return obj.instance_variable_get(ivar) if obj.instance_variable_defined?(ivar)
-      RactorRailsShim._swallow(label) { warn "[ractor_rails_shim] #{label}: missing ivar #{ivar} on #{obj.class}" } if RactorRailsShim.debug?
-      nil
+      case RactorRailsShim::VersionPolicy.policy
+      when :strict
+        raise RactorRailsShim::VersionPolicy::UnsupportedVersionError,
+              "#{label}: missing ivar #{ivar} on #{obj.class}"
+      when :off
+        nil
+      else
+        RactorRailsShim._swallow(label) { warn "[ractor_rails_shim] #{label}: missing ivar #{ivar} on #{obj.class}" } if RactorRailsShim.debug?
+        nil
+      end
     end
   end
 end

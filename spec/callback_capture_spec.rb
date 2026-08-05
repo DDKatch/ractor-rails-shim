@@ -218,4 +218,62 @@ class CallbackCaptureSpec < Minitest::Spec
   ensure
     RactorRailsShim::CallbackCapture.define_singleton_method(:read_ivar_or_warn, original)
   end
+
+  # --- Issue #18: version-gated ActionFilter ivar reads ---
+
+  # Step 18.1: install registers :action_filter_introspection in PATCH_VERSIONS
+
+  it "install_callback_declaration_capture! registers :action_filter_introspection tagged 8.1" do
+    RactorRailsShim::VersionPolicy::PATCH_VERSIONS.delete(:action_filter_introspection)
+    RactorRailsShim.remove_instance_variable(:@callback_capture_installed) if RactorRailsShim.instance_variable_defined?(:@callback_capture_installed)
+    RactorRailsShim::CallbackCapture.install_callback_declaration_capture!
+    assert_includes RactorRailsShim::VersionPolicy::PATCH_VERSIONS, :action_filter_introspection,
+                    "install should register :action_filter_introspection"
+    assert_equal ["8.1"], RactorRailsShim::VersionPolicy::PATCH_VERSIONS[:action_filter_introspection]
+  ensure
+    RactorRailsShim::VersionPolicy::PATCH_VERSIONS.delete(:action_filter_introspection)
+  end
+
+  # Step 18.2: strict-mode raises on a missing ActionFilter ivar
+
+  it "read_action_filter_constraints raises UnsupportedVersionError under :strict when an ivar is missing" do
+    RactorRailsShim::VersionPolicy.policy = :strict
+    fake_af = Object.new # no @conditional_key, no @actions
+    assert_raises RactorRailsShim::VersionPolicy::UnsupportedVersionError do
+      RactorRailsShim::CallbackCapture.read_action_filter_constraints(fake_af)
+    end
+  ensure
+    RactorRailsShim::VersionPolicy.policy = nil
+  end
+
+  it "read_action_filter_constraints returns [nil, nil] under :warn when an ivar is missing" do
+    RactorRailsShim::VersionPolicy.policy = :warn
+    fake_af = Object.new
+    result = RactorRailsShim::CallbackCapture.read_action_filter_constraints(fake_af)
+    assert_equal [nil, nil], result
+  ensure
+    RactorRailsShim::VersionPolicy.policy = nil
+  end
+
+  it "read_action_filter_constraints returns the constraints under :strict when ivars are present" do
+    RactorRailsShim::VersionPolicy.policy = :strict
+    fake_af = Object.new
+    fake_af.instance_variable_set(:@conditional_key, :except)
+    fake_af.instance_variable_set(:@actions, Set.new(%w[create update].freeze).freeze)
+    result = RactorRailsShim::CallbackCapture.read_action_filter_constraints(fake_af)
+    assert_equal :except, result[0]
+    assert_equal [:create, :update], result[1]
+  ensure
+    RactorRailsShim::VersionPolicy.policy = nil
+  end
+
+  it "read_ivar_or_warn raises UnsupportedVersionError under :strict when the ivar is missing" do
+    RactorRailsShim::VersionPolicy.policy = :strict
+    obj = Object.new
+    assert_raises RactorRailsShim::VersionPolicy::UnsupportedVersionError do
+      RactorRailsShim::CallbackCapture.read_ivar_or_warn(obj, :@missing, "test label")
+    end
+  ensure
+    RactorRailsShim::VersionPolicy.policy = nil
+  end
 end
