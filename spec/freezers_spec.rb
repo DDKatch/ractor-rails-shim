@@ -154,4 +154,124 @@ class FreezersSpec < Minitest::Spec
   ensure
     RactorRailsShim::Freezers::CacheWarmer.define_singleton_method(:call, original)
   end
+
+  # --- ClassIvarFreezer: AR model class-ivar freezing ---
+
+  it "RactorRailsShim::Freezers::ClassIvarFreezer is a Module" do
+    assert_kind_of Module, RactorRailsShim::Freezers::ClassIvarFreezer
+  end
+
+  it "ClassIvarFreezer.call is a no-op when ActiveRecord::Base is not defined" do
+    assert RactorRailsShim::Freezers::ClassIvarFreezer.call
+  end
+
+  it "ClassIvarFreezer.call makes unshareable AR model class-ivars shareable" do
+    # Build a fake AR::Base with one model whose class ivar holds an unshareable
+    # Hash. After the call, the ivar value must be Ractor.shareable?.
+    fake_ar = Module.new
+    Object.const_set(:FakeARBase3, fake_ar) unless defined?(FakeARBase3)
+    def fake_ar.descendants; [FakeARModel3]; end
+
+    model = Class.new
+    Object.const_set(:FakeARModel3, model)
+    model.instance_variable_set(:@unshareable_cache, { a: 1 })
+    refute Ractor.shareable?(model.instance_variable_get(:@unshareable_cache))
+
+    ar_module = Module.new
+    Object.const_set(:ActiveRecord, ar_module) unless defined?(::ActiveRecord)
+    ar_module.const_set(:Base, fake_ar) unless ar_module.const_defined?(:Base, false)
+
+    RactorRailsShim::Freezers::ClassIvarFreezer.call
+
+    val = model.instance_variable_get(:@unshareable_cache)
+    assert Ractor.shareable?(val), "model class ivar should be shareable after freeze"
+  ensure
+    Object.send(:remove_const, :ActiveRecord) if defined?(::ActiveRecord) && ar_module
+    Object.send(:remove_const, :FakeARBase3) if defined?(FakeARBase3)
+    Object.send(:remove_const, :FakeARModel3) if defined?(FakeARModel3)
+  end
+
+  it "ClassIvarFreezer.call does NOT skip abstract classes (workers recurse into them)" do
+    # The comment in the original method is load-bearing: abstract classes like
+    # ApplicationRecord are recursed into by workers, so their ivars must also
+    # be shareable. Pin that abstract classes are NOT skipped.
+    fake_ar = Module.new
+    Object.const_set(:FakeARBase4, fake_ar) unless defined?(FakeARBase4)
+    def fake_ar.descendants; [FakeARAbstract4]; end
+
+    abstract = Class.new
+    Object.const_set(:FakeARAbstract4, abstract)
+    abstract.define_singleton_method(:abstract_class?) { true }
+    abstract.instance_variable_set(:@abstract_cache, { b: 2 })
+    refute Ractor.shareable?(abstract.instance_variable_get(:@abstract_cache))
+
+    ar_module = Module.new
+    Object.const_set(:ActiveRecord, ar_module) unless defined?(::ActiveRecord)
+    ar_module.const_set(:Base, fake_ar) unless ar_module.const_defined?(:Base, false)
+
+    RactorRailsShim::Freezers::ClassIvarFreezer.call
+
+    val = abstract.instance_variable_get(:@abstract_cache)
+    assert Ractor.shareable?(val), "abstract class ivar should also be shareable"
+  ensure
+    Object.send(:remove_const, :ActiveRecord) if defined?(::ActiveRecord) && ar_module
+    Object.send(:remove_const, :FakeARBase4) if defined?(FakeARBase4)
+    Object.send(:remove_const, :FakeARAbstract4) if defined?(FakeARAbstract4)
+  end
+
+  it "ClassIvarFreezer.call skips ivars that are already shareable" do
+    fake_ar = Module.new
+    Object.const_set(:FakeARBase5, fake_ar) unless defined?(FakeARBase5)
+    def fake_ar.descendants; []; end
+    fake_ar.instance_variable_set(:@already_shareable, Ractor.make_shareable({ x: 1 }))
+
+    ar_module = Module.new
+    Object.const_set(:ActiveRecord, ar_module) unless defined?(::ActiveRecord)
+    ar_module.const_set(:Base, fake_ar) unless ar_module.const_defined?(:Base, false)
+
+    # Must not raise; already-shareable values are left as-is.
+    RactorRailsShim::Freezers::ClassIvarFreezer.call
+    assert Ractor.shareable?(fake_ar.instance_variable_get(:@already_shareable))
+  ensure
+    Object.send(:remove_const, :ActiveRecord) if defined?(::ActiveRecord) && ar_module
+    Object.send(:remove_const, :FakeARBase5) if defined?(FakeARBase5)
+  end
+
+  it "ClassIvarFreezer.call funnels freeze failures through _swallow (labeled)" do
+    # A class ivar whose value can't be made shareable should be swallowed,
+    # not propagated. Under debug=true the failure surfaces with the label.
+    fake_ar = Module.new
+    Object.const_set(:FakeARBase6, fake_ar) unless defined?(FakeARBase6)
+    def fake_ar.descendants; []; end
+    # A Proc is intrinsically unshareable; Ractor.make_shareable raises.
+    fake_ar.instance_variable_set(:@unfreezable, ->(*) { :x })
+
+    ar_module = Module.new
+    Object.const_set(:ActiveRecord, ar_module) unless defined?(::ActiveRecord)
+    ar_module.const_set(:Base, fake_ar) unless ar_module.const_defined?(:Base, false)
+
+    RactorRailsShim.debug = true
+    out = capture_stderr do
+      RactorRailsShim::Freezers::ClassIvarFreezer.call
+    end
+    assert_includes out, "[ractor_rails_shim]", "freeze failure should funnel through _swallow"
+    assert_match(/freeze AR ivar/i, out, "stderr should carry the AR-ivar-freeze label")
+  ensure
+    RactorRailsShim.debug = false
+    Object.send(:remove_const, :ActiveRecord) if defined?(::ActiveRecord) && ar_module
+    Object.send(:remove_const, :FakeARBase6) if defined?(FakeARBase6)
+  end
+
+  it "RactorRailsShim._freeze_active_record_class_ivars! delegates to ClassIvarFreezer.call" do
+    delegated = false
+    original = RactorRailsShim::Freezers::ClassIvarFreezer.method(:call)
+    RactorRailsShim::Freezers::ClassIvarFreezer.define_singleton_method(:call) do
+      delegated = true
+      original.call
+    end
+    RactorRailsShim._freeze_active_record_class_ivars!
+    assert delegated, "facade should delegate to ClassIvarFreezer.call"
+  ensure
+    RactorRailsShim::Freezers::ClassIvarFreezer.define_singleton_method(:call, original)
+  end
 end

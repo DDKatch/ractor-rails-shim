@@ -617,27 +617,13 @@ module RactorRailsShim
     # model class in the MAIN Ractor, before the graph is frozen. Many AR model
     # classes cache unshareable values in class-level ivars (@pending_attribute_
     # modifications, @column_defaults, @symbol_column_to_string_name_hash,
-    # @yaml_encoder, @dangerous_attribute_methods, ...). A worker Ractor cannot
-    # read an unshareable class-ivar value (Ractor::IsolationError) nor set one.
-    # Freezing them in main (where setting is allowed) yields shareable values
-    # that workers read without writing. AR Type objects freeze cleanly, so this
-    # is behavior-preserving; per-request code never mutates model class ivars.
+    # Freeze (make Ractor-shareable) unshareable class-level instance variables
+    # on ActiveRecord model classes. Delegates to
+    # RactorRailsShim::Freezers::ClassIvarFreezer (extracted Issue #1); kept as
+    # a facade method for the existing prepare_for_ractors! call site and the
+    # naming-convention spec. See ClassIvarFreezer for the contract.
     def _freeze_active_record_class_ivars!
-      return unless defined?(::ActiveRecord::Base)
-      models = [::ActiveRecord::Base] + (::ActiveRecord::Base.descendants rescue [])
-      models.each do |klass|
-        # NOTE: do NOT skip abstract classes (e.g. a primary_abstract_class
-        # ApplicationRecord). Workers recurse into them via
-        # apply_pending_attribute_modifications, so their class ivars must also
-        # be shareable.
-        klass.instance_variables.each do |ivar|
-          val = klass.instance_variable_get(ivar)
-          next if Ractor.shareable?(val)
-          _swallow("freeze AR ivar #{klass.name}#{ivar}") do
-            Ractor.make_shareable(val)
-          end
-        end
-      end
+      RactorRailsShim::Freezers::ClassIvarFreezer.call
     end
 
     # Freeze (make Ractor-shareable) unshareable class-level ivars on GLOBAL
