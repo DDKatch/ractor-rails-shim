@@ -103,6 +103,11 @@ module RactorRailsShim
       return if @devise_url_helpers_patched
       @devise_url_helpers_patched = true
       _register_patch :devise_url_helpers, "5.0"
+      # Generate DeviseMappingSnapshot predicates from Devise::MODULES now that
+      # Devise is loaded. Replaces the hardcoded fallback list with the actual
+      # module set (incl. any third-party gems added at boot). No-op if
+      # Devise::MODULES isn't defined.
+      DeviseMappingSnapshot.generate_predicates_from_devise_modules!
       return unless defined?(::Devise::Controllers::UrlHelpers)
 
       mod = ::Devise::Controllers::UrlHelpers

@@ -136,6 +136,25 @@ module RactorRailsShim
           super
         end
       end
+
+      # Generate an explicit `<module>?` predicate for every entry in
+      # `Devise::MODULES`, replacing the hardcoded list above. Called at
+      # install time (from the devise patch) once Devise is loaded, so the
+      # snapshot tracks Devise's actual module set — including any added by
+      # third-party gems at boot — instead of a hand-maintained copy. A
+      # no-op when `Devise::MODULES` isn't defined (callables.rb loads before
+      # Devise; the hardcoded predicates remain as the fallback). The
+      # `method_missing` fallback still handles modules added later via
+      # `Devise.add_module` after this generator ran.
+      def self.generate_predicates_from_devise_modules!
+        return unless defined?(::Devise::MODULES)
+        ::Devise::MODULES.each do |m|
+          next if method_defined?("#{m}?")
+          module_eval <<-RUBY, __FILE__, __LINE__ + 1
+            def #{m}?; @modules.include?(:#{m}); end
+          RUBY
+        end
+      end
     end
 
     def _devise_mapping_snapshot(mapping)

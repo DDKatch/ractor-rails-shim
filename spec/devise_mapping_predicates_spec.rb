@@ -161,4 +161,72 @@ class DeviseMappingPredicatesSpec < Minitest::Spec
     assert Ractor.shareable?(snap),
       "DeviseMappingSnapshot with explicit predicates must remain shareable"
   end
+
+  # --- Issue #19: generate predicates from Devise::MODULES ---
+  # The hardcoded list is a fallback for when Devise isn't loaded at
+  # callables.rb require time. When Devise IS loaded, the predicates should
+  # be generated from Devise::MODULES so the snapshot tracks Devise's actual
+  # module set (including any added by third-party gems at boot), not a
+  # hand-maintained copy. method_missing still handles modules added later
+  # via Devise.add_module after the generator ran.
+
+  it "DeviseMappingSnapshot responds to generate_predicates_from_devise_modules!" do
+    assert_respond_to Snapshot, :generate_predicates_from_devise_modules!
+  end
+
+  it "generate_predicates_from_devise_modules! defines a real method for each Devise::MODULES entry" do
+    # Stub ::Devise::MODULES with a superset of the standard list plus a
+    # custom module, then generate. Each should become a real method.
+    fake_devise = Module.new
+    fake_devise.const_set(:FailureApp, Class.new)
+    fake_devise.const_set(:NO_INPUT, [].freeze)
+    custom = %i[database_authenticatable rememberable omniauthable recoverable
+                registerable validatable confirmable lockable timeoutable
+                trackable my_extra_module]
+    fake_devise.const_set(:MODULES, custom)
+    Object.const_set(:Devise, fake_devise)
+    had_devise = true
+
+    # Remove the hardcoded my_extra_module? if present (it isn't) then generate.
+    Snapshot.generate_predicates_from_devise_modules!
+    custom.each do |mod|
+      assert Snapshot.method_defined?("#{mod}?"),
+        "##{mod}? should be a real method after generating from Devise::MODULES"
+    end
+    # The generated predicate answers truthiness from @modules like the rest.
+    snap = snapshot_with(%i[my_extra_module])
+    assert snap.my_extra_module?
+  ensure
+    Object.send(:remove_const, :Devise) if had_devise && defined?(::Devise)
+  end
+
+  it "generate_predicates_from_devise_modules! is a no-op when Devise::MODULES is not defined" do
+    # Ensure Devise is undefined.
+    prev = Object.const_defined?(:Devise) ? ::Devise : nil
+    Object.send(:remove_const, :Devise) if prev
+    # Must not raise; the standard hardcoded predicates remain.
+    Snapshot.generate_predicates_from_devise_modules!
+    assert Snapshot.method_defined?(:database_authenticatable?),
+      "hardcoded predicate should remain when Devise::MODULES is absent"
+  ensure
+    Object.const_set(:Devise, prev) if prev
+  end
+
+  it "method_missing still answers a module added via Devise.add_module after generation" do
+    # Generate from the standard set, then ask for a module NOT in it.
+    fake_devise = Module.new
+    fake_devise.const_set(:FailureApp, Class.new)
+    fake_devise.const_set(:NO_INPUT, [].freeze)
+    fake_devise.const_set(:MODULES, STANDARD_MODULES)
+    Object.const_set(:Devise, fake_devise)
+    had_devise = true
+
+    Snapshot.generate_predicates_from_devise_modules!
+    # A module added later (not in MODULES at generation time) falls through.
+    snap = snapshot_with(%i[later_added_module])
+    assert snap.later_added_module?,
+      "method_missing fallback should answer modules added after generation"
+  ensure
+    Object.send(:remove_const, :Devise) if had_devise && defined?(::Devise)
+  end
 end
