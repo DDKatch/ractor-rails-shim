@@ -7,6 +7,163 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0]
+
+### Changed — breaking (public API)
+- **`worker_app` renamed to `worker_app!`.** The factory freezes +
+  `Ractor.make_shareable`s the `WorkerApp` — a destructive build — so it
+  now carries the bang the naming convention reserves for "mutates /
+  produces a frozen shareable." Callers following the README's
+  `Ractor.new(worker_app) { |a| a.call(env) }` example must update to
+  `worker_app!`. The old name is gone. (`patches/core.rb`)
+
+- **`fix_url_helpers_singleton_routes` renamed to
+  `fix_url_helpers_singleton_routes!`.** Mutates the global routes
+  singleton; now bang-suffixed per the convention documented at the top
+  of `patches.rb`. (`patches/route_helpers.rb`)
+
+- **Tightened `activesupport` dependency to `>= 8.1`.** The gemspec
+  previously declared `>= 7.0`, but the shim only supports Rails 8.1
+  (per `Version::TESTED_RAILS` / `SUPPORTED_RAILS`). The looser bound let
+  Bundler resolve against AS 7.x where the class-layout patches
+  (`class_attribute`, `Callbacks`, `PathRegistry`, …) would silently miss
+  blockers or redefine the wrong methods. Bound at `>= 8.1` so Bundler
+  fails fast on an unsupported Rails. (`ractor-rails-shim.gemspec`)
+
+### Fixed
+- **`_apply_shareable_constants!` set the done-flag on undefined
+  constants.** It set `@shareable_constants_done = true` after the first
+  run unconditionally, even when registered constants didn't exist yet
+  (`make_constant_shareable` returned `false`). A later call (from
+  `make_app_shareable!` or `prepare_for_ractors!`) short-circuited on the
+  flag and never retried the now-loadable constants — workers then hit
+  `Ractor::IsolationError` on unshareable values (e.g.
+  `Rack::Utils::PATH_SEPS`, a Regexp not deep-frozen until
+  `make_shareable` runs on it). The flag now sets only when every
+  registered constant was made shareable; any `false` return leaves it
+  unset so the next call retries. Caught by the integration spec (boots
+  a real Rails 8.1 app, dispatches `GET /up` in a worker Ractor); pinned
+  by `apply_shareable_constants_retry_spec.rb`.
+
+- **ActionFilter private ivar reads now gated through the `_swallow`
+  debug funnel.** The eval'd `set_callback` interceptor inlined
+  `af.instance_variable_get(:@conditional_key) rescue nil`, but
+  `instance_variable_get` returns nil for a missing ivar *without*
+  raising — the rescue never fired, and a silent Rails internal rename
+  (`@conditional_key` / `@actions`) would leave `only`/`except` nil,
+  making callbacks run for actions they shouldn't (security-relevant)
+  with no visible cause. New `_read_action_filter_constraints(af)` checks
+  `instance_variable_defined?` and emits a labeled
+  `[ractor_rails_shim] action filter constraints: missing ivar …`
+  warning under `debug=true`. Returns `[nil, nil]` for a bare object,
+  `[key, symbols]` when the ivars are present.
+
+- **Dead ternary in thread-mode `class_attribute` reader.** The reader
+  carried `:__class_attr___callbacks == :__callbacks ? {} : nil`, but
+  the namespaced name is always `__class_attr_<name>` (never `<name>`),
+  so the check was always false — dead code that allocated a `Symbol`
+  via `inspect` on every read AND never delivered the intended `{}`
+  default for `__callbacks` (callers index the result, so `nil` would
+  `NoMethodError`). Replaced with a static decision based on the public
+  name, inlining the shared frozen `EMPTY_CALLBACKS_HASH` constant.
+
+- **Redundant `class_variable_set` pair in `mattr_accessor` writer.**
+  The shim-generated writer had two complementary guarded lines
+  (`set if defined?` + `set unless defined?`) that together were one
+  unconditional set, with a wasted `class_variable_defined?` per write.
+  Replaced with a single `class_variable_set(cv, val) if Ractor.main?`.
+
+- **`WorkerApp#setup_once!` race-spec cleanup leak.** The race spec's
+  `ensure` block restored `Thread::Mutex.new` via
+  `define_method { orig_new.call }`, leaving a block that captures a
+  main-Ractor-bound `Method`. When a later spec's worker Ractor called
+  `Thread::Mutex.new` it raised `IsolationError` (flaky
+  `WorkerAppSpec#test_0002`). Replaced with `remove_method(:new)` so the
+  call falls back to the class-defined `new` (no captured binding).
+
+### Changed
+- **Centralized `const_set`-with-suppressed-`$VERBOSE` into
+  `_reassign_shareable_const(name, value)`.** `SHAREABLE_FALLBACK`,
+  `SHAREABLE_MATTR_DEFAULTS`, `SHAREABLE_APP`, and
+  `SHAREABLE_DECLARED_CALLBACKS` were each rebuilt + reassigned via an
+  inlined `$VERBOSE = nil … const_set … ensure $VERBOSE = …` dance. The
+  dance now lives in one helper on `RactorRailsShim`; all rebuild sites
+  (including the 6 `activerecord.rb` sites + 1 `kaminari.rb` site) call
+  it. The constants stay frozen shareable `Hash`es (always readable from
+  any Ractor) — a mutable-then-frozen registry would not be shareable
+  until `freeze!`, breaking workers that read early.
+
+- **Callable/lock object model extracted to `patches/callables.rb`.**
+  `NoOpProc` / `Callable` / `CallableConst` / `DeviseMappingSnapshot` /
+  `NoOpLock` / `NoOpLogDev` + the `_devise_mapping_snapshot` helper moved
+  out of the 964-line `make_shareable.rb` into their own file. Plain
+  class definitions replace the string-eval indirection (the eval was
+  stylistic, not behavioral). `make_shareable.rb`: 964 → 822 lines.
+
+- **`VersionPolicy` module extracted from the `RactorRailsShim` god
+  module.** The version-policy + patch-registry concern (`:warn` /
+  `:strict` / `:off` switch, `PATCH_VERSIONS`, `_register_patch` /
+  `applicable_patches` / `_version_mismatch`) moved from the
+  `RactorRailsShim` singleton in `core.rb` to
+  `RactorRailsShim::VersionPolicy` (`version_policy.rb`). `core.rb` keeps
+  the public facade (`RactorRailsShim.version_policy`, `.applicable_patches`,
+  `::PATCH_VERSIONS`, `::UnsupportedVersionError`) delegating to the
+  module. Orthogonal to the already-extracted `RactorRailsShim::Version`
+  (detection).
+
+- **`mattr_accessor` split into single-responsibility helpers.** The
+  per-symbol body did four things (call super, push to `CLASS_ATTRIBUTES`,
+  seed the default + rebuild the shareable constant, redefine the
+  reader/writer). Extracted `_seed_mattr_default(key, default)` and
+  `_register_for_fallback(mod_name, sym, key, default)`; `mattr_accessor`
+  now reads `super, register, seed, redefine`.
+
+- **Thread-mode vs Ractor-mode `class_attribute` heredocs de-duplicated.**
+  Each branch inlined a near-identical ~25-line reader/writer heredoc,
+  differing only in the method name. Extracted
+  `_class_attr_thread_methods` / `_class_attr_ractor_methods` (each builds
+  one reader+writer pair); `redefine` calls the helper twice. One source
+  of truth per mode. Also fixed a misaligned `else` (12-space indent in a
+  10-space block). `class_attribute.rb`: 232 → 224 lines.
+
+- **Freeze-path bare rescues routed through the `_swallow` debug funnel.**
+  `_freeze_shareable_class_ivars!`, `_freeze_declared_callbacks!`,
+  `_collect_controller_classes`, `_replace_locks_and_concurrent_maps!`,
+  `_replace_one_proc`, `_neutralize_logger_io!`,
+  `DeviseMappingSnapshot`, `_devise_mapping_snapshot`, `_warm_journey_routes`,
+  url-helper freeze, `DUMMY_END_NODE`, `MimeNegotiation`, AR db-config
+  handlers, AR query transformers, devise mappings, and the view-context
+  fallback now emit a labeled `[ractor_rails_shim] <label>: …` line to
+  `$stderr` under `debug=true` instead of bare `rescue; nil`. Silent by
+  default (backward compatible).
+
+- **`fallback_ies.rb` moved into the `RactorRailsShim` namespace.** It
+  previously defined `ActiveSupport::IsolatedExecutionState` directly
+  inside the `ActiveSupport` namespace (guarded by `defined?`). Defining
+  an upstream-namespaced constant from a third-party gem is a
+  namespace-patch smell — if a future AS lazy-loads IES, load order
+  decides which definition wins. The fallback now lives at
+  `RactorRailsShim::FallbackIES` and is aliased onto
+  `ActiveSupport::IsolatedExecutionState` only when the real AS IES is
+  absent. The ~270 string-eval'd references across the patch files
+  resolve to the alias when AS is absent and to the real one when present.
+
+- **Stream-of-consciousness comments trimmed to one-line invariants.**
+  Working-notes-style comments that narrated history ("actually it IS a
+  constant holding…", "Pre-fix the traversals only handled…") replaced
+  with one-line invariant statements. The history is in git.
+
+### Documentation
+- **`WorkerApp#setup_once!` race comment corrected (again).** A prior
+  0.2.6 entry claimed `Ractor.current[:key] ||= Thread::Mutex.new` is
+  atomic in Ruby 4.0.6. It is NOT — `||=` is a read-then-write, and N
+  racing threads produce N distinct mutexes (verified by spec under a
+  widened window). The code is saved by (1) MRI's GIL serializing the
+  flag check inside `synchronize` and (2) `rebind_constants` /
+  `init_worker_ar_connections!` both being idempotent. Comment now states
+  the real contract + the escape hatch if either property changes. Two
+  specs pin the idempotency contract.
+
 ## [0.2.6]
 
 ### Fixed
