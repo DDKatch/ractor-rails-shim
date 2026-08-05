@@ -44,31 +44,16 @@ module RactorRailsShim
             cv_str = cv.inspect
 
             # Register so _build_shareable_fallback! can capture the main-ractor
-            # value (read from @@sym) at prepare_for_ractors! time. The label
-            # is just for diagnostics. The default is stored too so the
-            # fallback builder can use it when the live value can't be shared.
-            RactorRailsShim::CLASS_ATTRIBUTES << [mod_name, sym, key, sym_default]
+            # value (read from @@sym) at prepare_for_ractors! time. The default
+            # is stored too so the fallback builder can use it when the live
+            # value can't be shared.
+            RactorRailsShim._register_for_fallback(mod_name, sym, key, sym_default)
+
             # Store the default in a runtime registry (NOT inlined into the
             # eval'd method body — arbitrary objects like Logger have invalid
-            # `.inspect` output). The reader looks it up by key.
-            RactorRailsShim::MATTR_DEFAULTS[key] = sym_default
-            # If the default is shareable, add to the shareable subset. We
-            # rebuild the constant as a new frozen shareable Hash each time
-            # (so workers can read the constant even before prepare_for_ractors!
-            # runs — e.g. unit tests). const_set warns "already initialized
-            # constant"; silence it.
-            if sym_default && Ractor.shareable?(sym_default)
-              h = RactorRailsShim::SHAREABLE_MATTR_DEFAULTS.dup
-              h[key] = sym_default
-              h.freeze
-              Ractor.make_shareable(h)
-              verbose, $VERBOSE = $VERBOSE, nil
-              begin
-                RactorRailsShim.const_set(:SHAREABLE_MATTR_DEFAULTS, h)
-              ensure
-                $VERBOSE = verbose
-              end
-            end
+            # `.inspect` output). The reader looks it up by key. Also rebuilds
+            # the shareable subset constant if the default is shareable.
+            RactorRailsShim._seed_mattr_default(key, sym_default)
 
             # Redefine the class reader via string eval (no captured binding).
             # Class variables are only touched from the main ractor; worker
@@ -154,6 +139,35 @@ module RactorRailsShim
           end
         end
       })
+    end
+
+    # Store the definition-time default for a mattr accessor in the runtime
+    # registry. If the default is shareable, also rebuild the
+    # SHAREABLE_MATTR_DEFAULTS constant (frozen + made shareable) so worker
+    # Ractors can read it before prepare_for_ractors! runs. The constant
+    # reassignment silences the "already initialized" warning via $VERBOSE.
+    def _seed_mattr_default(key, default)
+      MATTR_DEFAULTS[key] = default
+      if default && Ractor.shareable?(default)
+        h = SHAREABLE_MATTR_DEFAULTS.dup
+        h[key] = default
+        h.freeze
+        Ractor.make_shareable(h)
+        verbose, $VERBOSE = $VERBOSE, nil
+        begin
+          const_set(:SHAREABLE_MATTR_DEFAULTS, h)
+        ensure
+          $VERBOSE = verbose
+        end
+      end
+    end
+
+    # Register a mattr accessor so _build_shareable_fallback! can capture +
+    # make shareable the main-ractor value at prepare_for_ractors! time. The
+    # default is stored too so the fallback builder can use it when the live
+    # value can't be shared (e.g. __callbacks holds self-capturing Procs).
+    def _register_for_fallback(mod_name, sym, key, default)
+      CLASS_ATTRIBUTES << [mod_name, sym, key, default]
     end
   end
 end
