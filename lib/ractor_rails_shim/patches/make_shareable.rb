@@ -28,13 +28,11 @@ module RactorRailsShim
       ["Warden::Strategies", :@strategies],
     ])
 
-    # Public API: make Rails.application shareable across Ractors. Replaces
-    # every self-capturing Proc in the app graph with a callable object (no
-    # captured binding), every Mutex/Monitor with a NoOpLock, and every
-    # Concurrent::Map with a frozen Hash, then calls Ractor.make_shareable.
-    # After this, `Ractor.new(app) { |a| a.call(env) }` works from worker
-    # Ractors. Must run in the main Ractor after prepare_for_ractors! and
-    # before spawning workers.
+    # Public API: make Rails.application shareable across Ractors. Delegates
+    # to `RactorRailsShim::AppShareabilizer.make_shareable!(app)` (extracted
+    # Step 22.6, Issue #22). See `AppShareabilizer` for the full pipeline
+    # contract (precompute → freeze ivars → warm routes → neutralize logger
+    # → replace procs → replace locks → make_shareable → build fallback).
     #
     # WARNING: this MUTATES the app object graph in place (replaces ivars).
     # The app becomes read-only (frozen). Do NOT call if you intend to keep
@@ -43,81 +41,7 @@ module RactorRailsShim
     # Returns the shareable app. Raises on failure (e.g. if a Proc can't be
     # replaced — add the missing constant to shareable_constants first).
     def make_app_shareable!(app = Rails.application)
-      # Shareable constants + Rack::Request + Inflector + ParameterEncoding +
-      # PathRegistry + AbstractController + error_reporter + LookupContext +
-      # I18n + Template::Handlers + ExecutionContext + Request param parsers.
-      _apply_shareable_constants! unless @shareable_constants_done
-      # Install (or re-run, idempotently) the full framework-patch set. Most
-      # are already applied by prepare_for_ractors!; this guarantees every
-      # patch is present after full boot even if prepare_for_ractors! ran
-      # before some classes were loaded.
-      _install_all_framework_patches
-      # Pre-compute lazy ivars BEFORE freezing (they mutate the app).
-      _precompute_lazy_ivars(app)
-      _precompute_propshaft!(app)
-      # Force ActiveRecord attribute-method generation in the MAIN Ractor for
-      # every loaded model. AR defines these lazily on first instantiation; if
-      # left undone, a worker Ractor's first `Post.new` / record load re-enters
-      # `define_attribute_methods`, which locks
-      # `GeneratedAttributeMethods::LOCK` — a `Monitor` created in the main
-      # Ractor and therefore non-shareable — raising Ractor::IsolationError.
-      # Generating here (where the Monitor is reachable) sets
-      # `@attribute_methods_generated = true` on the shared, frozen classes so
-      # workers skip the lock entirely.
-      _generate_ar_attribute_methods!
-      # Warm + freeze ActiveModel's per-class `attribute_method_patterns_cache`
-      # (and `attribute_method_matchers`) in MAIN for every loaded model. See
-      # `_warm_attribute_method_patterns!` for why: a worker Ractor reading these
-      # lazy class ivars (Array of [Regexp, Symbol], but mutable => unshareable)
-      # during `redirect_to @post` -> `respond_to?` raises Ractor::IsolationError.
-      _warm_attribute_method_patterns!
-      # Capture each controller's OWN declared `process_action` symbol filters
-      # (before_action / after_action) into a shareable table so worker
-      # Ractors can replay them. The shim routes class_attribute-backed
-      # `__callbacks` through IES and seeds workers with the empty default, so
-      # controller filters do NOT run in workers by default (see
-      # execution_wrapper.rb run_callbacks patch). For GET requests that depend
-      # on a before_action (e.g. `set_post` loading `@post`), that breaks
-      # rendering. We freeze the declared-filter table captured during eager
-      # load (in main, before freeze) and the patched run_callbacks replays
-      # them per controller.
-      _freeze_declared_callbacks!
-      # Warm + cache the routes' @ast / @simulator on the live graph. This MUST
-      # run AFTER the route precompute above (which reloads/resets the routes)
-      # and BEFORE _replace_unshareable_procs! / Ractor.make_shareable below:
-      # the proc-replacement pass rewrites the Route constraint Procs held in
-      # the simulator's @memos, and the freeze then shares the whole thing so
-      # worker Ractors read the cached, frozen simulator via the original
-      # Routes#simulator (no per-worker rebuild). See action_dispatch.rb.
-      _freeze_shareable_class_ivars!
-      _warm_journey_routes!
-      # Neutralize the app's logger IO so Ractor.make_shareable doesn't freeze
-      # $stdout/$stderr (freezing STDOUT breaks the process's own output).
-      # Workers build their own per-Ractor Rails.logger, so the app-instance
-      # logger is unused post-freeze; redirect its logdev to a fresh StringIO
-      # sink (which is safely freezable).
-      _neutralize_logger_io!(app)
-      _replace_unshareable_procs!(app)
-      _replace_locks_and_concurrent_maps!(app)
-      Ractor.make_shareable(app)
-      # Stash the now-shareable app in a constant so worker Ractors can read
-      # `Rails.application` (e.g. Propshaft::Helper reads
-      # `Rails.application.assets`, and various gems call Rails.application
-      # internally). The shared app is frozen (read-only), so returning it
-      # from worker Ractors is safe — they only read from it, never mutate.
-      if Ractor.main?
-        _reassign_shareable_const(:SHAREABLE_APP, app) unless const_defined?(:SHAREABLE_APP)
-      end
-      # Build the framework-config fallback AFTER the app is frozen. The
-      # fallback makes class_attribute / mattr_accessor values shareable; some
-      # of those values reference the app graph (e.g. config objects that point
-      # back at Rails.application). Doing this after the app is already
-      # shareable means Ractor.make_shareable on the config values is a no-op
-      # for the app portion (already frozen) — avoiding a "can't modify frozen
-      # app" error when precompute wrote to it. (prepare_for_ractors!, which
-      # also builds the fallback, is a no-op now via @fallback_built.)
-      _build_shareable_fallback!
-      app
+      AppShareabilizer.make_shareable!(app)
     end
 
     # Detach the logger IO from the app graph so Ractor.make_shareable(app)
