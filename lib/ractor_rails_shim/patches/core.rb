@@ -192,59 +192,16 @@ module RactorRailsShim
       RactorRailsShim::RunMode.thread = value
     end
 
+    # Install all the patches. Safe to call multiple times (idempotent).
+    # Delegates to Installer.install (extracted Issue #13, Step 13.6). See
+    # Installer for the orchestration contract (version check, run-mode
+    # resolve, branch by mode, early-boot install_* calls).
     def install
-      _check_version_support
-      # Resolve the run mode (Ractor vs thread-server). Configuration is owned
-      # by RunMode — explicit `thread_mode=` wins; otherwise we fall back to
-      # ENV["SERVER"]. Lifted out of the old inline ENV read so install is no
-      # longer non-deterministic on ambient ENV with no visible config surface.
-      RactorRailsShim::RunMode.resolve!
-
-      if thread_mode?
-        # Minimal install for thread (Puma/Falcon) servers: only the
-        # class_attribute isolation fix + nil-safe callback replay. The other
-        # patches route framework globals through per-Ractor IES, which is
-        # empty on Puma's request threads and would break the app, so they are
-        # skipped; the original Rails globals are thread-safe and used as-is.
-        install_class_attribute
-        install_execution_wrapper
-        # Capture each controller's OWN declared before_action/after_action
-        # filters at declaration time (during eager load) by intercepting
-        # ActiveSupport::Callbacks.set_callback. This must be installed BEFORE
-        # eager load so declarations are captured as they happen — the
-        # class_attribute callback chain is corrupted by an eager-load leak
-        # under Ruby 4.0.5 + Rails 8.1.3 + Devise, so reading __callbacks later
-        # yields a wrong, unshareable chain. Install requires active_support/
-        # callbacks to be loaded, so require it first; install runs before the
-        # app's eager_load, so every controller declaration is captured.
-        require "active_support/callbacks" rescue nil
-        _install_callback_declaration_capture!
-      else
-        install_mattr_accessor
-        install_class_attribute
-        install_zeitwerk_registry
-        install_rubygems
-        install_rails_module
-        install_shareable_constants
-        install_execution_wrapper
-        require "active_support/callbacks" rescue nil
-        _install_callback_declaration_capture!
-        # Patch ActionView::Base.with_empty_template_cache EARLY (before eager
-        # load) so production's DetailsKey.view_context_class uses the block-free
-        # version. The framework's original defines compiled_method_container via
-        # define_method(&block) — an un-shareable Proc that breaks worker
-        # Ractors. on_load fires as soon as ActionView is required, well before
-        # the app's eager_load.
-        ActiveSupport.on_load(:action_view) do
-          RactorRailsShim._install_with_empty_template_cache_patch
-        end
-      end
-      @installed = true
-      true
+      Installer.install
     end
 
     def installed?
-      @installed ||= false
+      Installer.installed?
     end
 
     # --- Generic constant-sharing utilities (moved from rails_module.rb) -----
@@ -320,31 +277,18 @@ module RactorRailsShim
     end
 
     # _install_*_patch methods called from OTHER install paths, not from the
-    # dispatcher. They are installed by their parent install method (e.g.
-    # _install_callbacks_nil_safe_patch and _install_notifications_notifier_patch
-    # are called from patch_execution_wrapper!; _install_with_empty_template_cache_patch
-    # is called from install via ActiveSupport.on_load). Excluded from
-    # auto-discovery so they aren't double-installed.
-    NON_DISPATCHED_FRAMEWORK_PATCHES = Ractor.make_shareable(%i[
-      _install_callbacks_nil_safe_patch
-      _install_notifications_notifier_patch
-      _install_with_empty_template_cache_patch
-    ].freeze)
+    # dispatcher. The constant + the dispatcher live on Installer (extracted
+    # Issue #13, Step 13.6); kept as a facade delegation so the existing
+    # framework_patch_dispatch_spec (which reads the dispatcher's source
+    # location) and version_spec keep passing. See Installer for the contract.
+    NON_DISPATCHED_FRAMEWORK_PATCHES = RactorRailsShim::Installer::NON_DISPATCHED_FRAMEWORK_PATCHES
 
-    # Auto-discover and call every _install_*_patch singleton method. Both
-    # `prepare_for_ractors!` (pre-worker boot) and `make_app_shareable!`
-    # (post-boot, pre-freeze) call this. Each _install_* is idempotent (guarded
-    # by its own @*_patched flag), so calling the full set at either point is a
-    # no-op for already-applied patches. The method table IS the registry —
-    # adding a new _install_*_patch method to any patch file automatically
-    # includes it here without editing this dispatcher (Open/Closed).
+    # Auto-discover and call every _install_*_patch singleton method.
+    # Delegates to Installer.dispatch_all_framework_patches (extracted Issue
+    # #13, Step 13.6). See Installer for the Open/Closed auto-discovery
+    # contract.
     def _install_all_framework_patches
-      (singleton_class.instance_methods(false) +
-       singleton_class.private_instance_methods(false))
-        .map(&:to_sym)
-        .select { |m| m.to_s.start_with?("_install_") && m.to_s.end_with?("_patch") }
-        .reject { |m| m == :_install_all_framework_patches || NON_DISPATCHED_FRAMEWORK_PATCHES.include?(m) }
-        .each { |m| __send__(m) }
+      Installer.dispatch_all_framework_patches
     end
 
     # Public API: run after Rails.application.initialize! and BEFORE spawning
