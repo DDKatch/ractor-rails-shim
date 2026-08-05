@@ -56,5 +56,11 @@ Gem::Specification.new do |spec|
   # ActiveSupport::IsolatedExecutionState when Rails is loaded, and a
   # thread-local fallback when it isn't. Listed here so Bundler pulls it
   # in Rails apps; the gem works standalone too.
-  spec.add_dependency "activesupport", ">= 7.0" unless ENV["NO_AS_DEP"]
+  # Bound at >= 8.1 because the shim's class-layout patches
+  # (class_attribute, Callbacks, PathRegistry, LookupContext, ...) are
+  # developed and tested against Rails 8.1.x only — see
+  # RactorRailsShim::Version::TESTED_RAILS. An earlier bound (>= 7.0)
+  # would let Bundler resolve against AS 7.x where the patches would
+  # silently miss blockers or redefine the wrong methods.
+  spec.add_dependency "activesupport", ">= 8.1" unless ENV["NO_AS_DEP"]
 end
