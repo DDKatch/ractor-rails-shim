@@ -175,18 +175,30 @@ module RactorRailsShim
     # IsolatedExecutionState, which is empty on Puma's request threads and
     # would break the app, so they are skipped.
     #
-    # Set explicitly via RactorRailsShim.thread_mode = true, or implicitly from
-    # ENV["SERVER"] (puma|falcon|thin|webrick|thread*). Detected in install.
+    # Configuration is owned by RactorRailsShim::RunMode: set explicitly via
+    # `RactorRailsShim.thread_mode = true` (or `RunMode.thread = true`), or
+    # let `install` resolve it from `ENV["SERVER"]`
+    # (puma|falcon|thin|webrick|thread*). The decision is a configuration
+    # responsibility extracted from `install` per POODR; `install` calls
+    # `RunMode.resolve!` (a no-op when already configured explicitly) and then
+    # reads `RunMode.thread?`. These facade methods delegate for backward
+    # compatibility with existing call sites (patches/class_attribute.rb,
+    # patches/active_support.rb, specs).
     def thread_mode?
-      return @thread_mode if defined?(@thread_mode)
-      false
+      RactorRailsShim::RunMode.thread?
     end
 
-    attr_writer :thread_mode
+    def thread_mode=(value)
+      RactorRailsShim::RunMode.thread = value
+    end
 
     def install
       _check_version_support
-      @thread_mode = !!(ENV["SERVER"] && ENV["SERVER"] =~ /puma|falcon|thin|webrick|thread/i) unless defined?(@thread_mode)
+      # Resolve the run mode (Ractor vs thread-server). Configuration is owned
+      # by RunMode — explicit `thread_mode=` wins; otherwise we fall back to
+      # ENV["SERVER"]. Lifted out of the old inline ENV read so install is no
+      # longer non-deterministic on ambient ENV with no visible config surface.
+      RactorRailsShim::RunMode.resolve!
 
       if thread_mode?
         # Minimal install for thread (Puma/Falcon) servers: only the
