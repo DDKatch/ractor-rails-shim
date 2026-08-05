@@ -205,27 +205,20 @@ module RactorRailsShim
       [ck, acts]
     end
 
-    # Read an ivar; if it's undefined, behavior is gated by VersionPolicy:
-    #   :strict — raise UnsupportedVersionError (a missing ivar means
-    #             callbacks run for actions they shouldn't; failing loud
-    #             pins the security-relevant failure mode instead of
-    #             silently mis-routing callbacks)
-    #   :warn   — emit a labeled warning via _swallow when debug? so a silent
-    #             Rails internal rename surfaces during diagnosis
-    #   :off    — silent nil
-    # Returns the ivar value or nil (under :warn/:off).
+    # Read an ivar; if it's undefined, behavior is gated by the
+    # VersionPolicy::Strategy (Issue #37 — the `case policy` branch is
+    # replaced by a strategy-module message):
+    #   Strict — raise UnsupportedVersionError (a missing ivar means
+    #            callbacks run for actions they shouldn't; failing loud
+    #            pins the security-relevant failure mode instead of
+    #            silently mis-routing callbacks)
+    #   Warn   — emit a labeled warning via funnel when debug? so a silent
+    #            Rails internal rename surfaces during diagnosis
+    #   Off    — silent nil
+    # Returns the ivar value or nil (under Warn/Off).
     def self.read_ivar_or_warn(obj, ivar, label)
       return obj.instance_variable_get(ivar) if obj.instance_variable_defined?(ivar)
-      case RactorRailsShim::VersionPolicy.policy
-      when :strict
-        raise RactorRailsShim::VersionPolicy::UnsupportedVersionError,
-              "#{label}: missing ivar #{ivar} on #{obj.class}"
-      when :off
-        nil
-      else
-        funnel.call(label) { warn "[ractor_rails_shim] #{label}: missing ivar #{ivar} on #{obj.class}" } if RactorRailsShim.debug?
-        nil
-      end
+      RactorRailsShim::VersionPolicy.strategy.missing_ivar(obj, ivar, label, funnel: funnel)
     end
   end
 end

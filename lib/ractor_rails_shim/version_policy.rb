@@ -8,6 +8,13 @@
 # policy) and the registry mapping each install_* patch name to the Rails
 # versions it was tested against. Extracted from the RactorRailsShim singleton
 # (core.rb) so the policy is independently specable.
+#
+# Issue #37 (Round 4): the policy switch is a Strategy — three modules
+# (Strict / Off / Warn) each implementing mismatch(message) and
+# missing_ivar(obj, ivar, label, funnel:). The two `case policy when`
+# switches (in VersionPolicy.mismatch and CallbackCapture.read_ivar_or_warn)
+# are replaced by a single strategy lookup. POODR Ch.3 — remove the branch
+# by extracting an object per branch.
 module RactorRailsShim
   module VersionPolicy
     # Registry mapping each install_* patch name to the Rails version segments
@@ -20,6 +27,48 @@ module RactorRailsShim
     # the tested set.
     class UnsupportedVersionError < StandardError; end
 
+    # Strategy modules — one per policy value. Each implements the two
+    # messages that previously branched on `case policy`:
+    #   mismatch(message)              — version-mismatch handling
+    #   missing_ivar(obj, ivar, label, funnel:) — missing-ivar handling
+    # The call sites send one message; the branch is gone.
+    module Strategy
+      module Strict
+        def self.mismatch(message)
+          raise UnsupportedVersionError, message
+        end
+
+        def self.missing_ivar(obj, ivar, label, funnel:)
+          raise UnsupportedVersionError,
+                "#{label}: missing ivar #{ivar} on #{obj.class}"
+        end
+      end
+
+      module Off
+        def self.mismatch(message)
+          # silent
+          nil
+        end
+
+        def self.missing_ivar(obj, ivar, label, funnel:)
+          nil
+        end
+      end
+
+      module Warn
+        def self.mismatch(message)
+          warn message
+        end
+
+        def self.missing_ivar(obj, ivar, label, funnel:)
+          funnel.call(label) { warn "[ractor_rails_shim] #{label}: missing ivar #{ivar} on #{obj.class}" } if RactorRailsShim.debug?
+          nil
+        end
+      end
+
+      MAP = { strict: Strict, off: Off, warn: Warn }.freeze
+    end
+
     class << self
       # Policy for version mismatches. One of :warn (default), :strict, :off.
       # Set before `install`:
@@ -31,16 +80,17 @@ module RactorRailsShim
 
       attr_writer :policy
 
-      # Apply the configured policy to a mismatch message.
+      # Resolve the strategy module for the current policy. The two call
+      # sites (VersionPolicy.mismatch, CallbackCapture.read_ivar_or_warn)
+      # send a message to this instead of branching on `case policy`.
+      def strategy
+        Strategy::MAP[policy] || Strategy::Warn
+      end
+
+      # Apply the configured policy to a mismatch message. Delegates to the
+      # strategy module — no `case` branch.
       def mismatch(message)
-        case policy
-        when :strict
-          raise UnsupportedVersionError, message
-        when :off
-          # silent
-        else
-          warn message
-        end
+        strategy.mismatch(message)
       end
 
       # Record that a patch was developed/tested against the given Rails
