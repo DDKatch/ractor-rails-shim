@@ -269,4 +269,184 @@ class ShareabilityTraversalSpec < Minitest::Spec
   ensure
     RactorRailsShim::ShareabilityTraversal.define_singleton_method(:warm_attribute_method_patterns!, original)
   end
+
+  # --- Issue #23: injected collaborators (POODR §2 Dependencies) ---
+  #
+  # ShareabilityTraversal reaches many collaborators through the
+  # RactorRailsShim facade by global name:
+  #   - callables: _swallow (funnel), _find_files_server,
+  #     _devise_mapping_replacement, _strategy_replacement_for
+  #   - callable classes: NoOpLock, NoOpProc, Callable, CallableConst,
+  #     RequestCallable (via singleton_class.const_get)
+  #   - LOC strings: SSL_LOC, FILES_LOC, COOKIE_LOC, DEVISE_SCOPE_LOC,
+  #     MAPPER_LOC (via RactorRailsShim::CONST)
+  # The seam is `configure(...)`; the defaults are the facade lookups so
+  # existing call sites keep working. Issue #25 will group the constants
+  # into a Registry; until then they're flat kwargs on the seam.
+
+  it "responds to configure and reset_configuration" do
+    assert_respond_to RactorRailsShim::ShareabilityTraversal, :configure
+    assert_respond_to RactorRailsShim::ShareabilityTraversal, :reset_configuration
+  end
+
+  it "responds to the four callable-collaborator readers" do
+    %i[funnel find_files_server devise_mapping_replacement strategy_replacement_for].each do |m|
+      assert_respond_to RactorRailsShim::ShareabilityTraversal, m
+    end
+  end
+
+  it "responds to the five callable-class readers" do
+    %i[noop_lock_class noop_proc_class callable_class callable_const_class request_callable_class].each do |m|
+      assert_respond_to RactorRailsShim::ShareabilityTraversal, m
+    end
+  end
+
+  it "responds to the five LOC-string readers" do
+    %i[ssl_loc files_loc cookie_loc devise_scope_loc mapper_loc].each do |m|
+      assert_respond_to RactorRailsShim::ShareabilityTraversal, m
+    end
+  end
+
+  it "configure injects the callable collaborators" do
+    ffs = ->(mw) { :ffs }
+    dmr = ->(p, pr) { :dmr }
+    srf = ->(p) { :srf }
+    funnel = ->(label, &blk) { blk&.call rescue StandardError; }
+    RactorRailsShim::ShareabilityTraversal.configure(
+      funnel: funnel, find_files_server: ffs,
+      devise_mapping_replacement: dmr, strategy_replacement_for: srf
+    )
+    assert_equal ffs, RactorRailsShim::ShareabilityTraversal.find_files_server
+    assert_equal dmr, RactorRailsShim::ShareabilityTraversal.devise_mapping_replacement
+    assert_equal srf, RactorRailsShim::ShareabilityTraversal.strategy_replacement_for
+    assert_equal funnel, RactorRailsShim::ShareabilityTraversal.funnel
+  ensure
+    RactorRailsShim::ShareabilityTraversal.reset_configuration
+  end
+
+  it "configure injects the callable-class collaborators" do
+    nl = Class.new
+    np = Class.new
+    cb = Class.new
+    cc = Class.new
+    rc = Class.new
+    RactorRailsShim::ShareabilityTraversal.configure(
+      noop_lock_class: nl, noop_proc_class: np, callable_class: cb,
+      callable_const_class: cc, request_callable_class: rc
+    )
+    assert_equal nl, RactorRailsShim::ShareabilityTraversal.noop_lock_class
+    assert_equal np, RactorRailsShim::ShareabilityTraversal.noop_proc_class
+    assert_equal cb, RactorRailsShim::ShareabilityTraversal.callable_class
+    assert_equal cc, RactorRailsShim::ShareabilityTraversal.callable_const_class
+    assert_equal rc, RactorRailsShim::ShareabilityTraversal.request_callable_class
+  ensure
+    RactorRailsShim::ShareabilityTraversal.reset_configuration
+  end
+
+  it "configure injects the LOC-string collaborators" do
+    RactorRailsShim::ShareabilityTraversal.configure(
+      ssl_loc: "/x/ssl.rb", files_loc: "/x/files.rb", cookie_loc: "/x/cookie.rb",
+      devise_scope_loc: "/x/devise.rb", mapper_loc: "/x/mapper.rb"
+    )
+    assert_equal "/x/ssl.rb", RactorRailsShim::ShareabilityTraversal.ssl_loc
+    assert_equal "/x/files.rb", RactorRailsShim::ShareabilityTraversal.files_loc
+    assert_equal "/x/cookie.rb", RactorRailsShim::ShareabilityTraversal.cookie_loc
+    assert_equal "/x/devise.rb", RactorRailsShim::ShareabilityTraversal.devise_scope_loc
+    assert_equal "/x/mapper.rb", RactorRailsShim::ShareabilityTraversal.mapper_loc
+  ensure
+    RactorRailsShim::ShareabilityTraversal.reset_configuration
+  end
+
+  it "replace_locks_and_concurrent_maps! funnels through an injected funnel" do
+    funneled = []
+    funnel = ->(label, &blk) { funneled << label; blk&.call rescue StandardError; }
+    RactorRailsShim::ShareabilityTraversal.configure(funnel: funnel)
+    holder = Object.new
+    holder.instance_variable_set(:@lock, Mutex.new)
+    RactorRailsShim::ShareabilityTraversal.replace_locks_and_concurrent_maps!(holder)
+    assert_includes funneled, "replace lock ivar"
+  ensure
+    RactorRailsShim::ShareabilityTraversal.reset_configuration
+  end
+
+  it "replace_locks_and_concurrent_maps! uses an injected noop_lock_class" do
+    fake_lock_class = Class.new
+    RactorRailsShim::ShareabilityTraversal.configure(
+      noop_lock_class: fake_lock_class,
+      funnel: ->(label, &blk) { blk&.call rescue StandardError; }
+    )
+    holder = Object.new
+    holder.instance_variable_set(:@lock, Mutex.new)
+    RactorRailsShim::ShareabilityTraversal.replace_locks_and_concurrent_maps!(holder)
+    assert_kind_of fake_lock_class, holder.instance_variable_get(:@lock),
+                   "Mutex should be replaced with an instance of the injected lock class"
+  ensure
+    RactorRailsShim::ShareabilityTraversal.reset_configuration
+  end
+
+  it "replace_unshareable_procs! routes proc-ivar swaps through an injected funnel" do
+    funneled = []
+    funnel = ->(label, &blk) { funneled << label; blk&.call rescue StandardError; }
+    noop_proc_class = Class.new
+    RactorRailsShim::ShareabilityTraversal.configure(
+      funnel: funnel, noop_proc_class: noop_proc_class
+    )
+    holder = Object.new
+    holder.instance_variable_set(:@proc, Proc.new { })
+    RactorRailsShim::ShareabilityTraversal.replace_unshareable_procs!(holder)
+    assert_includes funneled, "replace proc ivar"
+  ensure
+    RactorRailsShim::ShareabilityTraversal.reset_configuration
+  end
+
+  it "replace_unshareable_procs! uses an injected noop_proc_class for unknown Procs" do
+    noop_proc_class = Class.new
+    RactorRailsShim::ShareabilityTraversal.configure(
+      noop_proc_class: noop_proc_class,
+      funnel: ->(label, &blk) { blk&.call rescue StandardError; }
+    )
+    holder = Object.new
+    p = Proc.new { }
+    holder.instance_variable_set(:@proc, p)
+    RactorRailsShim::ShareabilityTraversal.replace_unshareable_procs!(holder)
+    assert_kind_of noop_proc_class, holder.instance_variable_get(:@proc),
+                   "unknown Proc should be replaced with an instance of the injected noop_proc_class"
+  ensure
+    RactorRailsShim::ShareabilityTraversal.reset_configuration
+  end
+
+  it "reset_configuration restores the facade-lookup defaults" do
+    sc = RactorRailsShim.singleton_class
+    RactorRailsShim::ShareabilityTraversal.configure(
+      funnel: ->(label, &blk) { blk&.call },
+      find_files_server: ->(mw) { },
+      devise_mapping_replacement: ->(p, pr) { },
+      strategy_replacement_for: ->(p) { },
+      noop_lock_class: Class.new, noop_proc_class: Class.new,
+      callable_class: Class.new, callable_const_class: Class.new,
+      request_callable_class: Class.new,
+      ssl_loc: "a", files_loc: "b", cookie_loc: "c",
+      devise_scope_loc: "d", mapper_loc: "e"
+    )
+    refute_equal RactorRailsShim.method(:_swallow), RactorRailsShim::ShareabilityTraversal.funnel
+    refute_equal RactorRailsShim.method(:_find_files_server), RactorRailsShim::ShareabilityTraversal.find_files_server
+
+    RactorRailsShim::ShareabilityTraversal.reset_configuration
+    assert_equal RactorRailsShim.method(:_swallow), RactorRailsShim::ShareabilityTraversal.funnel
+    assert_equal RactorRailsShim.method(:_find_files_server), RactorRailsShim::ShareabilityTraversal.find_files_server
+    assert_equal RactorRailsShim.method(:_devise_mapping_replacement), RactorRailsShim::ShareabilityTraversal.devise_mapping_replacement
+    assert_equal RactorRailsShim.method(:_strategy_replacement_for), RactorRailsShim::ShareabilityTraversal.strategy_replacement_for
+    assert_equal sc.const_get(:NoOpLock), RactorRailsShim::ShareabilityTraversal.noop_lock_class
+    assert_equal sc.const_get(:NoOpProc), RactorRailsShim::ShareabilityTraversal.noop_proc_class
+    assert_equal sc.const_get(:Callable), RactorRailsShim::ShareabilityTraversal.callable_class
+    assert_equal sc.const_get(:CallableConst), RactorRailsShim::ShareabilityTraversal.callable_const_class
+    assert_equal sc.const_get(:RequestCallable), RactorRailsShim::ShareabilityTraversal.request_callable_class
+    assert_equal RactorRailsShim::SSL_LOC, RactorRailsShim::ShareabilityTraversal.ssl_loc
+    assert_equal RactorRailsShim::FILES_LOC, RactorRailsShim::ShareabilityTraversal.files_loc
+    assert_equal RactorRailsShim::COOKIE_LOC, RactorRailsShim::ShareabilityTraversal.cookie_loc
+    assert_equal RactorRailsShim::DEVISE_SCOPE_LOC, RactorRailsShim::ShareabilityTraversal.devise_scope_loc
+    assert_equal RactorRailsShim::MAPPER_LOC, RactorRailsShim::ShareabilityTraversal.mapper_loc
+  ensure
+    RactorRailsShim::ShareabilityTraversal.reset_configuration
+  end
 end

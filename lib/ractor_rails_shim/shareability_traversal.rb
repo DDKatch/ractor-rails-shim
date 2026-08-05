@@ -21,16 +21,137 @@
 # (_find_files_server in rack.rb, _devise_mapping_replacement in warden.rb,
 # _strategy_replacement_for here-adjacent) and the callable classes
 # (NoOpProc, Callable, CallableConst, RequestCallable, StrategyServe,
-# StrategyCall) through the RactorRailsShim facade — matching the Freezers::*
-# and ConstantShareabilizer pattern. The LOC constants (SSL_LOC, FILES_LOC,
-# COOKIE_LOC, DEVISE_SCOPE_LOC, MAPPER_LOC) live on RactorRailsShim and are
-# read via the facade.
+# StrategyCall) and the LOC constants (SSL_LOC, FILES_LOC, COOKIE_LOC,
+# DEVISE_SCOPE_LOC, MAPPER_LOC) through the configure seam, defaulting to
+# the facade lookups so existing call sites keep working (Issue #23,
+# POODR §2 Dependencies). Issue #25 will group the constants into a
+# Registry; until then they're flat kwargs on the seam.
 #
 # The RactorRailsShim singleton keeps facade methods that delegate, so
 # make_shareable_spec and the integration spec keep passing unchanged.
 
 module RactorRailsShim
   module ShareabilityTraversal
+    @funnel = nil
+    @find_files_server = nil
+    @devise_mapping_replacement = nil
+    @strategy_replacement_for = nil
+    @noop_lock_class = nil
+    @noop_proc_class = nil
+    @callable_class = nil
+    @callable_const_class = nil
+    @request_callable_class = nil
+    @ssl_loc = nil
+    @files_loc = nil
+    @cookie_loc = nil
+    @devise_scope_loc = nil
+    @mapper_loc = nil
+
+    # Inject the collaborators. Callables: `funnel` (= _swallow),
+    # `find_files_server`, `devise_mapping_replacement`,
+    # `strategy_replacement_for`. Callable classes: `noop_lock_class`,
+    # `noop_proc_class`, `callable_class`, `callable_const_class`,
+    # `request_callable_class`. LOC strings: `ssl_loc`, `files_loc`,
+    # `cookie_loc`, `devise_scope_loc`, `mapper_loc`. Passing `nil` for
+    # any (or calling `reset_configuration`) restores the facade-lookup
+    # default for that collaborator.
+    def self.configure(funnel: nil, find_files_server: nil,
+                       devise_mapping_replacement: nil, strategy_replacement_for: nil,
+                       noop_lock_class: nil, noop_proc_class: nil,
+                       callable_class: nil, callable_const_class: nil,
+                       request_callable_class: nil,
+                       ssl_loc: nil, files_loc: nil, cookie_loc: nil,
+                       devise_scope_loc: nil, mapper_loc: nil)
+      @funnel = funnel
+      @find_files_server = find_files_server
+      @devise_mapping_replacement = devise_mapping_replacement
+      @strategy_replacement_for = strategy_replacement_for
+      @noop_lock_class = noop_lock_class
+      @noop_proc_class = noop_proc_class
+      @callable_class = callable_class
+      @callable_const_class = callable_const_class
+      @request_callable_class = request_callable_class
+      @ssl_loc = ssl_loc
+      @files_loc = files_loc
+      @cookie_loc = cookie_loc
+      @devise_scope_loc = devise_scope_loc
+      @mapper_loc = mapper_loc
+    end
+
+    # Restore the default (facade-lookup) collaborators. Test seam.
+    def self.reset_configuration
+      @funnel = nil
+      @find_files_server = nil
+      @devise_mapping_replacement = nil
+      @strategy_replacement_for = nil
+      @noop_lock_class = nil
+      @noop_proc_class = nil
+      @callable_class = nil
+      @callable_const_class = nil
+      @request_callable_class = nil
+      @ssl_loc = nil
+      @files_loc = nil
+      @cookie_loc = nil
+      @devise_scope_loc = nil
+      @mapper_loc = nil
+    end
+
+    def self.funnel
+      @funnel || RactorRailsShim.method(:_swallow)
+    end
+
+    def self.find_files_server
+      @find_files_server || RactorRailsShim.method(:_find_files_server)
+    end
+
+    def self.devise_mapping_replacement
+      @devise_mapping_replacement || RactorRailsShim.method(:_devise_mapping_replacement)
+    end
+
+    def self.strategy_replacement_for
+      @strategy_replacement_for || RactorRailsShim.method(:_strategy_replacement_for)
+    end
+
+    def self.noop_lock_class
+      @noop_lock_class || RactorRailsShim.singleton_class.const_get(:NoOpLock)
+    end
+
+    def self.noop_proc_class
+      @noop_proc_class || RactorRailsShim.singleton_class.const_get(:NoOpProc)
+    end
+
+    def self.callable_class
+      @callable_class || RactorRailsShim.singleton_class.const_get(:Callable)
+    end
+
+    def self.callable_const_class
+      @callable_const_class || RactorRailsShim.singleton_class.const_get(:CallableConst)
+    end
+
+    def self.request_callable_class
+      @request_callable_class || RactorRailsShim.singleton_class.const_get(:RequestCallable)
+    end
+
+    def self.ssl_loc
+      @ssl_loc || RactorRailsShim::SSL_LOC
+    end
+
+    def self.files_loc
+      @files_loc || RactorRailsShim::FILES_LOC
+    end
+
+    def self.cookie_loc
+      @cookie_loc || RactorRailsShim::COOKIE_LOC
+    end
+
+    def self.devise_scope_loc
+      @devise_scope_loc || RactorRailsShim::DEVISE_SCOPE_LOC
+    end
+
+    def self.mapper_loc
+      @mapper_loc || RactorRailsShim::MAPPER_LOC
+    end
+
     # BasicObject (and its subclasses) don't define respond_to?, so calling
     # o.respond_to? on one raises NoMethodError. Use this to safely test
     # whether an object can be introspected (is_a?, instance_variables, ...).
@@ -148,13 +269,12 @@ module RactorRailsShim
     end
 
     def self.replace_one_proc(proc_obj, parent, ivar, mw)
-      sc = RactorRailsShim.singleton_class
       src = proc_obj.source_location&.first || ""
       replacement =
-        if src.end_with?(RactorRailsShim::SSL_LOC) && ivar == :@exclude
+        if src.end_with?(ssl_loc) && ivar == :@exclude
           redirect = parent.instance_variable_get(:@redirect)
-          sc.const_get(:CallableConst).new(!redirect)
-        elsif src.end_with?(RactorRailsShim::FILES_LOC) && ivar == :@app
+          callable_const_class.new(!redirect)
+        elsif src.end_with?(files_loc) && ivar == :@app
           # The lambda is `Rack::Files#initialize`'s `lambda { |env| get env }`,
           # stored as `Rack::Head#@app`. Its `self` (binding receiver) is the
           # `Rack::Files` instance that defines `get` — NOT the `Rack::Head`
@@ -164,20 +284,20 @@ module RactorRailsShim
           # resolved (e.g. frozen/unavailable binding).
           receiver = proc_obj.binding.receiver rescue nil
           files_server = receiver if receiver && receiver.respond_to?(:get)
-          files_server ||= RactorRailsShim._find_files_server(mw)
+          files_server ||= find_files_server.call(mw)
           files_server ||= parent
-          sc.const_get(:Callable).new(files_server, :get)
-        elsif src.end_with?(RactorRailsShim::COOKIE_LOC)
-          sc.const_get(:RequestCallable).new(:cookies_same_site_protection)
-        elsif src.end_with?(RactorRailsShim::DEVISE_SCOPE_LOC)
-          RactorRailsShim._devise_mapping_replacement(proc_obj, parent)
-        elsif src.end_with?(RactorRailsShim::MAPPER_LOC) && ivar == :@strategy
+          callable_class.new(files_server, :get)
+        elsif src.end_with?(cookie_loc)
+          request_callable_class.new(:cookies_same_site_protection)
+        elsif src.end_with?(devise_scope_loc)
+          devise_mapping_replacement.call(proc_obj, parent)
+        elsif src.end_with?(mapper_loc) && ivar == :@strategy
           # Identify SERVE vs CALL by OBJECT IDENTITY against the actual
           # ActionDispatch constants, NOT by source_location line number.
-          # See _strategy_replacement_for for the full rationale.
-          RactorRailsShim._strategy_replacement_for(proc_obj)
+          # See strategy_replacement_for for the full rationale.
+          strategy_replacement_for.call(proc_obj)
         else
-          sc.const_get(:NoOpProc).new
+          noop_proc_class.new
         end
 
       if ivar == :__default_proc__
@@ -192,7 +312,7 @@ module RactorRailsShim
           # frozen Hash — leave the default_proc; make_shareable handles it.
         end
       elsif ivar
-        RactorRailsShim._swallow("replace proc ivar") do
+        funnel.call("replace proc ivar") do
           parent.instance_variable_set(ivar, replacement)
         end
       elsif parent.is_a?(Array)
@@ -201,7 +321,7 @@ module RactorRailsShim
         else parent.each_with_index { |e, i| parent[i] = replacement if e.equal?(proc_obj) }
         end
       elsif parent.is_a?(Hash)
-        RactorRailsShim._swallow("replace proc hash entry") do
+        funnel.call("replace proc hash entry") do
           key = parent.key(proc_obj)
           parent[key] = replacement if key
         end
@@ -238,8 +358,8 @@ module RactorRailsShim
         each_ivar_and_child(o) do |child, child_ivar|
           next if child_ivar == :__default_proc__
           if child.is_a?(Mutex) || child.is_a?(Monitor)
-            RactorRailsShim._swallow("replace lock ivar") do
-              o.instance_variable_set(child_ivar, RactorRailsShim.singleton_class.const_get(:NoOpLock).new) if child_ivar
+            funnel.call("replace lock ivar") do
+              o.instance_variable_set(child_ivar, noop_lock_class.new) if child_ivar
             end
             # If the lock is in an Array/Set/Hash (no ivar), we can't swap
             # it in place here — leave it; make_shareable will handle the
@@ -247,7 +367,7 @@ module RactorRailsShim
           elsif defined?(::Concurrent::Map) && child.is_a?(::Concurrent::Map) && child_ivar
             hash_copy = {}
             child.each_pair { |k, val| hash_copy[k] = val }
-            RactorRailsShim._swallow("replace concurrent map ivar") do
+            funnel.call("replace concurrent map ivar") do
               o.instance_variable_set(child_ivar, hash_copy)
             end
           elsif child
