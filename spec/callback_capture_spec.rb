@@ -156,6 +156,46 @@ class CallbackCaptureSpec < Minitest::Spec
     end
   end
 
+  # --- re-install safety (regression for order-dependent SystemStackError) ---
+  #
+  # install_callback_declaration_capture! must be safe to re-run after the
+  # @callback_capture_installed flag is cleared (several specs clear it to
+  # test the install path in isolation). The second run aliases
+  # _rrs_orig_set_callback → set_callback, but by then set_callback IS the
+  # interceptor from the first run — so the saved "original" points at the
+  # interceptor, and any later set_callback call recurses infinitely. The
+  # install must not re-alias once the original is already saved.
+
+  it "re-install after clearing the flag does not double-alias set_callback" do
+    mod = ::ActiveSupport::Callbacks::ClassMethods
+    RactorRailsShim::CallbackCapture.install_callback_declaration_capture!
+    saved_orig = mod.method_defined?(:_rrs_orig_set_callback) ?
+      mod.instance_method(:_rrs_orig_set_callback) : nil
+    # Clear the idempotency flag and re-install — this is the failure mode.
+    RactorRailsShim.remove_instance_variable(:@callback_capture_installed) if RactorRailsShim.instance_variable_defined?(:@callback_capture_installed)
+    RactorRailsShim::CallbackCapture.install_callback_declaration_capture!
+    # The saved original must NOT be the interceptor (which would recurse).
+    refute mod.instance_method(:set_callback).equal?(mod.instance_method(:_rrs_orig_set_callback)),
+           "re-install aliased the interceptor onto _rrs_orig_set_callback (would recurse)"
+    # If a prior install had already saved the original, it must be stable.
+    assert_equal saved_orig, mod.instance_method(:_rrs_orig_set_callback) if saved_orig
+  end
+
+  it "a real set_callback call does not stack-overflow after a re-install" do
+    RactorRailsShim::CallbackCapture.install_callback_declaration_capture!
+    RactorRailsShim.remove_instance_variable(:@callback_capture_installed) if RactorRailsShim.instance_variable_defined?(:@callback_capture_installed)
+    RactorRailsShim::CallbackCapture.install_callback_declaration_capture!
+    klass = Class.new do
+      include ::ActiveSupport::Callbacks
+      define_callbacks :probe
+    end
+    # The interceptor falls through to _rrs_orig_set_callback for non-
+    # :process_action names. If re-install double-aliased, this recurses
+    # with SystemStackError (which errors the test).
+    klass.set_callback(:probe, :before) { }
+    pass "set_callback did not stack-overflow after re-install"
+  end
+
   # --- Facade delegation ---
 
   it "RactorRailsShim._record_declared_callback delegates to CallbackCapture.record_declared_callback" do

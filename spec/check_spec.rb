@@ -132,10 +132,19 @@ class CheckSpec < Minitest::Spec
 
   it "report includes the blocker count and class-var tag" do
     str = RactorRailsShim::Check.report(print: false)
-    # The header includes a "(N class-ivar, M class-var)" breakdown.
+    # The header (always printed) includes a "(N class-ivar, M class-var)"
+    # breakdown.
     assert_match(/\d+ blocker\(s\) found \(\d+ class-ivar, \d+ class-var\)/, str)
-    # The cvar fixture is tagged as a shim target.
-    assert_match(/@@bag.*\(mattr\/cattr — shim targets\)/, str)
+    # The cvar fixture is tagged as a shim target. Assert the tag on the
+    # scanned Finding directly — the report only prints the first 50
+    # findings per group, so the fixture may be truncated out of the
+    # printed output depending on what other specs have loaded. The tag
+    # is a property of the Finding (derived from `kind`), not of the
+    # truncated report.
+    findings = RactorRailsShim::Check.scan
+    f = find(findings, "CheckSpecFixtures::HolderCvar", "@@bag")
+    refute_nil f, "expected @@bag finding to be scanned"
+    assert_equal " (mattr/cattr — shim targets)", f.tag
   end
 
   it "safe_class handles BasicObject subclasses that lack .class" do

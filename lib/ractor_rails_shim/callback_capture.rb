@@ -75,7 +75,13 @@ module RactorRailsShim
              ::ActiveSupport::Callbacks.const_defined?(:ClassMethods)) ?
             ::ActiveSupport::Callbacks::ClassMethods : nil
       return unless mod && mod.method_defined?(:set_callback)
-      mod.alias_method(:_rrs_orig_set_callback, :set_callback)
+      # Alias the original `set_callback` exactly once. The @callback_
+      # capture_installed guard above short-circuits a second install, but
+      # specs clear that flag to test the install path in isolation; without
+      # this `unless`, the second alias overwrites `_rrs_orig_set_callback`
+      # with the *interceptor* (which is now `set_callback`), so any later
+      # `set_callback` call recurses infinitely through the interceptor.
+      mod.alias_method(:_rrs_orig_set_callback, :set_callback) unless mod.method_defined?(:_rrs_orig_set_callback)
       mod.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def set_callback(name, *filters, &block)
           if name == :process_action && filters.length >= 2 && filters[0].is_a?(Symbol)

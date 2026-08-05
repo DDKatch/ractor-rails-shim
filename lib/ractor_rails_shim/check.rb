@@ -12,7 +12,18 @@ module RactorRailsShim
   class Check
     # kind: :ivar (class-level instance variable, @foo) or
     #      :cvar (class variable, @@foo — mattr_accessor/cattr_accessor)
-    Finding = Data.define(:owner, :ivar, :value_class, :shareable, :source, :kind)
+    # A Finding owns its own presentation tag (derived from `kind`) so the
+    # report is a thin formatter and the tag is testable in isolation
+    # without depending on the report's first-N truncation.
+    Finding = Data.define(:owner, :ivar, :value_class, :shareable, :source, :kind) do
+      # The presentation tag appended to this finding's report line.
+      # Class variables back mattr_accessor/cattr_accessor and are
+      # rerouted by the shim — tag them so the user knows they're
+      # auto-fixable. Class-level instance variables are NOT auto-fixed.
+      def tag
+        kind == :cvar ? " (mattr/cattr — shim targets)" : ""
+      end
+    end
 
     class << self
       # Safely derive a value's class name. BasicObject (and its subclasses)
@@ -143,8 +154,7 @@ module RactorRailsShim
           label = group == :rails ? "Rails framework" : "app + gems"
           lines << "=== #{label} (#{grp.size}) ==="
           grp.first(50).each do |f|
-            tag = f.kind == :cvar ? " (mattr/cattr — shim targets)" : ""
-            lines << "  #{f.owner}#{f.ivar} = #{f.value_class}#{tag}"
+            lines << "  #{f.owner}#{f.ivar} = #{f.value_class}#{f.tag}"
             lines << "    #{f.source}" if f.source
           end
           if grp.size > 50
