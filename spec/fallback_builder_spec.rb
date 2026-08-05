@@ -159,4 +159,171 @@ class FallbackBuilderSpec < Minitest::Spec
   ensure
     RactorRailsShim::FallbackBuilder.define_singleton_method(:shareable_copy, original)
   end
+
+  # --- Issue #23: injected collaborators (POODR §2 Dependencies) ---
+  #
+  # FallbackBuilder must be constructible with the collaborators it
+  # currently reaches through the RactorRailsShim facade by global name:
+  #   - `safe_const_get`            (callable: `(path) -> value|nil`)
+  #   - `replace_unshareable_procs` (callable: `(val) -> mutates val`)
+  #   - `replace_locks_and_concurrent_maps` (callable: `(val) -> mutates`)
+  #   - `reassign_shareable_const`  (callable: `(sym, value) -> reassigns`)
+  #   - `class_attributes`          (CLASS_ATTRIBUTES array)
+  #   - `class_attr_values`         (CLASS_ATTR_VALUES store, hash-like)
+  #   - `shareable_mattr_defaults`  (SHAREABLE_MATTR_DEFAULTS array)
+  #   - `storage`                   (IES storage, hash-like: storage[ies_key])
+  # The seam is `configure(...)`; the defaults are the facade lookups so
+  # existing call sites keep working. The `@fallback_built` idempotency
+  # flag stays on the facade singleton here — Issue #24 moves it.
+
+  it "responds to configure" do
+    assert_respond_to RactorRailsShim::FallbackBuilder, :configure
+  end
+
+  it "responds to reset_configuration" do
+    assert_respond_to RactorRailsShim::FallbackBuilder, :reset_configuration
+  end
+
+  it "responds to safe_const_get" do
+    assert_respond_to RactorRailsShim::FallbackBuilder, :safe_const_get
+  end
+
+  it "responds to replace_unshareable_procs" do
+    assert_respond_to RactorRailsShim::FallbackBuilder, :replace_unshareable_procs
+  end
+
+  it "responds to replace_locks_and_concurrent_maps" do
+    assert_respond_to RactorRailsShim::FallbackBuilder, :replace_locks_and_concurrent_maps
+  end
+
+  it "responds to reassign_shareable_const" do
+    assert_respond_to RactorRailsShim::FallbackBuilder, :reassign_shareable_const
+  end
+
+  it "responds to class_attributes" do
+    assert_respond_to RactorRailsShim::FallbackBuilder, :class_attributes
+  end
+
+  it "responds to class_attr_values" do
+    assert_respond_to RactorRailsShim::FallbackBuilder, :class_attr_values
+  end
+
+  it "responds to shareable_mattr_defaults" do
+    assert_respond_to RactorRailsShim::FallbackBuilder, :shareable_mattr_defaults
+  end
+
+  it "responds to storage" do
+    assert_respond_to RactorRailsShim::FallbackBuilder, :storage
+  end
+
+  it "try_make_shareable routes val through the injected traversal helpers" do
+    procs_called = []
+    locks_called = []
+    RactorRailsShim::FallbackBuilder.configure(
+      replace_unshareable_procs: ->(v) { procs_called << v; v },
+      replace_locks_and_concurrent_maps: ->(v) { locks_called << v; v }
+    )
+    val = ["a"]
+    RactorRailsShim::FallbackBuilder.try_make_shareable(val, "Foo", :list)
+    assert_includes procs_called, val, "replace_unshareable_procs should have been called with val"
+    assert_includes locks_called, val, "replace_locks_and_concurrent_maps should have been called with val"
+  ensure
+    RactorRailsShim::FallbackBuilder.reset_configuration
+  end
+
+  it "build! reassigns via an injected reassign_shareable_const" do
+    reassigned = []
+    RactorRailsShim::FallbackBuilder.configure(
+      reassign_shareable_const: ->(sym, val) { reassigned << [sym, val]; val },
+      class_attributes: [],
+      shareable_mattr_defaults: []
+    )
+    RactorRailsShim.remove_instance_variable(:@fallback_built) if RactorRailsShim.instance_variable_defined?(:@fallback_built)
+    RactorRailsShim::FallbackBuilder.build!
+    syms = reassigned.map(&:first)
+    assert_includes syms, :SHAREABLE_FALLBACK, "build! should reassign SHAREABLE_FALLBACK via the injected callable"
+  ensure
+    RactorRailsShim.remove_instance_variable(:@fallback_built) if RactorRailsShim.instance_variable_defined?(:@fallback_built)
+    RactorRailsShim::FallbackBuilder.reset_configuration
+  end
+
+  it "build! iterates an injected class_attributes registry" do
+    iterated = []
+    # A single class_attribute entry that yields no value (so the loop
+    # runs but produces no fallback entry). The build! still completes and
+    # reassigns the (empty) fallback.
+    fake_registry = [["FakeOwner", :attr, :ies_key, nil]]
+    RactorRailsShim::FallbackBuilder.configure(
+      class_attributes: fake_registry,
+      storage: { ies_key: nil },
+      class_attr_values: {},
+      shareable_mattr_defaults: [],
+      safe_const_get: ->(name) { nil },
+      reassign_shareable_const: ->(sym, val) { val }
+    )
+    RactorRailsShim.remove_instance_variable(:@fallback_built) if RactorRailsShim.instance_variable_defined?(:@fallback_built)
+    # Override the iteration by wrapping build! to capture the iteration
+    # is hard; instead assert the build! returns a frozen shareable Hash
+    # (the loop ran over the injected registry, produced an empty fallback
+    # since the value was nil, and froze it).
+    result = RactorRailsShim::FallbackBuilder.build!
+    assert result.frozen?, "build! should return a frozen fallback Hash"
+    assert Ractor.shareable?(result), "build! should return a shareable fallback"
+  ensure
+    RactorRailsShim.remove_instance_variable(:@fallback_built) if RactorRailsShim.instance_variable_defined?(:@fallback_built)
+    RactorRailsShim::FallbackBuilder.reset_configuration
+  end
+
+  it "build! reads the live value from an injected storage" do
+    # storage[ies_key] returns a shareable value that becomes the fallback.
+    val = Ractor.make_shareable(["live"])
+    fake_registry = [["FakeOwner", :attr, :ies_key, nil]]
+    RactorRailsShim::FallbackBuilder.configure(
+      class_attributes: fake_registry,
+      storage: { ies_key: val },
+      class_attr_values: {},
+      shareable_mattr_defaults: [],
+      safe_const_get: ->(name) { nil },
+      reassign_shareable_const: ->(sym, v) { v }
+    )
+    RactorRailsShim.remove_instance_variable(:@fallback_built) if RactorRailsShim.instance_variable_defined?(:@fallback_built)
+    result = RactorRailsShim::FallbackBuilder.build!
+    assert_equal({ ies_key: val }, result, "fallback should read the live value from injected storage")
+  ensure
+    RactorRailsShim.remove_instance_variable(:@fallback_built) if RactorRailsShim.instance_variable_defined?(:@fallback_built)
+    RactorRailsShim::FallbackBuilder.reset_configuration
+  end
+
+  it "reset_configuration restores the facade-lookup defaults" do
+    RactorRailsShim::FallbackBuilder.configure(
+      safe_const_get: ->(p) { nil },
+      replace_unshareable_procs: ->(v) { v },
+      replace_locks_and_concurrent_maps: ->(v) { v },
+      reassign_shareable_const: ->(s, v) { v },
+      class_attributes: [],
+      class_attr_values: {},
+      shareable_mattr_defaults: [],
+      storage: {}
+    )
+    refute_equal RactorRailsShim.method(:_safe_const_get), RactorRailsShim::FallbackBuilder.safe_const_get
+    refute_equal RactorRailsShim.method(:_replace_unshareable_procs!), RactorRailsShim::FallbackBuilder.replace_unshareable_procs
+    refute_equal RactorRailsShim.method(:_replace_locks_and_concurrent_maps!), RactorRailsShim::FallbackBuilder.replace_locks_and_concurrent_maps
+    refute_equal RactorRailsShim.method(:_reassign_shareable_const), RactorRailsShim::FallbackBuilder.reassign_shareable_const
+    refute_same RactorRailsShim::CLASS_ATTRIBUTES, RactorRailsShim::FallbackBuilder.class_attributes
+    refute_same RactorRailsShim::CLASS_ATTR_VALUES, RactorRailsShim::FallbackBuilder.class_attr_values
+    refute_same RactorRailsShim::SHAREABLE_MATTR_DEFAULTS, RactorRailsShim::FallbackBuilder.shareable_mattr_defaults
+    refute_same RactorRailsShim.storage, RactorRailsShim::FallbackBuilder.storage
+
+    RactorRailsShim::FallbackBuilder.reset_configuration
+    assert_equal RactorRailsShim.method(:_safe_const_get), RactorRailsShim::FallbackBuilder.safe_const_get
+    assert_equal RactorRailsShim.method(:_replace_unshareable_procs!), RactorRailsShim::FallbackBuilder.replace_unshareable_procs
+    assert_equal RactorRailsShim.method(:_replace_locks_and_concurrent_maps!), RactorRailsShim::FallbackBuilder.replace_locks_and_concurrent_maps
+    assert_equal RactorRailsShim.method(:_reassign_shareable_const), RactorRailsShim::FallbackBuilder.reassign_shareable_const
+    assert_same RactorRailsShim::CLASS_ATTRIBUTES, RactorRailsShim::FallbackBuilder.class_attributes
+    assert_same RactorRailsShim::CLASS_ATTR_VALUES, RactorRailsShim::FallbackBuilder.class_attr_values
+    assert_same RactorRailsShim::SHAREABLE_MATTR_DEFAULTS, RactorRailsShim::FallbackBuilder.shareable_mattr_defaults
+    assert_same RactorRailsShim.storage, RactorRailsShim::FallbackBuilder.storage
+  ensure
+    RactorRailsShim::FallbackBuilder.reset_configuration
+  end
 end

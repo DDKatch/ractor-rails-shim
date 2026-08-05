@@ -12,17 +12,101 @@
 # `CLASS_ATTRIBUTES`, `SHAREABLE_MATTR_DEFAULTS`, `SHAREABLE_FALLBACK`, and
 # `CLASS_ATTR_VALUES` stay constants on `RactorRailsShim` (shared registries
 # written by the class_attribute/mattr patches); this object reads and
-# reassigns them via the facade (`_reassign_shareable_const`,
-# `_safe_const_get`). The traversal helpers
-# (`_replace_unshareable_procs!`, `_replace_locks_and_concurrent_maps!`) are
-# reached via the facade — they live on ShareabilityTraversal (Issue #13,
-# Step 13.2). This matches the Freezers::* and ConstantShareabilizer pattern.
+# reassigns them via the configure seam, defaulting to the facade lookups
+# (`class_attributes`, `class_attr_values`, `shareable_mattr_defaults`,
+# `storage`, `safe_const_get`, `replace_unshareable_procs`,
+# `replace_locks_and_concurrent_maps`, `reassign_shareable_const`). The
+# traversal helpers (`_replace_unshareable_procs!`,
+# `_replace_locks_and_concurrent_maps!`) live on ShareabilityTraversal
+# (Issue #13, Step 13.2). This matches the Freezers::* and
+# ConstantShareabilizer pattern (Issue #23, POODR §2 Dependencies).
+#
+# The `@fallback_built` idempotency flag stays on the facade singleton
+# here — Issue #24 moves it onto this role.
 #
 # The RactorRailsShim singleton keeps facade methods that delegate, so
 # reassign_const_spec and the integration spec keep passing unchanged.
 
 module RactorRailsShim
   module FallbackBuilder
+    @safe_const_get = nil
+    @replace_unshareable_procs = nil
+    @replace_locks_and_concurrent_maps = nil
+    @reassign_shareable_const = nil
+    @class_attributes = nil
+    @class_attr_values = nil
+    @shareable_mattr_defaults = nil
+    @storage = nil
+
+    # Inject the callable + registry collaborators. The callables:
+    # `safe_const_get(path)` → value|nil; `replace_unshareable_procs(val)`
+    # and `replace_locks_and_concurrent_maps(val)` mutate val in place;
+    # `reassign_shareable_const(sym, value)` reassigns the shareable
+    # constant. The registries: `class_attributes` (CLASS_ATTRIBUTES
+    # array), `class_attr_values` (CLASS_ATTR_VALUES store),
+    # `shareable_mattr_defaults` (SHAREABLE_MATTR_DEFAULTS array),
+    # `storage` (IES storage, hash-like: storage[ies_key]). Passing
+    # `nil` for any (or calling `reset_configuration`) restores the
+    # facade-lookup default for that collaborator.
+    def self.configure(safe_const_get: nil, replace_unshareable_procs: nil,
+                       replace_locks_and_concurrent_maps: nil,
+                       reassign_shareable_const: nil, class_attributes: nil,
+                       class_attr_values: nil, shareable_mattr_defaults: nil,
+                       storage: nil)
+      @safe_const_get = safe_const_get
+      @replace_unshareable_procs = replace_unshareable_procs
+      @replace_locks_and_concurrent_maps = replace_locks_and_concurrent_maps
+      @reassign_shareable_const = reassign_shareable_const
+      @class_attributes = class_attributes
+      @class_attr_values = class_attr_values
+      @shareable_mattr_defaults = shareable_mattr_defaults
+      @storage = storage
+    end
+
+    # Restore the default (facade-lookup) collaborators. Test seam.
+    def self.reset_configuration
+      @safe_const_get = nil
+      @replace_unshareable_procs = nil
+      @replace_locks_and_concurrent_maps = nil
+      @reassign_shareable_const = nil
+      @class_attributes = nil
+      @class_attr_values = nil
+      @shareable_mattr_defaults = nil
+      @storage = nil
+    end
+
+    def self.safe_const_get
+      @safe_const_get || RactorRailsShim.method(:_safe_const_get)
+    end
+
+    def self.replace_unshareable_procs
+      @replace_unshareable_procs || RactorRailsShim.method(:_replace_unshareable_procs!)
+    end
+
+    def self.replace_locks_and_concurrent_maps
+      @replace_locks_and_concurrent_maps || RactorRailsShim.method(:_replace_locks_and_concurrent_maps!)
+    end
+
+    def self.reassign_shareable_const
+      @reassign_shareable_const || RactorRailsShim.method(:_reassign_shareable_const)
+    end
+
+    def self.class_attributes
+      @class_attributes || RactorRailsShim::CLASS_ATTRIBUTES
+    end
+
+    def self.class_attr_values
+      @class_attr_values || RactorRailsShim::CLASS_ATTR_VALUES
+    end
+
+    def self.shareable_mattr_defaults
+      @shareable_mattr_defaults || RactorRailsShim::SHAREABLE_MATTR_DEFAULTS
+    end
+
+    def self.storage
+      @storage || RactorRailsShim.storage
+    end
+
     # Build the shareable fallback for every class_attribute / mattr_accessor
     # value the shim has rerouted. For each registered attribute we:
     #   1. Read the main-ractor value (from its IES slot, which `redefine`
@@ -40,13 +124,13 @@ module RactorRailsShim
       RactorRailsShim.instance_variable_set(:@fallback_built, true)
 
       fallback = {}
-      RactorRailsShim::CLASS_ATTRIBUTES.each do |(owner_name, attr_name, ies_key, default_val)|
+      class_attributes.each do |(owner_name, attr_name, ies_key, default_val)|
         # Skip the Rails logger — it's intrinsically unshareable (IO + Mutex +
         # mutable formatter) and workers build their own per-Ractor logger
         # via the patched reader. Trying to make it shareable would freeze the
         # IO, breaking logging in main too.
         next if owner_name == "Rails" && attr_name == :logger
-        val = RactorRailsShim.storage[ies_key]
+        val = storage[ies_key]
         # For class_attribute values whose IES slot was never written but
         # whose definition-time DEFAULT was mutated in place during boot
         # (e.g. AbstractController::Base's `config`, whose default
@@ -55,7 +139,7 @@ module RactorRailsShim
         # CLASS_ATTR_VALUES store, NOT in IES. Read it there so workers get
         # the real value instead of the empty definition-time default.
         if val.nil? && Ractor.main?
-          val = RactorRailsShim::CLASS_ATTR_VALUES[ies_key]
+          val = class_attr_values[ies_key]
         end
         # For mattr_accessor: the value may have been written to @@sym after
         # define-time (e.g. by an initializer). Read it from there if the IES
@@ -63,9 +147,9 @@ module RactorRailsShim
         # differ).
         if val.nil? && owner_name && attr_name.is_a?(Symbol)
           begin
-            owner_mod = RactorRailsShim._safe_const_get(owner_name)
-            if owner_mod && owner_mod.class_variable_defined?("@@#{attr_name}")
-              val = owner_mod.class_variable_get("@@#{attr_name}")
+            owner_mod = safe_const_get.call(owner_name)
+            if owner_mod && owner_mod.classvariable_defined?("@@#{attr_name}")
+              val = owner_mod.classvariable_get("@@#{attr_name}")
             end
           rescue StandardError => e
             # ignore — best-effort read
@@ -74,7 +158,7 @@ module RactorRailsShim
         # For raw class ivars (PathRegistry, etc.): read @<attr_name> in main.
         if val.nil? && owner_name && attr_name.is_a?(Symbol)
           begin
-            owner_mod = RactorRailsShim._safe_const_get(owner_name)
+            owner_mod = safe_const_get.call(owner_name)
             if owner_mod && owner_mod.instance_variable_defined?("@#{attr_name}")
               val = owner_mod.instance_variable_get("@#{attr_name}")
             end
@@ -118,11 +202,11 @@ module RactorRailsShim
       # Make the shareable mattr-defaults subset shareable too (workers
       # read it via the constant). Frozen + reassigned via the centralized
       # helper.
-      RactorRailsShim::SHAREABLE_MATTR_DEFAULTS.freeze
-      Ractor.make_shareable(RactorRailsShim::SHAREABLE_MATTR_DEFAULTS)
+      shareable_mattr_defaults.freeze
+      Ractor.make_shareable(shareable_mattr_defaults)
 
-      RactorRailsShim._reassign_shareable_const(:SHAREABLE_FALLBACK, fallback)
-      RactorRailsShim._reassign_shareable_const(:SHAREABLE_MATTR_DEFAULTS, RactorRailsShim::SHAREABLE_MATTR_DEFAULTS)
+      reassign_shareable_const.call(:SHAREABLE_FALLBACK, fallback)
+      reassign_shareable_const.call(:SHAREABLE_MATTR_DEFAULTS, shareable_mattr_defaults)
       fallback
     end
 
@@ -144,8 +228,8 @@ module RactorRailsShim
                     attr_sym.end_with?("default_connection_handler")
 
       begin
-        RactorRailsShim._replace_unshareable_procs!(val)
-        RactorRailsShim._replace_locks_and_concurrent_maps!(val)
+        replace_unshareable_procs.call(val)
+        replace_locks_and_concurrent_maps.call(val)
         Ractor.make_shareable(val)
         val
       rescue StandardError => e
