@@ -24,10 +24,10 @@ module RactorRailsShim
         RactorRailsShim.install_zeitwerk_registry
         RactorRailsShim.install_rubygems
         RactorRailsShim.install_rails_module
-        RactorRailsShim.install_shareable_constants
+        RactorRailsShim::ConstantShareabilizer.install
         RactorRailsShim.install_execution_wrapper
         require "active_support/callbacks" rescue nil
-        RactorRailsShim._install_callback_declaration_capture!
+        RactorRailsShim::CallbackCapture.install_callback_declaration_capture!
         # Patch ActionView::Base.with_empty_template_cache EARLY (before
         # eager load) so production's DetailsKey.view_context_class uses the
         # block-free version. The framework's original defines
@@ -61,7 +61,7 @@ module RactorRailsShim
         # first; install runs before the app's eager_load, so every
         # controller declaration is captured.
         require "active_support/callbacks" rescue nil
-        RactorRailsShim._install_callback_declaration_capture!
+        RactorRailsShim::CallbackCapture.install_callback_declaration_capture!
       end
     end
   end

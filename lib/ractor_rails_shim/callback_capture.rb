@@ -15,10 +15,10 @@
 #   - read_ivar_or_warn(obj, ivar, label)     version-gated ivar read
 #
 # The interceptor (string-eval'd, no captured binding) calls
-# `RactorRailsShim._read_action_filter_constraints` and
-# `RactorRailsShim._record_declared_callback` via the facade — those names
-# are load-bearing (the eval'd method body resolves them at call time on
-# whatever Ractor runs it, and the facade delegates here). The @declared_
+# `RactorRailsShim::CallbackCapture.read_action_filter_constraints` and
+# `RactorRailsShim::CallbackCapture.record_declared_callback` directly —
+# those names are load-bearing (the eval'd method body resolves them at
+# call time on whatever Ractor runs it). The @declared_
 # callbacks table stays on the RactorRailsShim singleton (the interceptor
 # writes @declared_callbacks directly; keeping it on the singleton avoids
 # changing the eval'd method body). The SHAREABLE_DECLARED_CALLBACKS
@@ -168,14 +168,14 @@ module RactorRailsShim
                 [opts[:if], opts[:unless]].each do |arr|
                   next unless arr.is_a?(Array)
                   arr.each do |af|
-                    ck, acts = ::RactorRailsShim._read_action_filter_constraints(af)
+                    ck, acts = ::RactorRailsShim::CallbackCapture.read_action_filter_constraints(af)
                     next unless ck && acts
                     only = acts if ck == :only
                     except = acts if ck == :except
                   end
                 end
               end
-              ::RactorRailsShim._record_declared_callback(
+              ::RactorRailsShim::CallbackCapture.record_declared_callback(
                 self.object_id, kind, filter, only, except)
             end
           end

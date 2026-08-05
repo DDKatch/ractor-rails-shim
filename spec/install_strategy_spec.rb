@@ -63,13 +63,16 @@ class InstallStrategySpec < Minitest::Spec
     called = []
     originals = {}
     %i[install_mattr_accessor install_class_attribute install_zeitwerk_registry
-       install_rubygems install_rails_module install_shareable_constants
-       install_execution_wrapper].each do |m|
+       install_rubygems install_rails_module install_execution_wrapper].each do |m|
       originals[m] = RactorRailsShim.method(m)
       RactorRailsShim.define_singleton_method(m) { called << m }
     end
-    originals[:_install_callback_declaration_capture!] = RactorRailsShim.method(:_install_callback_declaration_capture!)
-    RactorRailsShim.define_singleton_method(:_install_callback_declaration_capture!) { called << :_install_callback_declaration_capture! }
+    originals[:install_shareable_constants] =
+      RactorRailsShim::ConstantShareabilizer.method(:install)
+    RactorRailsShim::ConstantShareabilizer.define_singleton_method(:install) { called << :install_shareable_constants }
+    originals[:_install_callback_declaration_capture!] =
+      RactorRailsShim::CallbackCapture.method(:install_callback_declaration_capture!)
+    RactorRailsShim::CallbackCapture.define_singleton_method(:install_callback_declaration_capture!) { called << :_install_callback_declaration_capture! }
 
     RactorRailsShim::InstallStrategy::Ractor.install
 
@@ -77,7 +80,12 @@ class InstallStrategySpec < Minitest::Spec
       assert_includes called, m, "Ractor strategy should call #{m}"
     end
   ensure
-    originals.each { |m, orig| RactorRailsShim.define_singleton_method(m, orig) }
+    RactorRailsShim::ConstantShareabilizer.define_singleton_method(:install, originals[:install_shareable_constants]) if originals[:install_shareable_constants]
+    RactorRailsShim::CallbackCapture.define_singleton_method(:install_callback_declaration_capture!, originals[:_install_callback_declaration_capture!]) if originals[:_install_callback_declaration_capture!]
+    originals.each do |m, orig|
+      next if m == :install_shareable_constants || m == :_install_callback_declaration_capture!
+      RactorRailsShim.define_singleton_method(m, orig)
+    end
   end
 
   # --- Thread strategy calls the right methods ---
@@ -89,8 +97,9 @@ class InstallStrategySpec < Minitest::Spec
       originals[m] = RactorRailsShim.method(m)
       RactorRailsShim.define_singleton_method(m) { called << m }
     end
-    originals[:_install_callback_declaration_capture!] = RactorRailsShim.method(:_install_callback_declaration_capture!)
-    RactorRailsShim.define_singleton_method(:_install_callback_declaration_capture!) { called << :_install_callback_declaration_capture! }
+    originals[:_install_callback_declaration_capture!] =
+      RactorRailsShim::CallbackCapture.method(:install_callback_declaration_capture!)
+    RactorRailsShim::CallbackCapture.define_singleton_method(:install_callback_declaration_capture!) { called << :_install_callback_declaration_capture! }
 
     RactorRailsShim::InstallStrategy::Thread.install
 
@@ -98,6 +107,10 @@ class InstallStrategySpec < Minitest::Spec
       assert_includes called, m, "Thread strategy should call #{m}"
     end
   ensure
-    originals.each { |m, orig| RactorRailsShim.define_singleton_method(m, orig) }
+    RactorRailsShim::CallbackCapture.define_singleton_method(:install_callback_declaration_capture!, originals[:_install_callback_declaration_capture!]) if originals[:_install_callback_declaration_capture!]
+    originals.each do |m, orig|
+      next if m == :_install_callback_declaration_capture!
+      RactorRailsShim.define_singleton_method(m, orig)
+    end
   end
 end
