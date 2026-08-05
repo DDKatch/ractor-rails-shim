@@ -338,119 +338,63 @@ module RactorRailsShim
     # DeviseMappingCallable + _devise_mapping_replacement are in warden.rb.
 
     # --- graph traversal helpers ---
+    # The graph-traversal machinery (collect_procs, replace_unshareable_procs!,
+    # replace_one_proc, replace_locks_and_concurrent_maps!, each_ivar_and_child,
+    # enumerable_but_not_basic?, introspectable?, precompute_lazy_ivars,
+    # generate_ar_attribute_methods!, warm_attribute_method_patterns!) is
+    # extracted to RactorRailsShim::ShareabilityTraversal (Issue #13, Step
+    # 13.2). The methods below are facade delegations preserving the existing
+    # public/private API and the make_shareable_spec suite. Cross-concern
+    # helpers (_find_files_server in rack.rb, _devise_mapping_replacement in
+    # warden.rb) and the callable classes (NoOpProc, Callable, CallableConst,
+    # RequestCallable, StrategyServe, StrategyCall) remain where they are and
+    # are reached by the traversal through this facade.
 
     def _precompute_lazy_ivars(app)
-      app.env_config
-      app.app_env_config rescue nil
-      app.routes.url_helpers rescue nil
-      app.routes.named_routes rescue nil
-      app.routes.helpers rescue nil
+      ShareabilityTraversal.precompute_lazy_ivars(app)
     end
 
     # Force AR attribute-method generation for every loaded model in the MAIN
     # Ractor. See the call site in make_app_shareable! for why; without this a
     # worker Ractor dies with Ractor::IsolationError on the first model
     # instantiation (GeneratedAttributeMethods::LOCK is a non-shareable Monitor).
+    # Delegates to ShareabilityTraversal.generate_ar_attribute_methods!
+    # (extracted Issue #13, Step 13.2).
     def _generate_ar_attribute_methods!
-      return unless defined?(::ActiveRecord::Base)
-      ::ActiveRecord::Base.descendants.each do |klass|
-        next unless klass.respond_to?(:define_attribute_methods)
-        klass.define_attribute_methods
-      rescue StandardError
-        nil
-      end
+      ShareabilityTraversal.generate_ar_attribute_methods!
     end
 
     # Build + freeze ActiveModel's per-class `attribute_method_patterns_cache`
     # (and `attribute_method_matchers`) in the MAIN Ractor for every loaded
-    # model. These are lazy class ivars populated on the first `respond_to?`
-    # call; they hold an Array of `[Regexp, Symbol]` pairs (shareable elements)
-    # but the Array itself is mutable and therefore NOT Ractor-shareable. A
-    # worker Ractor reading the ivar raises
-    # `Ractor::IsolationError: can not get unshareable values from instance
-    # variables of classes/modules`. `redirect_to @post` calls
-    # `Post#respond_to?(:to_model)` in the worker, which reads this cache, so
-    # the write-path 302 redirect dies. Building it in MAIN (where it is
-    # reachable) and freezing the Array makes it shareable; the cache is never
-    # mutated after build (`attribute_method_patterns_matching` only does
-    # `.select` on it), so freezing is safe.
+    # model. See ShareabilityTraversal.warm_attribute_method_patterns! for the
+    # full rationale. Delegates (extracted Issue #13, Step 13.2).
     def _warm_attribute_method_patterns!
-      return unless defined?(::ActiveRecord::Base)
-      ::ActiveRecord::Base.descendants.each do |klass|
-        next unless klass.respond_to?(:attribute_method_patterns_cache, true)
-        begin
-          cache = klass.send(:attribute_method_patterns_cache)
-          cache.freeze if cache
-          if klass.respond_to?(:attribute_method_matchers, true)
-            matchers = klass.send(:attribute_method_matchers)
-            matchers.freeze if matchers
-          end
-        rescue StandardError
-          nil
-        end
-      end
+      ShareabilityTraversal.warm_attribute_method_patterns!
     end
 
     # Replace every Proc in the app graph with a callable/no-op object.
     # Multiple passes because the same Proc object can live in many
     # containers (e.g. deprecation behaviors shared across deprecators).
-    # Doesn't dedup procs — must replace every occurrence.
+    # Doesn't dedup procs — must replace every occurrence. Delegates to
+    # ShareabilityTraversal.replace_unshareable_procs! (extracted Issue #13,
+    # Step 13.2).
     def _replace_unshareable_procs!(app)
-      mw = (app.instance_variable_get(:@app) rescue nil)
-      # Replace every Proc in the graph. The same Proc object can live in
-      # many containers (e.g. deprecation behaviors shared across
-      # deprecators), and replacing one occurrence doesn't replace the
-      # others — so we loop until a fixed point (no Procs left). A safety
-      # cap guards against a pathological graph where replacement keeps
-      # introducing new Procs (the replacements themselves are NoOpProc/
-      # Callable instances, not Procs, so this shouldn't happen, but the
-      # cap prevents an infinite loop if a future callable class leaks a
-      # Proc). 3 passes was the original magic number; observed real graphs
-      # converge in 2.
-      max_passes = 8
-      max_passes.times do
-        procs = _collect_procs(app)
-        break if procs.empty?
-        procs.each { |proc_obj, parent, ivar| _replace_one_proc(proc_obj, parent, ivar, mw) }
-      end
+      ShareabilityTraversal.replace_unshareable_procs!(app)
     end
 
     # BasicObject (and its subclasses) don't define respond_to?, so calling
     # o.respond_to? on one raises NoMethodError. Use this to safely test
     # whether an object can be introspected (is_a?, instance_variables, ...).
+    # Delegates to ShareabilityTraversal.introspectable? (extracted Issue #13,
+    # Step 13.2).
     def _introspectable?(o)
-      o.respond_to?(:is_a?)
-    rescue NoMethodError
-      false
+      ShareabilityTraversal.introspectable?(o)
     end
 
+    # Gathers every Proc in the app graph. Delegates to
+    # ShareabilityTraversal.collect_procs (extracted Issue #13, Step 13.2).
     def _collect_procs(app)
-      seen = {}
-      procs = []
-      stack = [[app, nil, nil]]
-      until stack.empty?
-        o, parent, ivar = stack.pop
-        next if o.equal?(nil)
-        # Skip BasicObject subclasses that don't respond to is_a?/object_id
-        # (e.g. ActiveSupport::Callbacks::CallTemplate internals). Must guard
-        # BEFORE calling is_a? — BasicObject doesn't define it.
-        next unless _introspectable?(o)
-        if o.is_a?(Proc)
-          procs << [o, parent, ivar]
-          next
-        end
-        next if seen[o.object_id]
-        seen[o.object_id] = true
-        next if o.is_a?(Mutex) || o.is_a?(Monitor)
-        _each_ivar_and_child(o) do |child, child_ivar|
-          if child_ivar == :__default_proc__
-            procs << [child, o, :__default_proc__]
-          else
-            stack << [child, o, child_ivar] if child
-          end
-        end
-      end
-      procs
+      ShareabilityTraversal.collect_procs(app)
     end
 
     # Enumerate every child reference of `o` for the graph traversals:
@@ -461,121 +405,26 @@ module RactorRailsShim
     #   - Struct members (yields [value, nil] via #each_pair)
     #
     # Centralized so _collect_procs and _replace_locks_and_concurrent_maps!
-    # share the same container coverage (Array, Hash, Set, Struct). The
-    # caller no longer threads a debug path string — it was unused
-    # scaffolding (Issue #8); if a future debug label is needed, wire it
-    # through `_swallow` labels instead of a positional path.
+    # share the same container coverage (Array, Hash, Set, Struct).
+    # Delegates to ShareabilityTraversal.each_ivar_and_child (extracted
+    # Issue #13, Step 13.2).
     def _each_ivar_and_child(o)
-      begin
-        o.instance_variables.each do |iv|
-          begin; v = o.instance_variable_get(iv); rescue StandardError; next; end
-          yield v, iv
-        end
-      rescue StandardError => e
-        # BasicObject or frozen objects don't support instance_variables
-      end
-      if o.is_a?(Hash)
-        o.each do |k, val|
-          yield k, nil
-          yield val, nil
-        end
-        dp = o.default_proc
-        yield dp, :__default_proc__ if dp
-      elsif o.is_a?(Array)
-        o.each_with_index { |e, i| yield e, nil }
-      elsif o.is_a?(::Set)
-        o.each_with_index { |e, i| yield e, nil }
-      elsif o.is_a?(::Struct)
-        o.each_pair { |name, val| yield val, nil }
-      elsif _enumerable_but_not_basic?(o)
-        # Generic Enumerable fallback (Range, Enumerator, custom Enumerable
-        # mixes). Skip String/Hash/Array/Set/Struct — already handled. Best
-        # effort; rescue per-element in case #each raises for some members.
-        o.each do |e|
-          yield e, nil
-        end rescue nil
-      end
+      ShareabilityTraversal.each_ivar_and_child(o) { |child, ivar| yield child, ivar }
     end
 
     # True if `o` is Enumerable but NOT one of the container types with a
     # dedicated branch in _each_ivar_and_child. Used to gate the generic
-    # Enumerable fallback so we don't double-walk Array/Hash/etc.
+    # Enumerable fallback so we don't double-walk Array/Hash/etc. Delegates
+    # to ShareabilityTraversal.enumerable_but_not_basic? (extracted Issue
+    # #13, Step 13.2).
     def _enumerable_but_not_basic?(o)
-      return false unless o.is_a?(::Enumerable)
-      return false if o.is_a?(::Array) || o.is_a?(::Hash) || o.is_a?(::Set) || o.is_a?(::Struct)
-      return false if o.is_a?(::String) # String is Enumerable (chars) but not a container of refs we want
-      true
-    rescue NoMethodError
-      # BasicObject without Kernel — not Enumerable.
-      false
+      ShareabilityTraversal.enumerable_but_not_basic?(o)
     end
 
+    # Per-Proc replacement dispatch. Delegates to
+    # ShareabilityTraversal.replace_one_proc (extracted Issue #13, Step 13.2).
     def _replace_one_proc(proc_obj, parent, ivar, mw)
-      src = proc_obj.source_location&.first || ""
-      replacement =
-        if src.end_with?(SSL_LOC) && ivar == :@exclude
-          redirect = parent.instance_variable_get(:@redirect)
-          CallableConst.new(!redirect)
-        elsif src.end_with?(FILES_LOC) && ivar == :@app
-          # The lambda is `Rack::Files#initialize`'s `lambda { |env| get env }`,
-          # stored as `Rack::Head#@app`. Its `self` (binding receiver) is the
-          # `Rack::Files` instance that defines `get` — NOT the `Rack::Head`
-          # that holds it. Use the binding receiver as the callable target so
-          # the worker calls `Rack::Files#get(env)` (the original behavior).
-          # Fall back to the middleware-chain search if the receiver can't be
-          # resolved (e.g. frozen/unavailable binding).
-          receiver = proc_obj.binding.receiver rescue nil
-          files_server = receiver if receiver && receiver.respond_to?(:get)
-          files_server ||= _find_files_server(mw)
-          files_server ||= parent
-          Callable.new(files_server, :get)
-        elsif src.end_with?(COOKIE_LOC)
-          RequestCallable.new(:cookies_same_site_protection)
-        elsif src.end_with?(DEVISE_SCOPE_LOC)
-          _devise_mapping_replacement(proc_obj, parent)
-        elsif src.end_with?(MAPPER_LOC) && ivar == :@strategy
-          # Identify SERVE vs CALL by OBJECT IDENTITY against the actual
-          # ActionDispatch constants, NOT by source_location line number.
-          # The value stored in @strategy IS the constant object (Rails
-          # assigns it via `@strategy = strategy` where `strategy` is passed
-          # as Constraints::SERVE or Constraints::CALL), so `equal?` is the
-          # robust identifier — it survives any Rails patch release that
-          # shifts the constant definitions by a line or two, where the old
-          # `line == 32` check would silently swap the two strategies and
-          # break routing. Falls through to NoOpProc if the Proc isn't
-          # either constant (defensive: shouldn't happen, but never
-          # mis-route).
-          _strategy_replacement_for(proc_obj)
-        else
-          NoOpProc.new
-        end
-
-      if ivar == :__default_proc__
-        # The parent Hash may already be frozen (e.g. by an earlier
-        # shareability pass on AR internals). A frozen Hash can't have its
-        # default cleared, but a frozen Hash with a default_proc is still
-        # unshareable — Ractor.make_shareable(parent) later will replace it
-        # wholesale if needed. Just skip here when frozen.
-        begin
-          parent.default = nil
-        rescue FrozenError, RuntimeError
-          # frozen Hash — leave the default_proc; make_shareable handles it.
-        end
-      elsif ivar
-        _swallow("replace proc ivar") do
-          parent.instance_variable_set(ivar, replacement)
-        end
-      elsif parent.is_a?(Array)
-        idx = parent.index(proc_obj)
-        if idx then parent[idx] = replacement
-        else parent.each_with_index { |e, i| parent[i] = replacement if e.equal?(proc_obj) }
-        end
-      elsif parent.is_a?(Hash)
-        _swallow("replace proc hash entry") do
-          key = parent.key(proc_obj)
-          parent[key] = replacement if key
-        end
-      end
+      ShareabilityTraversal.replace_one_proc(proc_obj, parent, ivar, mw)
     end
 
     # NOTE: `_devise_mapping_replacement` (Devise scope constraint →
@@ -598,36 +447,11 @@ module RactorRailsShim
       NoOpProc.new
     end
 
+    # Replace Mutex/Monitor → NoOpLock and Concurrent::Map → Hash throughout
+    # the app graph. Delegates to ShareabilityTraversal.replace_locks_and_
+    # concurrent_maps! (extracted Issue #13, Step 13.2).
     def _replace_locks_and_concurrent_maps!(app)
-      seen = {}
-      stack = [[app, nil, nil]]
-      until stack.empty?
-        o, _parent, _ivar = stack.pop
-        next if o.equal?(nil)
-        next unless _introspectable?(o)
-        next if seen[o.object_id]
-        seen[o.object_id] = true
-        next if o.is_a?(Mutex) || o.is_a?(Monitor)
-        _each_ivar_and_child(o) do |child, child_ivar|
-          next if child_ivar == :__default_proc__
-          if child.is_a?(Mutex) || child.is_a?(Monitor)
-            _swallow("replace lock ivar") do
-              o.instance_variable_set(child_ivar, NoOpLock.new) if child_ivar
-            end
-            # If the lock is in an Array/Set/Hash (no ivar), we can't swap
-            # it in place here — leave it; make_shareable will handle the
-            # frozen container. The ivar case is the load-bearing one.
-          elsif defined?(::Concurrent::Map) && child.is_a?(::Concurrent::Map) && child_ivar
-            hash_copy = {}
-            child.each_pair { |k, val| hash_copy[k] = val }
-            _swallow("replace concurrent map ivar") do
-              o.instance_variable_set(child_ivar, hash_copy)
-            end
-          elsif child
-            stack << [child, o, child_ivar]
-          end
-        end
-      end
+      ShareabilityTraversal.replace_locks_and_concurrent_maps!(app)
     end
 
     # Capture each controller's OWN declared `process_action` symbol filters
