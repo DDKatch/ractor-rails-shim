@@ -2,7 +2,7 @@
 
 # Patch the Rails module's class-level accessors (Rails.application,
 # Rails.env, Rails.cache, etc.) to route through IsolatedExecutionState.
-# The generic constant-sharing utilities (make_constant_shareable,
+# The generic constant-sharing utilities (make_constant_shareable!,
 # split_const_path, _apply_shareable_constants!, install_shareable_constants,
 # shareable_constants) now live in core.rb (alongside SHAREABLE_CONSTANTS).
 

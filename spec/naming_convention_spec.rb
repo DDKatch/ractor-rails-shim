@@ -70,4 +70,30 @@ class NamingConventionSpec < Minitest::Spec
     RactorRailsShim::SHAREABLE_CONSTANTS.replace(saved) if saved
     RactorRailsShim.remove_instance_variable(:@shareable_constants_done) if RactorRailsShim.instance_variable_defined?(:@shareable_constants_done)
   end
+
+  # --- Issue #20: mutating no-bang public methods renamed to bang versions ---
+
+  it "make_constant_shareable! is the public name (no-bang gone) and delegates" do
+    assert RactorRailsShim.respond_to?(:make_constant_shareable!),
+           "make_constant_shareable! should be defined (mutating: calls const_set)"
+    refute RactorRailsShim.respond_to?(:make_constant_shareable),
+           "make_constant_shareable (no bang) should be renamed to make_constant_shareable!"
+    # Delegates to the role object's bang method.
+    assert RactorRailsShim::ConstantShareabilizer.respond_to?(:make_shareable!),
+           "ConstantShareabilizer.make_shareable! should be defined"
+    refute RactorRailsShim::ConstantShareabilizer.respond_to?(:make_shareable),
+           "ConstantShareabilizer.make_shareable (no bang) should be renamed"
+  end
+
+  it "capture_app_constants! is the public name (no-bang gone) and delegates" do
+    assert RactorRailsShim.respond_to?(:capture_app_constants!),
+           "capture_app_constants! should be defined (mutating: calls Ractor.make_shareable)"
+    refute RactorRailsShim.respond_to?(:capture_app_constants),
+           "capture_app_constants (no bang) should be renamed to capture_app_constants!"
+    # Delegates to the role object's bang method.
+    assert RactorRailsShim::WorkerAppFactory.respond_to?(:capture_constants!),
+           "WorkerAppFactory.capture_constants! should be defined"
+    refute RactorRailsShim::WorkerAppFactory.respond_to?(:capture_constants),
+           "WorkerAppFactory.capture_constants (no bang) should be renamed"
+  end
 end

@@ -2,7 +2,7 @@
 
 # Specs for Issue #13, Step 13.1: extract ConstantShareabilizer from the
 # RactorRailsShim god module (POODR §1 SRP). The constant-shareability
-# machinery — make_constant_shareable, split_const_path, _safe_const_get,
+# machinery — make_constant_shareable!, split_const_path, _safe_const_get,
 # _make_value_shareable, install_shareable_constants, _apply_shareable_constants!,
 # shareable_constants — is one role collapsed onto the singleton. These specs
 # pin the extracted object's contract directly so it is independently specable.
@@ -42,15 +42,15 @@ class ConstantShareabilizerSpec < Minitest::Spec
     assert_kind_of Module, RactorRailsShim::ConstantShareabilizer
   end
 
-  # --- make_shareable (was make_constant_shareable) ---
+  # --- make_shareable! (was make_constant_shareable) ---
 
-  it "make_shareable deep-freezes an unshareable constant value" do
+  it "make_shareable! deep-freezes an unshareable constant value" do
     mod = Module.new
     Object.const_set(:ShimCSMod, mod)
     mod.const_set(:LIST, ["a", "b"])
     refute Ractor.shareable?(mod::LIST)
 
-    RactorRailsShim::ConstantShareabilizer.make_shareable("ShimCSMod::LIST")
+    RactorRailsShim::ConstantShareabilizer.make_shareable!("ShimCSMod::LIST")
 
     assert Ractor.shareable?(mod::LIST)
     assert mod::LIST.frozen?
@@ -59,28 +59,28 @@ class ConstantShareabilizerSpec < Minitest::Spec
     Object.send(:remove_const, :ShimCSMod) if defined?(ShimCSMod)
   end
 
-  it "make_shareable is a no-op for an already-shareable constant" do
+  it "make_shareable! is a no-op for an already-shareable constant" do
     mod = Module.new
     Object.const_set(:ShimCSShareable, mod)
     val = Ractor.make_shareable(["x"].freeze)
     mod.const_set(:LIST, val)
 
-    RactorRailsShim::ConstantShareabilizer.make_shareable("ShimCSShareable::LIST")
+    RactorRailsShim::ConstantShareabilizer.make_shareable!("ShimCSShareable::LIST")
 
     assert_same val, mod.const_get(:LIST, false)
   ensure
     Object.send(:remove_const, :ShimCSShareable) if defined?(ShimCSShareable)
   end
 
-  it "make_shareable returns false for a missing constant path" do
-    assert_equal false, RactorRailsShim::ConstantShareabilizer.make_shareable("NonexistentCS::Thing")
+  it "make_shareable! returns false for a missing constant path" do
+    assert_equal false, RactorRailsShim::ConstantShareabilizer.make_shareable!("NonexistentCS::Thing")
   end
 
-  it "make_shareable returns true for a missing leaf (parent defined, leaf not)" do
+  it "make_shareable! returns true for a missing leaf (parent defined, leaf not)" do
     mod = Module.new
     Object.const_set(:ShimCSLeaf, mod)
     # Leaf "MISSING" not defined → treated as resolved (nothing to do).
-    assert_equal true, RactorRailsShim::ConstantShareabilizer.make_shareable("ShimCSLeaf::MISSING")
+    assert_equal true, RactorRailsShim::ConstantShareabilizer.make_shareable!("ShimCSLeaf::MISSING")
   ensure
     Object.send(:remove_const, :ShimCSLeaf) if defined?(ShimCSLeaf)
   end
@@ -232,17 +232,17 @@ class ConstantShareabilizerSpec < Minitest::Spec
 
   # --- Facade delegation ---
 
-  it "RactorRailsShim.make_constant_shareable delegates to ConstantShareabilizer.make_shareable" do
+  it "RactorRailsShim.make_constant_shareable! delegates to ConstantShareabilizer.make_shareable!" do
     delegated = false
-    original = RactorRailsShim::ConstantShareabilizer.method(:make_shareable)
-    RactorRailsShim::ConstantShareabilizer.define_singleton_method(:make_shareable) do |path|
+    original = RactorRailsShim::ConstantShareabilizer.method(:make_shareable!)
+    RactorRailsShim::ConstantShareabilizer.define_singleton_method(:make_shareable!) do |path|
       delegated = true
       original.call(path)
     end
-    RactorRailsShim.make_constant_shareable("Object")
-    assert delegated, "facade should delegate to ConstantShareabilizer.make_shareable"
+    RactorRailsShim.make_constant_shareable!("Object")
+    assert delegated, "facade should delegate to ConstantShareabilizer.make_shareable!"
   ensure
-    RactorRailsShim::ConstantShareabilizer.define_singleton_method(:make_shareable, original)
+    RactorRailsShim::ConstantShareabilizer.define_singleton_method(:make_shareable!, original)
   end
 
   it "RactorRailsShim._make_value_shareable delegates to ConstantShareabilizer.make_value_shareable" do

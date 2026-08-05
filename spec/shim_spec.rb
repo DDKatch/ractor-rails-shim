@@ -190,7 +190,7 @@ class ShimSpec < Minitest::Spec
     assert_equal "main-value", ActiveSupport::IsolatedExecutionState[:ractor_shim_main_test]
   end
 
-  it "make_constant_shareable deep-freezes an unshareable constant value" do
+  it "make_constant_shareable! deep-freezes an unshareable constant value" do
     # Use a NAMED module (anonymous modules have name=nil, so the constant
     # path can't be resolved by string).
     mod = Module.new
@@ -198,7 +198,7 @@ class ShimSpec < Minitest::Spec
     mod.const_set(:LIST, ["a", "b"]) # mutable Array of mutable Strings
     refute Ractor.shareable?(mod::LIST), "setup: LIST should be unshareable"
 
-    RactorRailsShim.send(:make_constant_shareable, "ShimTestMod::LIST")
+    RactorRailsShim.send(:make_constant_shareable!, "ShimTestMod::LIST")
 
     assert Ractor.shareable?(mod::LIST), "LIST should be shareable after fix"
     assert mod::LIST.frozen?, "LIST should be frozen"

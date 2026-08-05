@@ -239,9 +239,9 @@ module RactorRailsShim
     # not already shareable, replace it with its shareable (deep-frozen)
     # version. Returns true if the constant was made shareable (or already
     # was); false if it doesn't exist yet (caller may retry). Delegates to
-    # ConstantShareabilizer.make_shareable (extracted Issue #13, Step 13.1).
-    def make_constant_shareable(const_path)
-      ConstantShareabilizer.make_shareable(const_path)
+    # ConstantShareabilizer.make_shareable! (extracted Issue #13, Step 13.1).
+    def make_constant_shareable!(const_path)
+      ConstantShareabilizer.make_shareable!(const_path)
     end
 
     # Best-effort shareable replacement for a constant value. Monitor/Mutex
@@ -395,13 +395,13 @@ module RactorRailsShim
     # `Zeitwerk::Loader.new` raises IsolationError off the main Ractor).
     # Capture a frozen name -> object map for every constant the
     # application's Zeitwerk loaders manage. Delegates to
-    # WorkerAppFactory.capture_constants (extracted Issue #13, Step 13.4;
+    # WorkerAppFactory.capture_constants! (extracted Issue #13, Step 13.4;
     # WorkerApp moved to ractor_rails_shim/worker_app.rb). See
     # WorkerAppFactory for the contract (Zeitwerk introspection, the
     # non-Zeitwerk guard, and why the captured map is needed for worker
     # constant rebinding).
-    def capture_app_constants
-      WorkerAppFactory.capture_constants
+    def capture_app_constants!
+      WorkerAppFactory.capture_constants!
     end
 
     # Build the shareable Rack app handed to kino. Delegates to

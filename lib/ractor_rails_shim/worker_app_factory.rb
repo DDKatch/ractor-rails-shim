@@ -4,7 +4,7 @@
 # RactorRailsShim god module (Issue #13, Step 13.4; POODR §1 SRP).
 #
 # Owns:
-#   - capture_constants   capture the app's Zeitwerk constant name → object
+#   - capture_constants!  capture the app's Zeitwerk constant name → object
 #                         map (run in main, travels to workers so bare
 #                         `Post` etc. resolve)
 #   - build(frozen_app)   wrap the frozen, shareable app in a WorkerApp,
@@ -13,7 +13,7 @@
 #
 # `WorkerApp` lives in `ractor_rails_shim/worker_app.rb` (moved out of
 # core.rb by the same step). The RactorRailsShim singleton keeps facade
-# methods (`capture_app_constants`, `worker_app!`) that delegate, so
+# methods (`capture_app_constants!`, `worker_app!`) that delegate, so
 # worker_app_spec, naming_convention_spec, and the integration spec keep
 # passing unchanged.
 
@@ -38,7 +38,7 @@ module RactorRailsShim
     # the captured names fixes it without re-running autoloading (which is
     # itself impossible in a worker, since `Zeitwerk::Loader.new` raises
     # IsolationError off the main Ractor).
-    def self.capture_constants
+    def self.capture_constants!
       map = {}
       unless defined?(::Rails) && Rails.respond_to?(:autoloaders)
         return map.freeze
@@ -72,7 +72,7 @@ module RactorRailsShim
             map[cpath] = obj if Ractor.shareable?(obj)
           end
         rescue StandardError => e
-          warn "[ractor_rails_shim] capture_app_constants: #{e.class}: #{e.message}"
+          warn "[ractor_rails_shim] capture_app_constants!: #{e.class}: #{e.message}"
         end
       end
       map.freeze
@@ -87,7 +87,7 @@ module RactorRailsShim
     # directly to `Ractor.new(WorkerAppFactory.build(app)) { |a| a.call(env) }`
     # without the caller having to know the shareability contract.
     def self.build(frozen_app)
-      bindings = capture_constants
+      bindings = capture_constants!
       wa = WorkerApp.new(frozen_app, bindings)
       wa.freeze
       # Ractor.make_shareable returns the shareable object, so this is the

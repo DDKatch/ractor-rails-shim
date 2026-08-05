@@ -10,7 +10,7 @@ module RactorRailsShim
     # populated at load time: mappings, strategies, url helpers, no_input
     # strategies). Worker Ractors read them (e.g. Devise::NO_INPUT in
     # mapping.rb), so they must be deep-frozen + made shareable before the
-    # app graph is frozen. Added here; make_constant_shareable resolves each
+    # app graph is frozen. Added here; make_constant_shareable! resolves each
     # lazily once Devise is loaded.
     SHAREABLE_CONSTANTS.concat([
       "Devise::ALL",

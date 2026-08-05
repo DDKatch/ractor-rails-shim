@@ -4,7 +4,7 @@
 #
 # _apply_shareable_constants! sets @shareable_constants_done = true after the
 # first run, even when some registered constants didn't exist yet (returned
-# false from make_constant_shareable). A later call (from make_app_shareable!
+# false from make_constant_shareable!). A later call (from make_app_shareable!
 # or prepare_for_ractors!) short-circuits on the flag and never retries the
 # now-loadable constants — workers then hit IsolationError on the unshareable
 # constant.

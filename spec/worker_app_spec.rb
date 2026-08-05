@@ -82,9 +82,9 @@ class WorkerAppSpec < Minitest::Spec
     assert_kind_of RactorRailsShim::WorkerApp, wa
   end
 
-  it "WorkerAppFactory.capture_constants returns a frozen Hash (no Rails → empty)" do
+  it "WorkerAppFactory.capture_constants! returns a frozen Hash (no Rails → empty)" do
     # Without Rails defined, capture returns an empty frozen Hash.
-    result = RactorRailsShim::WorkerAppFactory.capture_constants
+    result = RactorRailsShim::WorkerAppFactory.capture_constants!
     assert_kind_of Hash, result
     assert result.frozen?
   end
@@ -104,16 +104,16 @@ class WorkerAppSpec < Minitest::Spec
     RactorRailsShim::WorkerAppFactory.define_singleton_method(:build, original)
   end
 
-  it "RactorRailsShim.capture_app_constants delegates to WorkerAppFactory.capture_constants" do
+  it "RactorRailsShim.capture_app_constants! delegates to WorkerAppFactory.capture_constants!" do
     delegated = false
-    original = RactorRailsShim::WorkerAppFactory.method(:capture_constants)
-    RactorRailsShim::WorkerAppFactory.define_singleton_method(:capture_constants) do
+    original = RactorRailsShim::WorkerAppFactory.method(:capture_constants!)
+    RactorRailsShim::WorkerAppFactory.define_singleton_method(:capture_constants!) do
       delegated = true
       original.call
     end
-    RactorRailsShim.capture_app_constants
+    RactorRailsShim.capture_app_constants!
     assert delegated
   ensure
-    RactorRailsShim::WorkerAppFactory.define_singleton_method(:capture_constants, original)
+    RactorRailsShim::WorkerAppFactory.define_singleton_method(:capture_constants!, original)
   end
 end

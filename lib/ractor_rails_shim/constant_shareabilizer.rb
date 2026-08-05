@@ -61,7 +61,7 @@ module RactorRailsShim
       # make_app_shareable! or prepare_for_ractors!) retries the now-loadable
       # constants — otherwise workers hit IsolationError on the unshareable
       # values that were missed on the first pass.
-      all_resolved = shareable_constants.map { |path| make_shareable(path) }.all?
+      all_resolved = shareable_constants.map { |path| make_shareable!(path) }.all?
       RactorRailsShim.instance_variable_set(:@shareable_constants_done, true) if all_resolved
     end
 
@@ -69,7 +69,7 @@ module RactorRailsShim
     # not already shareable, replace it with its shareable (deep-frozen)
     # version. Returns true if the constant was made shareable (or already
     # was); false if it doesn't exist yet (caller may retry).
-    def self.make_shareable(const_path)
+    def self.make_shareable!(const_path)
       owner, name = split_const_path(const_path)
       return false unless owner && name
       return true if owner.const_defined?(name, false) == false

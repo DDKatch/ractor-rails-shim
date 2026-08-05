@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# Specs for `RactorRailsShim.capture_app_constants` — the main-Ractor routine
+# Specs for `RactorRailsShim.capture_app_constants!!` — the main-Ractor routine
 # that walks the app's Zeitwerk loaders, captures every loaded constant's
 # name → object mapping, and returns a frozen shareable map for worker
 # Ractors to rebind.
@@ -40,7 +40,7 @@ class CaptureAppConstantsSpec < Minitest::Spec
   it "returns an empty frozen map when Rails is not defined" do
     saved = defined?(::Rails) ? ::Rails : nil
     Object.send(:remove_const, :Rails) if defined?(::Rails)
-    map = RactorRailsShim.capture_app_constants
+    map = RactorRailsShim.capture_app_constants!
     assert_equal({}, map)
     assert map.frozen?
   ensure
@@ -50,7 +50,7 @@ class CaptureAppConstantsSpec < Minitest::Spec
   it "returns an empty frozen map when Rails doesn't respond to :autoloaders" do
     fake = Module.new
     with_rails(nil) do
-      map = RactorRailsShim.capture_app_constants
+      map = RactorRailsShim.capture_app_constants!
       assert_equal({}, map)
       assert map.frozen?
     end
@@ -61,7 +61,7 @@ class CaptureAppConstantsSpec < Minitest::Spec
     # a null object. Pre-fix, this would NoMethodError on `autoloaders.main`.
     null_autoloaders = Object.new
     with_rails(null_autoloaders) do
-      map = RactorRailsShim.capture_app_constants
+      map = RactorRailsShim.capture_app_constants!
       assert_equal({}, map)
       assert map.frozen?
     end
@@ -81,7 +81,7 @@ class CaptureAppConstantsSpec < Minitest::Spec
     Object.const_set(:ShimCaptureProbe, "shareable-value".freeze)
 
     with_rails(autoloaders) do
-      map = RactorRailsShim.capture_app_constants
+      map = RactorRailsShim.capture_app_constants!
       assert_equal({ "ShimCaptureProbe" => "shareable-value" }, map)
     end
   ensure
@@ -101,7 +101,7 @@ class CaptureAppConstantsSpec < Minitest::Spec
     Object.const_set(:ShimCaptureB, "b".freeze)
 
     with_rails(autoloaders) do
-      map = RactorRailsShim.capture_app_constants
+      map = RactorRailsShim.capture_app_constants!
       assert_equal "a", map["ShimCaptureA"]
       assert_equal "b", map["ShimCaptureB"]
       assert map.frozen?
