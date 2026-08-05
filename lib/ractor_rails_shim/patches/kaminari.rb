@@ -49,12 +49,7 @@ module RactorRailsShim
 
       # Store the shareable config as a constant so workers can read it.
       if shareable_config
-        verbose, $VERBOSE = $VERBOSE, nil
-        begin
-          const_set(:KAMINARI_SHAREABLE_CONFIG, shareable_config)
-        ensure
-          $VERBOSE = verbose
-        end
+        _reassign_shareable_const(:KAMINARI_SHAREABLE_CONFIG, shareable_config)
       end
 
       k_key = :ractor_rails_shim_kaminari_config

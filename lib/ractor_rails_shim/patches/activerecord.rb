@@ -199,12 +199,7 @@ module RactorRailsShim
         end
         snapshot.freeze
         Ractor.make_shareable(snapshot)
-        verbose, $VERBOSE = $VERBOSE, nil
-        begin
-          const_set(:AR_CONFIGURATIONS_SNAPSHOT, snapshot)
-        ensure
-          $VERBOSE = verbose
-        end
+        _reassign_shareable_const(:AR_CONFIGURATIONS_SNAPSHOT, snapshot)
       rescue => e
         # Best-effort; if we can't capture configs, workers won't be able
         # to auto-init connections. They can call init_worker_ar_connections!
@@ -459,12 +454,7 @@ module RactorRailsShim
           pk_map[n] = pk if pk
         end
         shareable = Ractor.make_shareable(pk_map)
-        verbose, $VERBOSE = $VERBOSE, nil
-        begin
-          const_set(:AR_PRIMARY_KEYS_SHAREABLE, shareable)
-        ensure
-          $VERBOSE = verbose
-        end
+        _reassign_shareable_const(:AR_PRIMARY_KEYS_SHAREABLE, shareable)
       rescue => e
         # best-effort
       end
@@ -916,12 +906,7 @@ module RactorRailsShim
           cfg = ::ActiveRecord::Base.configurations
           cfg = Ractor.make_shareable(cfg) if cfg
           if cfg
-            verbose, $VERBOSE = $VERBOSE, nil
-            begin
-              const_set(:AR_CONFIGURATIONS_SHAREABLE, cfg)
-            ensure
-              $VERBOSE = verbose
-            end
+            _reassign_shareable_const(:AR_CONFIGURATIONS_SHAREABLE, cfg)
           end
         rescue => e
           # best-effort
@@ -979,12 +964,7 @@ module RactorRailsShim
           # Proc is callable from any Ractor.
           handlers.each { |h| _swallow("make ar db config handler shareable") { Ractor.make_shareable(h) } }
           shareable = Ractor.make_shareable(handlers.dup)
-          verbose, $VERBOSE = $VERBOSE, nil
-          begin
-            const_set(:AR_DB_CONFIG_HANDLERS_SHAREABLE, shareable)
-          ensure
-            $VERBOSE = verbose
-          end
+          _reassign_shareable_const(:AR_DB_CONFIG_HANDLERS_SHAREABLE, shareable)
         rescue => e
           # best-effort
         end
@@ -1033,12 +1013,7 @@ module RactorRailsShim
           transformers = ::ActiveRecord.query_transformers
           transformers.each { |t| _swallow("make ar query transformer shareable") { Ractor.make_shareable(t) } }
           shareable = Ractor.make_shareable(transformers.dup)
-          verbose, $VERBOSE = $VERBOSE, nil
-          begin
-            const_set(:AR_QUERY_TRANSFORMERS_SHAREABLE, shareable)
-          ensure
-            $VERBOSE = verbose
-          end
+          _reassign_shareable_const(:AR_QUERY_TRANSFORMERS_SHAREABLE, shareable)
         rescue => e
           # best-effort
         end
@@ -1085,12 +1060,7 @@ module RactorRailsShim
           begin
             val = ::ActiveRecord.public_send(method_name)
             shareable = Ractor.make_shareable(val.is_a?(::Array) ? val.dup : val)
-            verbose, $VERBOSE = $VERBOSE, nil
-            begin
-              const_set(const_name, shareable)
-            ensure
-              $VERBOSE = verbose
-            end
+            _reassign_shareable_const(const_name, shareable)
           rescue => e
             # best-effort
           end
