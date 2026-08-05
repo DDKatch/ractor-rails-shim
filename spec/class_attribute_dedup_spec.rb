@@ -3,43 +3,38 @@
 require "minitest/autorun"
 require_relative "../lib/ractor_rails_shim/patches"
 
-# Pins the de-duplication of the thread-mode vs ractor-mode class_attribute
-# heredocs. The reader/writer body for each mode is built by a single
-# helper, called twice (once for the namespaced method name, once for the
-# public name) so both paths share one body instead of two near-identical
-# ~25-line heredoc copies.
+# Pins the unified class_attribute heredoc (Issue #15, Step 15.2): the former
+# two-mode `_class_attr_thread_methods` / `_class_attr_ractor_methods` pair
+# collapsed into a single `_class_attr_methods` that calls
+# `RactorRailsShim.storage_strategy.lookup/store`. The selected strategy
+# (set once at install from `RunMode.thread?`) decides the backend.
 class ClassAttributeDedupSpec < Minitest::Spec
-  it "_class_attr_thread_methods builds a reader+writer pair for the given method name" do
-    body = RactorRailsShim._class_attr_thread_methods(:my_attr, :__class_attr_my_attr, "nil")
+  it "_class_attr_methods builds a reader+writer pair for the given method name" do
+    body = RactorRailsShim._class_attr_methods(:my_attr, ':rrs_key_my_attr', "nil")
     # Defines the method under the given name, not the namespaced name
     assert_includes body, "def my_attr\n"
     assert_includes body, "def my_attr=(new_value)\n"
-    # The lookup key uses the namespaced name (storage key), not the method name
-    assert_includes body, "__class_attr_my_attr"
-    # The missing-slot default is inlined
-    assert_includes body, "nil"
+    # The reader delegates to the storage strategy
+    assert_includes body, "RactorRailsShim.storage_strategy.lookup(self, :rrs_key_my_attr, nil)"
+    # The writer delegates to the storage strategy
+    assert_includes body, "RactorRailsShim.storage_strategy.store(self, :rrs_key_my_attr, new_value)"
   end
 
-  it "_class_attr_thread_methods with a different method name produces a different def" do
-    body = RactorRailsShim._class_attr_thread_methods(:other, :__class_attr_other, "RactorRailsShim::EMPTY_CALLBACKS_HASH")
+  it "_class_attr_methods with a different method name produces a different def" do
+    body = RactorRailsShim._class_attr_methods(:other, ':rrs_key_other', "RactorRailsShim::EMPTY_CALLBACKS_HASH")
     assert_includes body, "def other\n"
     assert_includes body, "def other=(new_value)\n"
+    # The __callbacks missing-slot default is inlined
     assert_includes body, "RactorRailsShim::EMPTY_CALLBACKS_HASH"
+    assert_includes body, "RactorRailsShim.storage_strategy.lookup(self, :rrs_key_other, RactorRailsShim::EMPTY_CALLBACKS_HASH)"
   end
 
-  it "_class_attr_ractor_methods builds a reader+writer pair for the given method name" do
-    key_str = ':ractor_rails_shim_class_attr_42___class_attr_my_attr'
-    body = RactorRailsShim._class_attr_ractor_methods(:my_attr, key_str)
-    assert_includes body, "def my_attr\n"
-    assert_includes body, "def my_attr=(new_value)\n"
-    # The IES key literal is inlined
-    assert_includes body, key_str
-  end
-
-  it "_class_attr_ractor_methods with a different method name produces a different def" do
-    key_str = ':ractor_rails_shim_class_attr_99___class_attr_other'
-    body = RactorRailsShim._class_attr_ractor_methods(:other, key_str)
-    assert_includes body, "def other\n"
-    assert_includes body, "def other=(new_value)\n"
+  it "there is a single helper (the two-mode pair is gone)" do
+    refute RactorRailsShim.respond_to?(:_class_attr_thread_methods),
+      "the thread-mode helper should be gone after the collapse"
+    refute RactorRailsShim.respond_to?(:_class_attr_ractor_methods),
+      "the ractor-mode helper should be gone after the collapse"
+    assert RactorRailsShim.respond_to?(:_class_attr_methods),
+      "the unified helper should exist"
   end
 end

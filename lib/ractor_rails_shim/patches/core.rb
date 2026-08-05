@@ -190,6 +190,12 @@ module RactorRailsShim
 
     def thread_mode=(value)
       RactorRailsShim::RunMode.thread = value
+      # Keep the storage strategy in sync with the run mode so the eval'd
+      # class_attribute heredoc (which calls `storage_strategy.lookup/store`)
+      # routes to the right backend even when `thread_mode=` is set
+      # directly (e.g. in specs) without going through `Installer.install`.
+      self.storage_strategy =
+        value ? RactorRailsShim::StorageStrategy::Thread : RactorRailsShim::StorageStrategy::Ractor
     end
 
     # Install all the patches. Safe to call multiple times (idempotent).

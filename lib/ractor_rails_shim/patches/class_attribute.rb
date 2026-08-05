@@ -110,49 +110,19 @@ module RactorRailsShim
           # (Rails indexes the result, so nil would NoMethodError), nil for
           # everything else. Decided once at method-definition time.
           missing_default = (name == :__callbacks) ? "RactorRailsShim::EMPTY_CALLBACKS_HASH" : "nil"
-          if RactorRailsShim.thread_mode?
-            # Thread (Puma/Falcon) mode: route through a SHARED (process-wide)
-            # store keyed by the actual class's object_id, walking ancestors
-            # for copy-on-write fallback. This restores per-subclass isolation
-            # (lost by the IES-routed variant) without thread-local IES, which
-            # is empty on Puma's request threads.
-            #
-            # Key format MUST stay `:"ractor_rails_shim_class_attr_<oid>_<name>"`
-            # to match the writer below and the Ractor-mode key in
-            # `redefine`'s own `key` local. Interpolates only the per-ancestor
-            # object_id tail (one Symbol allocation per ancestor) instead of
-            # the full namespaced Symbol. Thread mode must walk ancestors
-            # because subclass COW fallback is load-bearing here; Ractor mode
-            # below uses a literal key and avoids the walk.
-            target.module_eval RactorRailsShim._class_attr_thread_methods(namespaced_name, namespaced_name, missing_default),
-                                __FILE__, __LINE__ + 1
+          # ONE heredoc for both modes — the selected strategy
+          # (RactorRailsShim.storage_strategy, set once at install from
+          # RunMode.thread?) decides the lookup/store backend. Collapses the
+          # former two-mode `if thread_mode?` branch (Issue #15).
+          target.module_eval RactorRailsShim._class_attr_methods(namespaced_name, key_str, missing_default),
+                              __FILE__, __LINE__ + 1
 
-            # When owner is a module's singleton class, also override the
-            # public reader `def #{name}` with the shared-store version.
-            if owner.singleton_class? && owner.attached_object.is_a?(Module)
-              owner.module_eval RactorRailsShim._class_attr_thread_methods(name, namespaced_name, missing_default),
+          # When owner is a module's singleton class, the original also
+          # defines a public reader `def #{name}` on owner directly. Override
+          # it with the strategy-routed version.
+          if owner.singleton_class? && owner.attached_object.is_a?(Module)
+            owner.module_eval RactorRailsShim._class_attr_methods(name, key_str, missing_default),
                                 __FILE__, __LINE__ + 1
-            end
-          else
-            # Ractor mode: the writer (below) ALWAYS targets this owner's single
-            # `key` (#{key_str}), so there is no per-subclass copy-on-write to
-            # resolve by walking ancestors. The original `self.ancestors.each`
-            # + per-ancestor Symbol interpolation allocated a fresh Array AND a
-            # Symbol per ancestor on EVERY read — the dominant allocation source
-            # for GET requests. Replace it with a direct literal-key lookup
-            # (zero per-read allocation). The per-Ractor value already lives in
-            # RactorRailsShim.storage[key]; SHAREABLE_FALLBACK[key]
-            # is the frozen, shared default built at prepare_for_ractors! time.
-            target.module_eval RactorRailsShim._class_attr_ractor_methods(namespaced_name, key_str),
-                                __FILE__, __LINE__ + 1
-
-            # When owner is a module's singleton class, the original also
-            # defines a public reader `def #{name} { value }` on owner directly
-            # (block-based). Override it with the IES-routed version + fallback.
-            if owner.singleton_class? && owner.attached_object.is_a?(Module)
-              owner.module_eval RactorRailsShim._class_attr_ractor_methods(name, key_str),
-                                __FILE__, __LINE__ + 1
-            end
           end
         end
 
@@ -166,43 +136,22 @@ module RactorRailsShim
       })
     end
 
-    # Build the thread-mode reader/writer pair for one method name. The body
-    # is shared between the namespaced method (`__class_attr_<name>`) and the
-    # public method (`<name>`); only `method_name` differs. `namespaced_name`
-    # is the storage key suffix (constant across both calls). `missing_default`
-    # is the inlined missing-slot default expression (string of Ruby source).
-    def _class_attr_thread_methods(method_name, namespaced_name, missing_default)
+    # Build the reader/writer pair for one method name. ONE body for both
+    # run modes — the selected `RactorRailsShim.storage_strategy` (set once
+    # at install from `RunMode.thread?`) decides the lookup/store backend.
+    # `method_name` is the def name (namespaced or public); `key_str` is the
+    # inspected IES key Symbol literal (constant across both calls);
+    # `missing_default` is the inlined missing-slot default expression
+    # (string of Ruby source — only the Thread strategy consults it; the
+    # Ractor strategy relies on IES + SHAREABLE_FALLBACK + CLASS_ATTR_VALUES).
+    def _class_attr_methods(method_name, key_str, missing_default)
       <<~RUBY
         def #{method_name}
-          self.ancestors.each do |anc|
-            v = RactorRailsShim::CLASS_ATTR_VALUES[:"ractor_rails_shim_class_attr_\#{anc.object_id}_#{namespaced_name}"]
-            return v if RactorRailsShim::CLASS_ATTR_VALUES.key?(:"ractor_rails_shim_class_attr_\#{anc.object_id}_#{namespaced_name}")
-          end
-          #{missing_default}
+          RactorRailsShim.storage_strategy.lookup(self, #{key_str}, #{missing_default})
         end
 
         def #{method_name}=(new_value)
-          RactorRailsShim::CLASS_ATTR_VALUES[:"ractor_rails_shim_class_attr_\#{self.object_id}_#{namespaced_name}"] = new_value
-          new_value
-        end
-      RUBY
-    end
-
-    # Build the ractor-mode reader/writer pair for one method name. `key_str`
-    # is the inspected IES key Symbol literal (constant across both calls).
-    def _class_attr_ractor_methods(method_name, key_str)
-      <<~RUBY
-        def #{method_name}
-          v = RactorRailsShim.storage[#{key_str}]
-          return v if RactorRailsShim.storage.key?(#{key_str})
-          fb = RactorRailsShim::SHAREABLE_FALLBACK[#{key_str}]
-          return fb unless fb.nil?
-          RactorRailsShim::CLASS_ATTR_VALUES[#{key_str}] if Ractor.main?
-        end
-
-        def #{method_name}=(new_value)
-          RactorRailsShim.storage[#{key_str}] = new_value
-          RactorRailsShim::CLASS_ATTR_VALUES[#{key_str}] = new_value if Ractor.main?
+          RactorRailsShim.storage_strategy.store(self, #{key_str}, new_value)
           new_value
         end
       RUBY

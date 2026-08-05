@@ -29,16 +29,18 @@ module RactorRailsShim
     # writer always targets this owner's single `key`.
     module Ractor
       class << self
-        # `missing_default` is a Ruby source string (eval'd in the caller's
-        # heredoc), so it's returned as-is here — the eval'd method body
-        # inlines it. `lookup` itself (called directly from specs / Ruby)
-        # evaluates it via `eval` for the direct-call contract.
+        # `missing_default` is a Ruby source string (inlined into the eval'd
+        # heredoc by the caller). The Ractor strategy does NOT consult it —
+        # its three tiers (IES → SHAREABLE_FALLBACK → CLASS_ATTR_VALUES[main])
+        # cover the lookup; the missing_default is accepted for contract
+        # parity with the Thread strategy but unused. This matches the former
+        # `_class_attr_ractor_methods` reader exactly.
         def lookup(owner, key, missing_default)
           v = RactorRailsShim.storage[key]
           return v if RactorRailsShim.storage.key?(key)
           fb = RactorRailsShim::SHAREABLE_FALLBACK[key]
           return fb unless fb.nil?
-          eval(missing_default) # rubocop:disable disable Eval — by design (string default expr)
+          RactorRailsShim::CLASS_ATTR_VALUES[key] if ::Ractor.main?
         end
 
         def store(owner, key, value)
@@ -61,21 +63,27 @@ module RactorRailsShim
       # suffix is everything after the second-to-last underscore-group
       # (the object_id is the last numeric group before the suffix).
       def self._suffix_from_key(key)
-        key.to_s.sub(/\A:ractor_rails_shim_class_attr_\d+_/, "")
+        # `key` is a Symbol of the form
+        # `:"ractor_rails_shim_class_attr_<oid>_<namespaced_name>"`. `to_s`
+        # has no leading colon. Strip the fixed prefix + numeric oid + the
+        # underscore after it, leaving the namespaced-name suffix.
+        key.to_s.sub(/\Aractor_rails_shim_class_attr_\d+_/, "")
       end
       private_class_method :_suffix_from_key
 
       class << self
-        # The missing_default is inlined into the eval'd heredoc by the caller;
-        # for direct Ruby calls we eval it. The ancestor walk rebuilds each
-        # ancestor's key from its object_id + the namespaced suffix.
+        # The missing_default is inlined into the eval'd heredoc by the caller
+        # as the actual VALUE (the heredoc interpolates the expression, so the
+        # strategy receives the evaluated object, not a source string). The
+        # ancestor walk rebuilds each ancestor's key from its object_id + the
+        # namespaced suffix.
         def lookup(owner, key, missing_default)
           suffix = _suffix_from_key(key)
           owner.ancestors.each do |anc|
             k = :"ractor_rails_shim_class_attr_#{anc.object_id}_#{suffix}"
             return RactorRailsShim::CLASS_ATTR_VALUES[k] if RactorRailsShim::CLASS_ATTR_VALUES.key?(k)
           end
-          eval(missing_default) # rubocop:disable disable Eval — by design
+          missing_default
         end
 
         def store(owner, key, value)

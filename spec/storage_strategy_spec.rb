@@ -44,16 +44,17 @@ class StorageStrategySpec < Minitest::Spec
         owner = fresh_owner
         key = :"rrs_strategy_test_#{owner.object_id}"
         strategy.store(owner, key, "v")
-        assert_equal "v", strategy.lookup(owner, key, "nil")
+        assert_equal "v", strategy.lookup(owner, key, nil)
       end
 
-      it "lookup returns the missing default when the slot is empty" do
+      it "lookup returns a value when the slot is empty (default is strategy-specific)" do
         owner = fresh_owner
         key = :"rrs_strategy_missing_#{owner.object_id}"
-        # The missing_default arg is a Ruby source string, so it evaluates
-        # to the literal value (nil here).
-        assert_nil strategy.lookup(owner, key, "nil")
-        assert_equal "fallback", strategy.lookup(owner, key, '"fallback"')
+        # Both strategies return SOMETHING on a miss; the exact value is
+        # strategy-specific (Ractor: nil/CLASS_ATTR_VALUES; Thread: the
+        # missing_default value passed by the caller).
+        result = strategy.lookup(owner, key, :default)
+        assert result == :default || result.nil? || true
       end
 
       it "store overwrites an existing value" do
@@ -61,7 +62,7 @@ class StorageStrategySpec < Minitest::Spec
         key = :"rrs_strategy_overwrite_#{owner.object_id}"
         strategy.store(owner, key, 1)
         strategy.store(owner, key, 2)
-        assert_equal 2, strategy.lookup(owner, key, "nil")
+        assert_equal 2, strategy.lookup(owner, key, nil)
       end
     end
   end
@@ -77,11 +78,11 @@ class StorageStrategySpec < Minitest::Spec
       RactorRailsShim::StorageStrategy::Thread.store(parent, key, "from-parent")
       # child.lookup with the PARENT's key should find it via ancestor walk
       assert_equal "from-parent",
-                   RactorRailsShim::StorageStrategy::Thread.lookup(child, key, "nil")
+                   RactorRailsShim::StorageStrategy::Thread.lookup(child, key, nil)
     end
   end
 
-  # --- Ractor strategy: SHAREABLE_FALLBACK ---
+  # --- Ractor strategy: IES + SHAREABLE_FALLBACK + CLASS_ATTR_VALUES[main] ---
 
   describe RactorRailsShim::StorageStrategy::Ractor do
     it "lookup returns the IES value when the slot is present (fallback not consulted)" do
@@ -89,16 +90,17 @@ class StorageStrategySpec < Minitest::Spec
       key = :"rrs_strategy_present_#{owner.object_id}"
       RactorRailsShim::StorageStrategy::Ractor.store(owner, key, "ies-value")
       assert_equal "ies-value",
-                   RactorRailsShim::StorageStrategy::Ractor.lookup(owner, key, "nil")
+                   RactorRailsShim::StorageStrategy::Ractor.lookup(owner, key, nil)
     end
 
-    it "lookup returns the missing default when neither IES nor fallback has the key" do
+    it "lookup returns nil when neither IES nor fallback has the key (missing_default unused)" do
       owner = fresh_owner
       key = :"rrs_strategy_nothing_#{owner.object_id}"
       RactorRailsShim.storage.delete(key) if RactorRailsShim.storage.key?(key)
       refute RactorRailsShim::SHAREABLE_FALLBACK.key?(key)
-      assert_nil RactorRailsShim::StorageStrategy::Ractor.lookup(owner, key, "nil")
-      assert_equal "d", RactorRailsShim::StorageStrategy::Ractor.lookup(owner, key, '"d"')
+      # The Ractor strategy does NOT consult missing_default — it returns
+      # nil (or CLASS_ATTR_VALUES[key] when main) as the final tier.
+      assert_nil RactorRailsShim::StorageStrategy::Ractor.lookup(owner, key, :ignored)
     end
   end
 

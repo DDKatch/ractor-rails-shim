@@ -56,6 +56,16 @@ module RactorRailsShim
       # visible config surface.
       RactorRailsShim::RunMode.resolve!
 
+      # Select the storage strategy once: Thread (ancestor-walk +
+      # CLASS_ATTR_VALUES) for thread servers, Ractor (IES + SHAREABLE_FALLBACK)
+      # for Ractor mode. The class_attribute heredoc calls
+      # RactorRailsShim.storage_strategy.lookup/store, collapsing the
+      # two-mode branch (Issue #15).
+      RactorRailsShim.storage_strategy =
+        RactorRailsShim::RunMode.thread? ?
+          RactorRailsShim::StorageStrategy::Thread :
+          RactorRailsShim::StorageStrategy::Ractor
+
       if RactorRailsShim.thread_mode?
         # Minimal install for thread (Puma/Falcon) servers: only the
         # class_attribute isolation fix + nil-safe callback replay. The
