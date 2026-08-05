@@ -135,7 +135,7 @@ module RactorRailsShim
           h = ::Devise.mappings
           snap = {}
           h.each { |scope, mapping| snap[scope] = _devise_mapping_snapshot(mapping) }
-          snap = Ractor.make_shareable(snap) rescue nil
+          snap = _swallow("make devise mappings shareable") { Ractor.make_shareable(snap) }
           const_set(:DEVISE_MAPPINGS, snap) if snap
         rescue
           nil

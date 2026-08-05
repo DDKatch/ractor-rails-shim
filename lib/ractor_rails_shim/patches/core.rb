@@ -255,7 +255,9 @@ module RactorRailsShim
     # This MUST run in the main Ractor (const_set writes the constant table).
     # Public wrapper is `prepare_for_ractors!` above.
     def do_install_shareable_constants
+      return if @shareable_constants_done
       shareable_constants.each { |path| make_constant_shareable(path) }
+      @shareable_constants_done = true
     end
 
     # Resolve a constant path string to a value, and if it exists and is

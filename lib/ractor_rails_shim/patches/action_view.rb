@@ -244,7 +244,7 @@ module RactorRailsShim
           (defined?(::Rails) && ::Rails.respond_to?(:application) && ::Rails.application) ? ::Rails.application.routes : nil,
           nil
         )
-        Ractor.make_shareable(fallback) rescue nil
+        fallback = _swallow("make view context fallback shareable") { Ractor.make_shareable(fallback) }
         self._view_context_fallback = fallback
       end
 

@@ -293,7 +293,7 @@ module RactorRailsShim
       # while the objects are still mutable) populates the ivars so the frozen,
       # shared copies already hold the values and workers only read them.
       if Ractor.main? && defined?(::Rails) && ::Rails.application
-        begin
+        _swallow("warm journey routes") do
           rset = ::Rails.application.routes
           all = []
           all.concat(rset.named_routes.send(:routes).values) rescue nil
@@ -310,8 +310,6 @@ module RactorRailsShim
             p.required_names rescue nil
             p.optional_names rescue nil
           end
-        rescue
-          nil
         end
       end
       # Capture the (shareable) RouteSet so workers can build URLs without
@@ -422,15 +420,15 @@ module RactorRailsShim
         nrc.alias_method(:define_url_helper_without_shim, :define_url_helper)
       end
       nrc.define_method(:define_url_helper) do |mod, name, helper, url_strategy|
-        begin
-          # Detach the helper from the live route object before deep-freezing
-          # it for cross-Ractor sharing. The non-optimized UrlHelper#call only
-          # needs @options / @segment_keys / @route_name to build the options
-          # hash and then delegates to `t._routes.url_for(route_name, ...)`,
-          # which looks the route up in the (shareable) RouteSet by name. The
-          # @route reference would pull the whole route graph into the freeze,
-          # freezing objects that make_app_shareable! must still be able to
-          # mutate (e.g. Devise route constraints) -> FrozenError.
+        # Detach the helper from the live route object before deep-freezing
+        # it for cross-Ractor sharing. The non-optimized UrlHelper#call only
+        # needs @options / @segment_keys / @route_name to build the options
+        # hash and then delegates to `t._routes.url_for(route_name, ...)`,
+        # which looks the route up in the (shareable) RouteSet by name. The
+        # @route reference would pull the whole route graph into the freeze,
+        # freezing objects that make_app_shareable! must still be able to
+        # mutate (e.g. Devise route constraints) -> FrozenError.
+        RactorRailsShim._swallow("freeze url helper") do
           if helper.respond_to?(:instance_variable_get)
             helper.instance_variable_set(:@route, nil) rescue nil
             opts = helper.instance_variable_get(:@options)
@@ -439,8 +437,6 @@ module RactorRailsShim
             helper.instance_variable_set(:@segment_keys, segs.dup.freeze) rescue nil
           end
           helper = Ractor.make_shareable(helper)
-        rescue
-          nil
         end
         RactorRailsShim::URL_HELPERS[name] = helper
         strategy_const = url_strategy.equal?(::ActionDispatch::Routing::RouteSet::PATH) ?
@@ -705,7 +701,7 @@ module RactorRailsShim
       if defined?(::ActionDispatch::Journey::GTG::Builder) &&
          ::ActionDispatch::Journey::GTG::Builder.const_defined?(:DUMMY_END_NODE)
         node = ::ActionDispatch::Journey::GTG::Builder.const_get(:DUMMY_END_NODE)
-        Ractor.make_shareable(node) rescue nil
+        _swallow("make journey dummy end node shareable") { Ractor.make_shareable(node) }
       end
     end
 
@@ -787,7 +783,7 @@ module RactorRailsShim
         next unless c.is_a?(::Array) || c.is_a?(::Hash)
         next if c.frozen?
         c.freeze
-        ::Ractor.make_shareable(c) rescue nil
+        _swallow("make mime negotiation constant shareable") { ::Ractor.make_shareable(c) }
       end
     rescue => e
       warn "[ractor-rails-shim] _freeze_mime_negotiation!: #{e.class}: #{e.message}"

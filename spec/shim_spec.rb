@@ -259,6 +259,26 @@ class ShimSpec < Minitest::Spec
     Object.send(:remove_const, :ShimTestAttrClass) if defined?(ShimTestAttrClass)
   end
 
+  it "do_install_shareable_constants is idempotent: a flag marks it done after first run" do
+    # Regression guard: `make_app_shareable!` guarded on @shareable_constants_done
+    # but the flag was never SET, so do_install_shareable_constants re-ran on
+    # every call. Verify the flag is set after the first run and a second call
+    # is a no-op (doesn't re-resolve constants).
+    RactorRailsShim.remove_instance_variable(:@shareable_constants_done) if RactorRailsShim.instance_variable_defined?(:@shareable_constants_done)
+
+    refute RactorRailsShim.instance_variable_get(:@shareable_constants_done),
+           "setup: flag should be unset before first run"
+
+    RactorRailsShim.send(:do_install_shareable_constants)
+
+    assert RactorRailsShim.instance_variable_defined?(:@shareable_constants_done),
+           "flag should be defined after first run"
+    assert RactorRailsShim.instance_variable_get(:@shareable_constants_done),
+           "flag should be truthy after first run"
+  ensure
+    RactorRailsShim.remove_instance_variable(:@shareable_constants_done) if RactorRailsShim.instance_variable_defined?(:@shareable_constants_done)
+  end
+
   it "class_attribute reader allocates ~0 per read (ractor mode)" do
     skip "ActiveSupport::ClassAttribute not loaded" unless defined?(ActiveSupport::ClassAttribute)
     klass = Class.new do

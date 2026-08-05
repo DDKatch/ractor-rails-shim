@@ -977,7 +977,7 @@ module RactorRailsShim
           handlers = ::ActiveRecord::DatabaseConfigurations.db_config_handlers
           # Make each handler Proc shareable (freezes its binding). A shareable
           # Proc is callable from any Ractor.
-          handlers.each { |h| Ractor.make_shareable(h) rescue nil }
+          handlers.each { |h| _swallow("make ar db config handler shareable") { Ractor.make_shareable(h) } }
           shareable = Ractor.make_shareable(handlers.dup)
           verbose, $VERBOSE = $VERBOSE, nil
           begin
@@ -1031,7 +1031,7 @@ module RactorRailsShim
       if Ractor.main?
         begin
           transformers = ::ActiveRecord.query_transformers
-          transformers.each { |t| Ractor.make_shareable(t) rescue nil }
+          transformers.each { |t| _swallow("make ar query transformer shareable") { Ractor.make_shareable(t) } }
           shareable = Ractor.make_shareable(transformers.dup)
           verbose, $VERBOSE = $VERBOSE, nil
           begin

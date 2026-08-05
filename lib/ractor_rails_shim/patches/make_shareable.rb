@@ -156,15 +156,19 @@ module RactorRailsShim
             begin; v = o.instance_variable_get(iv); rescue; next; end
             if iv == :@logger
               # Replace the app-instance / config logger with the no-op (so the
-              # frozen app graph holds no live IO). Best-effort; rescue if the
-              # owner is frozen.
-              o.instance_variable_set(iv, noop_logger) rescue nil
+              # frozen app graph holds no live IO). Best-effort; funnel through
+              # _swallow so a frozen-owner failure is traceable under debug=.
+              _swallow("neutralize logger ivar") do
+                o.instance_variable_set(iv, noop_logger)
+              end
             elsif v.is_a?(::IO) && (v == $stdout || v == $stderr || v == STDOUT || v == STDERR)
               # Any stray IO reference → a shareable no-op sink.
               sink = NoOpLogDev.new
               sink.freeze
               Ractor.make_shareable(sink)
-              o.instance_variable_set(iv, sink) rescue nil
+              _swallow("neutralize logger IO ivar") do
+                o.instance_variable_set(iv, sink)
+              end
             elsif v
               stack << v
             end
@@ -398,7 +402,9 @@ module RactorRailsShim
           # controllers is a Hash with a default proc (unshareable) — copy the
           # entries into a plain frozen Hash.
           h = {}
-          mapping.controllers.each { |k, v| h[k] = v } rescue nil
+          RactorRailsShim._swallow("devise mapping controllers") do
+            mapping.controllers.each { |k, v| h[k] = v }
+          end
           @controllers = h.freeze
           # failure_app is either Devise::FailureApp (a shareable class) or a
           # lambda (when configured as a String) — keep only the shareable class.
@@ -445,9 +451,7 @@ module RactorRailsShim
       end
 
       def _devise_mapping_snapshot(mapping)
-        DeviseMappingSnapshot.new(mapping)
-      rescue
-        nil
+        _swallow("devise mapping snapshot") { DeviseMappingSnapshot.new(mapping) }
       end
       # StrategyServe / StrategyCall moved to action_dispatch.rb (ActionDispatch
       # routing mapper strategy procs).
@@ -714,15 +718,19 @@ module RactorRailsShim
           # frozen Hash — leave the default_proc; make_shareable handles it.
         end
       elsif ivar
-        parent.instance_variable_set(ivar, replacement) rescue nil
+        _swallow("replace proc ivar") do
+          parent.instance_variable_set(ivar, replacement)
+        end
       elsif parent.is_a?(Array)
         idx = parent.index(proc_obj)
         if idx then parent[idx] = replacement
         else parent.each_with_index { |e, i| parent[i] = replacement if e.equal?(proc_obj) }
         end
       elsif parent.is_a?(Hash)
-        key = parent.key(proc_obj)
-        parent[key] = replacement if key rescue nil
+        _swallow("replace proc hash entry") do
+          key = parent.key(proc_obj)
+          parent[key] = replacement if key
+        end
       end
     end
 
@@ -759,14 +767,18 @@ module RactorRailsShim
         _each_ivar_and_child(o, _p) do |child, child_path, child_ivar|
           next if child_ivar == :__default_proc__
           if child.is_a?(Mutex) || child.is_a?(Monitor)
-            o.instance_variable_set(child_ivar, NoOpLock.new) rescue nil if child_ivar
+            _swallow("replace lock ivar") do
+              o.instance_variable_set(child_ivar, NoOpLock.new) if child_ivar
+            end
             # If the lock is in an Array/Set/Hash (no ivar), we can't swap
             # it in place here — leave it; make_shareable will handle the
             # frozen container. The ivar case is the load-bearing one.
           elsif defined?(::Concurrent::Map) && child.is_a?(::Concurrent::Map) && child_ivar
             hash_copy = {}
             child.each_pair { |k, val| hash_copy[k] = val }
-            o.instance_variable_set(child_ivar, hash_copy) rescue nil
+            _swallow("replace concurrent map ivar") do
+              o.instance_variable_set(child_ivar, hash_copy)
+            end
           elsif child
             stack << [child, child_path, o, child_ivar]
           end
@@ -813,24 +825,18 @@ module RactorRailsShim
         next unless mod && mod.instance_variable_defined?(ivar)
         val = mod.instance_variable_get(ivar)
         next if val.nil?
-        begin
+        _swallow("freeze global ivar #{class_name}#{ivar}") do
           Ractor.make_shareable(val)
-          mod.instance_variable_set(ivar, val) rescue nil
-        rescue
-          nil
+          mod.instance_variable_set(ivar, val)
         end
       end
       # Pre-touch memoizing accessors so workers short-circuit instead of
       # writing the (now frozen) ivar on first read.
-      begin
+      _swallow("freeze global ivar ActiveSupport::Editor.current") do
         ::ActiveSupport::Editor.current if defined?(::ActiveSupport::Editor)
-      rescue
-        nil
       end
-      begin
+      _swallow("freeze global ivar Warden::Strategies._strategies") do
         ::Warden::Strategies._strategies if defined?(::Warden::Strategies)
-      rescue
-        nil
       end
     end
 
@@ -840,11 +846,9 @@ module RactorRailsShim
       # Entries are Hashes of Symbols/booleans/nil/Arrays — all natively
       # shareable. A non-frozen constant raises Ractor::IsolationError when a
       # worker reads it.
-      begin
+      _swallow("freeze declared callbacks") do
         Ractor.make_shareable(table)
         RactorRailsShim.const_set(:SHAREABLE_DECLARED_CALLBACKS, table)
-      rescue
-        nil
       end
     end
 
@@ -918,7 +922,7 @@ module RactorRailsShim
 
     def _collect_controller_classes(app)
       classes = []
-      begin
+      _swallow("collect controller classes") do
         router = (app.respond_to?(:routes) ? app.routes : nil) || (defined?(::Rails) && ::Rails.application && ::Rails.application.routes)
         router.routes.each do |r|
           c = r.defaults[:controller] rescue nil
@@ -926,15 +930,11 @@ module RactorRailsShim
           klass = "#{c.camelize}Controller".safe_constantize rescue nil
           classes << klass if klass
         end
-      rescue
-        nil
       end
-      begin
+      _swallow("collect controller classes (descendants)") do
         if defined?(::ApplicationController) && ::ApplicationController.respond_to?(:descendants)
           classes.concat(::ApplicationController.descendants)
         end
-      rescue
-        nil
       end
       classes.compact.uniq
     end
