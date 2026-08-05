@@ -3,58 +3,75 @@
 # Registry: the canonical home for the shared registries that every role
 # object reads/writes (Issue #25, POODR §1 SRP + §2 Dependencies).
 #
-# The nine registries formerly lived as constants on the RactorRailsShim
-# facade (patches/core.rb:33-84). Every role object reached them through
-# the facade global. Moving them here makes the registries the single
-# source of truth — the facade constants become aliases for backward
-# compatibility (removed in #31).
-#
-# Readers delegate to the current facade constants so that
-# `reassign_shareable_const` (which replaces the constant via
-# `const_set`) is transparent — Registry always returns the live object.
+# Issue #35 (Round 4): Registry OWNS the nine registries as instance
+# variables. The facade constants in patches/core.rb are aliases that
+# delegate to Registry. Reassignment of the frozen (shareable) registries
+# goes through Registry.reassign_* so the facade alias tracks the new
+# value without a $VERBOSE-suppressed const_set on the facade.
 #
 # Types:
 #   - Mutable Array: class_attributes, shareable_constants, shareable_class_ivars
 #   - Mutable Hash:  mattr_defaults, class_attr_values, shareable_mattr_defaults
 #   - Frozen (Ractor.make_shareable): abstract_registry, view_context_registry,
 #     shareable_fallback
+#
+# The frozen registries start as empty shareable Hashes and are swapped
+# (via reassign_*) at prepare_for_ractors! / make_app_shareable! time with
+# the populated, frozen, shareable versions. The mutable registries are
+# appended at boot (main Ractor) and read at request time (worker Ractors).
 
 module RactorRailsShim
   module Registry
-    def self.class_attributes
-      RactorRailsShim::CLASS_ATTRIBUTES
-    end
+    @class_attributes = []
+    @mattr_defaults = {}
+    @class_attr_values = {}
+    @shareable_mattr_defaults = {}
+    @shareable_constants = []
+    @shareable_class_ivars = []
+    @abstract_registry = Ractor.make_shareable({})
+    @view_context_registry = Ractor.make_shareable({})
+    @shareable_fallback = Ractor.make_shareable({})
 
-    def self.mattr_defaults
-      RactorRailsShim::MATTR_DEFAULTS
-    end
+    class << self
+      attr_reader :class_attributes, :mattr_defaults, :class_attr_values,
+                  :shareable_mattr_defaults, :shareable_constants,
+                  :shareable_class_ivars, :abstract_registry,
+                  :view_context_registry, :shareable_fallback
 
-    def self.class_attr_values
-      RactorRailsShim::CLASS_ATTR_VALUES
-    end
+      # Swap the frozen (shareable) registries. The value MUST already be
+      # frozen + Ractor.make_shareable. Each reassign_* updates the
+      # instance variable; the facade alias (defined in patches/core.rb)
+      # re-reads it on every access, so the alias tracks the new value
+      # without a const_set on the facade singleton.
+      def reassign_shareable_fallback(value)
+        @shareable_fallback = value
+      end
 
-    def self.shareable_mattr_defaults
-      RactorRailsShim::SHAREABLE_MATTR_DEFAULTS
-    end
+      def reassign_shareable_mattr_defaults(value)
+        @shareable_mattr_defaults = value
+      end
 
-    def self.shareable_constants
-      RactorRailsShim::SHAREABLE_CONSTANTS
-    end
+      def reassign_abstract_registry(value)
+        @abstract_registry = value
+      end
 
-    def self.shareable_class_ivars
-      RactorRailsShim::SHAREABLE_CLASS_IVARS
-    end
+      def reassign_view_context_registry(value)
+        @view_context_registry = value
+      end
 
-    def self.abstract_registry
-      RactorRailsShim::ABSTRACT_REGISTRY
-    end
-
-    def self.view_context_registry
-      RactorRailsShim::VIEW_CONTEXT_REGISTRY
-    end
-
-    def self.shareable_fallback
-      RactorRailsShim::SHAREABLE_FALLBACK
+      # Test seam: reset all nine registries to their boot defaults. Used
+      # by specs that mutate the registries and need a clean slate.
+      def reset_all
+        @class_attributes = []
+        @mattr_defaults = {}
+        @class_attr_values = {}
+        @shareable_mattr_defaults = {}
+        @shareable_constants = []
+        @shareable_class_ivars = []
+        @abstract_registry = Ractor.make_shareable({})
+        @view_context_registry = Ractor.make_shareable({})
+        @shareable_fallback = Ractor.make_shareable({})
+      end
     end
   end
 end

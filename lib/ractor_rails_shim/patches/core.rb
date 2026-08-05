@@ -18,70 +18,23 @@ module RactorRailsShim
     backtrace_cleaner: :ractor_rails_shim_backtrace_cleaner
   }.freeze
 
-  # Registry of every class_attribute definition the shim's `redefine` patch
-  # has seen. Each entry is [owner_name, namespaced_name (Symbol), key (Symbol)]
-  # so that at `prepare_for_ractors!` time we can capture the main-ractor value
-  # of each attribute, make it shareable, and expose it as a read-only fallback
-  # for worker Ractors (whose own IES slot is empty). Without this, framework
-  # class config (ActionController::Base.config, etc.) is per-Ractor-nil in
-  # workers and request dispatch dies (e.g. default_static_extension -> config
-  # is nil). The fallback is ONLY read by workers; the main ractor keeps its
-  # own live (possibly mutable) value in its IES slot, untouched.
-  #
-  # The fallback table itself is built once, at prepare_for_ractors! time, and
-  # made shareable; workers read it via a constant (RactorRailsShim::SHAREABLE_FALLBACK).
-  CLASS_ATTRIBUTES = []
-  # Shareable registry: controller class → abstract? boolean. Populated at
-  # prepare_for_ractors! time by scanning all AbstractController::Base
-  # descendants for their @abstract ivar. Workers read this via the
-  # patched AbstractController::Base.abstract? (per-class values can't live in
-  # per-Ractor IES). Made shareable (frozen) at prepare time.
-  ABSTRACT_REGISTRY = Ractor.make_shareable({})
-  # Runtime registry: mattr_accessor IES key → default value. Written at
-  # mattr-definition time (boot, in main); the mattr reader (string-eval'd)
-  # looks the default up here by key (defaults can't be inlined into the
-  # eval'd body — a Logger's `.inspect` is invalid Ruby). NOT made shareable
-  # (some defaults like Logger are intrinsically unshareable); the reader
-  # only consults this for defaults that are Ractor.shareable?.
-  MATTR_DEFAULTS = {}
-  # class_attribute default values, keyed by IES key. Written at
-  # class_attribute-definition time (boot, in main). The class_attribute reader
-  # falls back to this in the MAIN ractor when the IES slot is empty (which it
-  # is on non-boot threads — IES is thread-local, and Puma's request threads
-  # have empty slots). NOT made shareable (values may be mutable Hashes/Arrays);
-  # only safe to read from the main ractor. Workers use SHAREABLE_FALLBACK
-  # (built at prepare_for_ractors! time) instead.
-  CLASS_ATTR_VALUES = {}
-  # Shareable subset of MATTR_DEFAULTS: only defaults that are
-  # Ractor.shareable? (so workers can read the constant safely). Written at
-  # mattr-definition time (boot, in main, before workers spawn); frozen +
-  # made shareable at prepare_for_ractors! time.
-  SHAREABLE_MATTR_DEFAULTS = {}
-  # Registry of constant path strings ("A::B::C") whose values are mutable
-  # Arrays/Hashes/Sets that need to be made shareable (deep-frozen) at boot.
-  # Each per-concern file concats its own constants into this array. Users
-  # can add their own via RactorRailsShim.shareable_constants << "MyGem::LIST".
-  SHAREABLE_CONSTANTS = []
-  # Registry of [ClassName, :ivar] pairs: class-level instance variables whose
-  # values are mutable (Hashes/Arrays/objects) and must be made Ractor-shareable
-  # (deep-frozen) at boot so worker Ractors can read them. Unlike
-  # SHAREABLE_CONSTANTS (top-level constants), these are class instance
-  # variables (e.g. ActiveSupport::Editor.@editors, Warden::Strategies.@strategies)
-  # that hold unshareable values and are read during request dispatch.
-  SHAREABLE_CLASS_IVARS = []
-  # Shareable registry: controller class → its built view_context_class.
-  # Populated at prepare_for_ractors! time by calling view_context_class on
-  # each loaded controller in main (build_view_context_class uses
-  # Class.new{...} blocks → un-shareable Proc from a worker). Made shareable.
-  VIEW_CONTEXT_REGISTRY = Ractor.make_shareable({})
-  # Frozen, shareable fallback table for class_attribute / mattr_accessor
-  # values. Built once at prepare_for_ractors! time from the main ractor's
-  # live values (class_attribute IES slot / mattr @@sym), each made shareable
-  # via callable-replacement + make_shareable. Workers read this via the
-  # RactorRailsShim::SHAREABLE_FALLBACK constant when their own IES slot is
-  # empty. Values that can't be made shareable are skipped (workers see nil
-  # for those and must set their own).
-  SHAREABLE_FALLBACK = Ractor.make_shareable({})
+  # The nine shared registries. Issue #35 (Round 4): storage OWNS the mutable
+  # registries (Array/Hash) — the facade constants below are the SAME object
+  # as Registry's instance variables, so appends are visible through both
+  # paths. The frozen (shareable) registries are swapped via
+  # `_reassign_shareable_const` which updates BOTH the facade constant (for
+  # the string-eval'd code that reads `RactorRailsShim::SHAREABLE_FALLBACK`)
+  # and Registry (so role objects that read `Registry.shareable_fallback`
+  # see the new value). New code should prefer `RactorRailsShim::Registry`.
+  CLASS_ATTRIBUTES = Registry.class_attributes
+  MATTR_DEFAULTS = Registry.mattr_defaults
+  CLASS_ATTR_VALUES = Registry.class_attr_values
+  SHAREABLE_MATTR_DEFAULTS = Registry.shareable_mattr_defaults
+  SHAREABLE_CONSTANTS = Registry.shareable_constants
+  SHAREABLE_CLASS_IVARS = Registry.shareable_class_ivars
+  ABSTRACT_REGISTRY = Registry.abstract_registry
+  VIEW_CONTEXT_REGISTRY = Registry.view_context_registry
+  SHAREABLE_FALLBACK = Registry.shareable_fallback
 
   # Registry of patch names → tested Rails version segments. Owned by
   # VersionPolicy; the constant here is an alias so the historical
@@ -147,6 +100,13 @@ module RactorRailsShim
     # shareable-constant rebuild site (SHAREABLE_FALLBACK,
     # SHAREABLE_MATTR_DEFAULTS, etc.). The value MUST already be frozen +
     # shareable — this method does not make it so.
+    #
+    # Issue #35 (Round 4): for the four frozen registries that Registry
+    # owns (SHAREABLE_FALLBACK, SHAREABLE_MATTR_DEFAULTS,
+    # ABSTRACT_REGISTRY, VIEW_CONTEXT_REGISTRY), also update the
+    # Registry instance variable so role objects reading through
+    # `Registry.*` see the new value. The facade const_set is kept for
+    # the string-eval'd code that reads `RactorRailsShim::SHAREABLE_*`.
     def _reassign_shareable_const(name, value)
       verbose, $VERBOSE = $VERBOSE, nil
       begin
@@ -154,6 +114,13 @@ module RactorRailsShim
       ensure
         $VERBOSE = verbose
       end
+      case name
+      when :SHAREABLE_FALLBACK then Registry.reassign_shareable_fallback(value)
+      when :SHAREABLE_MATTR_DEFAULTS then Registry.reassign_shareable_mattr_defaults(value)
+      when :ABSTRACT_REGISTRY then Registry.reassign_abstract_registry(value)
+      when :VIEW_CONTEXT_REGISTRY then Registry.reassign_view_context_registry(value)
+      end
+      value
     end
 
     SUPPORTED_RUBY = RactorRailsShim::Version::SUPPORTED_RUBY
