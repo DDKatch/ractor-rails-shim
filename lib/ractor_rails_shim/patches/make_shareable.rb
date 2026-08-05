@@ -267,19 +267,13 @@ module RactorRailsShim
     # (Rack::Files target for the asset stack) now lives in rack.rb.
 
     # Identify which ActionDispatch strategy a Proc is and return its
-    # shareable replacement. The Proc stored in
-    # `ActionDispatch::Routing::Mapper::Constraints#@strategy` is the
-    # constant `SERVE` or `CALL` (assigned by reference), so `equal?` is
-    # the robust identifier — independent of the source line number, which
-    # any Rails patch release can shift. Returns NoOpProc for an unknown
-    # Proc (defensive; never mis-route).
+    # shareable replacement. Delegates to
+    # `RactorRailsShim::ActionDispatchStrategy.replacement_for(proc_obj)`
+    # (extracted Step 22.5, Issue #22). See `ActionDispatchStrategy` for
+    # the contract (SERVE/CALL identity dispatch via `equal?`, NoOpProc
+    # fallback for unknown Procs).
     def _strategy_replacement_for(proc_obj)
-      constraints = defined?(::ActionDispatch::Routing::Mapper::Constraints) ?
-        ::ActionDispatch::Routing::Mapper::Constraints : nil
-      return NoOpProc.new unless constraints
-      return StrategyServe.new if proc_obj.equal?(constraints::SERVE)
-      return StrategyCall.new if proc_obj.equal?(constraints::CALL)
-      NoOpProc.new
+      ActionDispatchStrategy.replacement_for(proc_obj)
     end
 
     # Replace Mutex/Monitor → NoOpLock and Concurrent::Map → Hash throughout

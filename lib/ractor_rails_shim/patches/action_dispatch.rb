@@ -844,4 +844,35 @@ module RactorRailsShim
       end
     end
   end
+
+  # `RactorRailsShim::ActionDispatchStrategy` — the role object that
+  # identifies which ActionDispatch strategy a Proc is and returns its
+  # shareable replacement (extracted from the facade god module in
+  # Step 22.5, Issue #22; POODR §1 SRP).
+  #
+  # The Proc stored in
+  # `ActionDispatch::Routing::Mapper::Constraints#@strategy` is the
+  # constant `SERVE` or `CALL` (assigned by reference), so `equal?` is
+  # the robust identifier — independent of the source line number,
+  # which any Rails patch release can shift. Returns NoOpProc for an
+  # unknown Proc (defensive; never mis-route).
+  #
+  # The facade method `_strategy_replacement_for` delegates to
+  # `.replacement_for` until Issue #31 removes it. NoOpProc,
+  # StrategyServe, StrategyCall (defined above on the singleton class)
+  # are collaborators reached through the facade; Issue #23 will inject
+  # them as constructor arguments.
+  module ActionDispatchStrategy
+    # Return the shareable replacement for the given strategy Proc.
+    #   SERVE -> StrategyServe, CALL -> StrategyCall, unknown -> NoOpProc.
+    def self.replacement_for(proc_obj)
+      constraints = defined?(::ActionDispatch::Routing::Mapper::Constraints) ?
+        ::ActionDispatch::Routing::Mapper::Constraints : nil
+      noop = RactorRailsShim.singleton_class.const_get(:NoOpProc)
+      return noop.new unless constraints
+      return RactorRailsShim.singleton_class.const_get(:StrategyServe).new if proc_obj.equal?(constraints::SERVE)
+      return RactorRailsShim.singleton_class.const_get(:StrategyCall).new if proc_obj.equal?(constraints::CALL)
+      noop.new
+    end
+  end
 end
