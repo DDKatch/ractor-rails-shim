@@ -1,47 +1,25 @@
 # frozen_string_literal: true
 
-# Fallback IsolatedExecutionState when ActiveSupport is not available.
+# Backward-compatibility alias for the former standalone fallback module.
 #
-# The shim's string-eval'd patch methods reference the literal constant
-# `ActiveSupport::IsolatedExecutionState` (no captured binding → callable
-# from any Ractor). To avoid opening the ActiveSupport namespace from a
-# third-party gem, the fallback is defined in the shim's own namespace
-# (RactorRailsShim::FallbackIES) and aliased onto
-# ActiveSupport::IsolatedExecutionState only when the real AS IES is absent.
-# When AS is loaded, the real one wins untouched and no alias is created.
+# The `FallbackIES` module body moved to `RactorRailsShim::Storage::ThreadLocal`
+# (Issue #14, Step 14.1). This file keeps the `RactorRailsShim::FallbackIES`
+# constant reachable as an alias so existing references (and the
+# `fallback_ies_spec` / `fallback_namespace_spec` contracts) resolve, without
+# re-defining the methods.
+#
+# The namespace alias patch that USED to live here —
+#   unless defined?(ActiveSupport::IsolatedExecutionState)
+#     module ActiveSupport; IsolatedExecutionState = FallbackIES; end
+#   end
+# — is now dead code and has been removed (Issue #14, Step 14.3). No patch file
+# references the literal `ActiveSupport::IsolatedExecutionState` anymore;
+# they all route through `RactorRailsShim.storage`, which is set to
+# `Storage::ThreadLocal` when AS is absent. Opening the ActiveSupport
+# namespace from a third-party gem is therefore no longer necessary.
+
+require_relative "storage"
+
 module RactorRailsShim
-  module FallbackIES
-    KEY = :active_support_execution_state_fallback
-
-    class << self
-      def [](key)
-        Thread.current[KEY]&.[](key)
-      end
-
-      def []=(key, value)
-        (Thread.current[KEY] ||= {})[key] = value
-      end
-
-      def key?(key)
-        Thread.current[KEY]&.key?(key)
-      end
-
-      def delete(key)
-        Thread.current[KEY]&.delete(key)
-      end
-
-      def clear
-        Thread.current[KEY] = nil
-      end
-    end
-  end
-end
-
-# Alias onto ActiveSupport::IsolatedExecutionState only when the real AS IES
-# is absent, so the shim's string-eval'd references resolve to the fallback
-# without the shim opening the ActiveSupport namespace to define a module.
-unless defined?(ActiveSupport::IsolatedExecutionState)
-  module ActiveSupport
-    IsolatedExecutionState = RactorRailsShim::FallbackIES
-  end
+  FallbackIES = Storage::ThreadLocal
 end
