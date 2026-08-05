@@ -1,11 +1,16 @@
 # frozen_string_literal: true
 
 # Fallback IsolatedExecutionState when ActiveSupport is not available.
-# This is a simple thread-local storage that mimics the ActiveSupport API
-# enough for the shim to work. In production (with Rails loaded), the real
-# ActiveSupport::IsolatedExecutionState is used instead.
-module ActiveSupport
-  module IsolatedExecutionState
+#
+# The shim's string-eval'd patch methods reference the literal constant
+# `ActiveSupport::IsolatedExecutionState` (no captured binding → callable
+# from any Ractor). To avoid opening the ActiveSupport namespace from a
+# third-party gem, the fallback is defined in the shim's own namespace
+# (RactorRailsShim::FallbackIES) and aliased onto
+# ActiveSupport::IsolatedExecutionState only when the real AS IES is absent.
+# When AS is loaded, the real one wins untouched and no alias is created.
+module RactorRailsShim
+  module FallbackIES
     KEY = :active_support_execution_state_fallback
 
     class << self
@@ -30,4 +35,13 @@ module ActiveSupport
       end
     end
   end
-end unless defined?(ActiveSupport::IsolatedExecutionState)
+end
+
+# Alias onto ActiveSupport::IsolatedExecutionState only when the real AS IES
+# is absent, so the shim's string-eval'd references resolve to the fallback
+# without the shim opening the ActiveSupport namespace to define a module.
+unless defined?(ActiveSupport::IsolatedExecutionState)
+  module ActiveSupport
+    IsolatedExecutionState = RactorRailsShim::FallbackIES
+  end
+end
