@@ -78,7 +78,7 @@ module RactorRailsShim
           # hit it because /up doesn't trigger LogSubscriber.log_levels.
           # CLASS_ATTR_VALUES is NOT shareable (values may be mutable); only
           # safe to read from the main ractor.
-          RactorRailsShim::CLASS_ATTR_VALUES[key] = value
+          RactorRailsShim::Registry.class_attr_values[key] = value
 
           # Register so _build_shareable_fallback! can capture + make shareable
           # at prepare_for_ractors! time. owner.name may be nil for anonymous
@@ -90,7 +90,7 @@ module RactorRailsShim
           # shared app).
           owner_label = owner.respond_to?(:name) ? owner.name : owner.class.name
           owner_label = owner_label || "anon_#{owner.class.name}_#{owner.object_id}"
-          RactorRailsShim::CLASS_ATTRIBUTES << [owner_label, namespaced_name, key, value]
+          RactorRailsShim::Registry.class_attributes << [owner_label, namespaced_name, key, value]
 
           # Always define the namespaced reader/writer on owner's singleton
           # class via string eval (no captured binding). The class_attribute

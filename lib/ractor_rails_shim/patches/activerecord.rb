@@ -1366,7 +1366,7 @@ module RactorRailsShim
         begin
           orig_handler = ::ActiveRecord::Base.default_connection_handler
           if orig_handler
-            RactorRailsShim::CLASS_ATTR_VALUES[:__ractor_rails_shim_ar_default_connection_handler__] = orig_handler
+            RactorRailsShim::Registry.class_attr_values[:__ractor_rails_shim_ar_default_connection_handler__] = orig_handler
             RactorRailsShim.storage[dch_key] = orig_handler
           end
         rescue StandardError => e
