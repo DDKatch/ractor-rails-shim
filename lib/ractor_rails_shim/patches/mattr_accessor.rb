@@ -145,7 +145,8 @@ module RactorRailsShim
     # registry. If the default is shareable, also rebuild the
     # SHAREABLE_MATTR_DEFAULTS constant (frozen + made shareable) so worker
     # Ractors can read it before prepare_for_ractors! runs. The constant
-    # reassignment silences the "already initialized" warning via $VERBOSE.
+    # reassignment goes through _reassign_shareable_const (centralized
+    # $VERBOSE suppression).
     def _seed_mattr_default(key, default)
       MATTR_DEFAULTS[key] = default
       if default && Ractor.shareable?(default)
@@ -153,12 +154,7 @@ module RactorRailsShim
         h[key] = default
         h.freeze
         Ractor.make_shareable(h)
-        verbose, $VERBOSE = $VERBOSE, nil
-        begin
-          const_set(:SHAREABLE_MATTR_DEFAULTS, h)
-        ensure
-          $VERBOSE = verbose
-        end
+        _reassign_shareable_const(:SHAREABLE_MATTR_DEFAULTS, h)
       end
     end
 

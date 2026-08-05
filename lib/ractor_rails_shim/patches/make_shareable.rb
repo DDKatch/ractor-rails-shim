@@ -106,12 +106,7 @@ module RactorRailsShim
       # internally). The shared app is frozen (read-only), so returning it
       # from worker Ractors is safe — they only read from it, never mutate.
       if Ractor.main?
-        verbose, $VERBOSE = $VERBOSE, nil
-        begin
-          const_set(:SHAREABLE_APP, app) unless const_defined?(:SHAREABLE_APP)
-        ensure
-          $VERBOSE = verbose
-        end
+        _reassign_shareable_const(:SHAREABLE_APP, app) unless const_defined?(:SHAREABLE_APP)
       end
       # Build the framework-config fallback AFTER the app is frozen. The
       # fallback makes class_attribute / mattr_accessor values shareable; some
@@ -284,19 +279,12 @@ module RactorRailsShim
       Ractor.make_shareable(fallback)
 
       # Make the shareable mattr-defaults subset shareable too (workers read
-      # it via the constant). Frozen + reassigned via const_set.
+      # it via the constant). Frozen + reassigned via the centralized helper.
       SHAREABLE_MATTR_DEFAULTS.freeze
       Ractor.make_shareable(SHAREABLE_MATTR_DEFAULTS)
 
-      # Reassign the constants with the built (shareable) tables. const_set
-      # warns "already initialized constant" — silence that one warning.
-      verbose, $VERBOSE = $VERBOSE, nil
-      begin
-        const_set(:SHAREABLE_FALLBACK, fallback)
-        const_set(:SHAREABLE_MATTR_DEFAULTS, SHAREABLE_MATTR_DEFAULTS)
-      ensure
-        $VERBOSE = verbose
-      end
+      _reassign_shareable_const(:SHAREABLE_FALLBACK, fallback)
+      _reassign_shareable_const(:SHAREABLE_MATTR_DEFAULTS, SHAREABLE_MATTR_DEFAULTS)
       fallback
     end
 
@@ -706,7 +694,7 @@ module RactorRailsShim
       # worker reads it.
       _swallow("freeze declared callbacks") do
         Ractor.make_shareable(table)
-        RactorRailsShim.const_set(:SHAREABLE_DECLARED_CALLBACKS, table)
+        _reassign_shareable_const(:SHAREABLE_DECLARED_CALLBACKS, table)
       end
     end
 

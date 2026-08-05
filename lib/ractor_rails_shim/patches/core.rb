@@ -143,6 +143,22 @@ module RactorRailsShim
       nil
     end
 
+    # Reassign a constant on RactorRailsShim with a new shareable value,
+    # silencing the "already initialized constant" warning that const_set
+    # emits when the constant was previously defined. Centralizes the
+    # $VERBOSE-suppressed const_set dance that was repeated at every
+    # shareable-constant rebuild site (SHAREABLE_FALLBACK,
+    # SHAREABLE_MATTR_DEFAULTS, etc.). The value MUST already be frozen +
+    # shareable — this method does not make it so.
+    def _reassign_shareable_const(name, value)
+      verbose, $VERBOSE = $VERBOSE, nil
+      begin
+        const_set(name, value)
+      ensure
+        $VERBOSE = verbose
+      end
+    end
+
     SUPPORTED_RUBY = RactorRailsShim::Version::SUPPORTED_RUBY
     SUPPORTED_RAILS = "8.1"
 
