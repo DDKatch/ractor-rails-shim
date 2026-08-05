@@ -18,11 +18,11 @@
 # `RactorRailsShim::CallbackCapture.read_action_filter_constraints` and
 # `RactorRailsShim::CallbackCapture.record_declared_callback` directly —
 # those names are load-bearing (the eval'd method body resolves them at
-# call time on whatever Ractor runs it). The @declared_
-# callbacks table stays on the RactorRailsShim singleton (the interceptor
-# writes @declared_callbacks directly; keeping it on the singleton avoids
-# changing the eval'd method body). The SHAREABLE_DECLARED_CALLBACKS
-# constant lives on RactorRailsShim.
+# call time on whatever Ractor runs it). Issue #36a (Round 4): the
+# @declared_callbacks table now lives on CallbackCapture itself (a class
+# instance variable), NOT on the RactorRailsShim facade singleton — the
+# role owns its own state. The SHAREABLE_DECLARED_CALLBACKS constant
+# lives on RactorRailsShim (reassigned via _reassign_shareable_const).
 #
 # The three callable collaborators — `_swallow` (funnel),
 # `_reassign_shareable_const`, and `_register_patch` — are reached via the
@@ -32,10 +32,10 @@
 # keep working; `configure(funnel:, reassign_shareable_const:, register_
 # patch:)` injects different collaborators so the role is independently
 # constructible and specable without the `RactorRailsShim` god module
-# loaded (Issue #23, POODR §2 Dependencies). The @declared_callbacks table
-# stays on the facade singleton (the interceptor writes it directly); the
-# `@installed` idempotency flag lives on `CallbackCapture` itself
-# (Issue #24, POODR §2 — own your own state).
+# loaded (Issue #23, POODR §2 Dependencies). Issue #36a (Round 4): the
+# @declared_callbacks table lives on CallbackCapture itself (the role
+# owns its state); the `@installed` idempotency flag also lives on
+# `CallbackCapture` (Issue #24, POODR §2 — own your own state).
 #
 # The RactorRailsShim singleton keeps facade methods that delegate, so
 # debug_funnel_spec and the integration spec keep passing unchanged.
@@ -104,7 +104,7 @@ module RactorRailsShim
     # natively shareable. A non-frozen constant raises
     # Ractor::IsolationError when a worker reads it.
     def self.freeze_declared_callbacks!
-      table = (RactorRailsShim.instance_variable_get(:@declared_callbacks) || {})
+      table = (@declared_callbacks || {})
       funnel.call("freeze declared callbacks") do
         Ractor.make_shareable(table)
         reassign_shareable_const.call(:SHAREABLE_DECLARED_CALLBACKS, table)
@@ -114,14 +114,19 @@ module RactorRailsShim
     # Record a single declared symbolic filter. Called from the
     # set_callback interceptor during eager load (main Ractor only).
     def self.record_declared_callback(klass_id, kind, filter, only, except)
-      RactorRailsShim.instance_variable_set(:@declared_callbacks, {}) unless RactorRailsShim.instance_variable_defined?(:@declared_callbacks)
-      table = RactorRailsShim.instance_variable_get(:@declared_callbacks)
+      @declared_callbacks = {} unless defined?(@declared_callbacks)
+      table = @declared_callbacks
       (table[klass_id] ||= []) << {
         kind: kind,
         filter: filter,
         only: (only.freeze if only),
         except: (except.freeze if except)
       }
+    end
+
+    # Clear the declared-callbacks table. Test seam.
+    def self.reset_declared_callbacks!
+      remove_instance_variable(:@declared_callbacks) if instance_variable_defined?(:@declared_callbacks)
     end
 
     # Install an interceptor on ActiveSupport::Callbacks.set_callback that

@@ -43,10 +43,9 @@ class CallbackCaptureSpec < Minitest::Spec
   # --- record_declared_callback / freeze_declared_callbacks! ---
 
   it "record_declared_callback records a symbolic filter entry" do
-    # Clear any prior state so the assertion is isolated.
-    RactorRailsShim.remove_instance_variable(:@declared_callbacks) if RactorRailsShim.instance_variable_defined?(:@declared_callbacks)
+    RactorRailsShim::CallbackCapture.reset_declared_callbacks!
     RactorRailsShim::CallbackCapture.record_declared_callback(12345, :before, :set_post, [:index], nil)
-    table = RactorRailsShim.instance_variable_get(:@declared_callbacks)
+    table = RactorRailsShim::CallbackCapture.instance_variable_get(:@declared_callbacks)
     assert_kind_of Hash, table
     assert_includes table.keys, 12345
     entry = table[12345].last
@@ -55,11 +54,11 @@ class CallbackCaptureSpec < Minitest::Spec
     assert_equal [:index], entry[:only]
     assert_nil entry[:except]
   ensure
-    RactorRailsShim.remove_instance_variable(:@declared_callbacks) if RactorRailsShim.instance_variable_defined?(:@declared_callbacks)
+    RactorRailsShim::CallbackCapture.reset_declared_callbacks!
   end
 
   it "freeze_declared_callbacks! builds a shareable SHAREABLE_DECLARED_CALLBACKS constant" do
-    RactorRailsShim.remove_instance_variable(:@declared_callbacks) if RactorRailsShim.instance_variable_defined?(:@declared_callbacks)
+    RactorRailsShim::CallbackCapture.reset_declared_callbacks!
     RactorRailsShim::CallbackCapture.record_declared_callback(67890, :after, :audit, nil, [:destroy])
     RactorRailsShim::CallbackCapture.freeze_declared_callbacks!
     assert defined?(RactorRailsShim::SHAREABLE_DECLARED_CALLBACKS), "constant should be defined"
@@ -68,7 +67,7 @@ class CallbackCaptureSpec < Minitest::Spec
     assert val.frozen?, "SHAREABLE_DECLARED_CALLBACKS should be frozen"
     assert_includes val.keys, 67890
   ensure
-    RactorRailsShim.remove_instance_variable(:@declared_callbacks) if RactorRailsShim.instance_variable_defined?(:@declared_callbacks)
+    RactorRailsShim::CallbackCapture.reset_declared_callbacks!
   end
 
   # --- read_action_filter_constraints ---
@@ -341,13 +340,17 @@ class CallbackCaptureSpec < Minitest::Spec
     RactorRailsShim::CallbackCapture.configure(
       funnel: funnel, reassign_shareable_const: reassign
     )
-    RactorRailsShim.instance_variable_set(:@declared_callbacks, { 1 => [{ kind: :before, filter: :x, only: nil, except: nil }] })
+    RactorRailsShim::CallbackCapture.reset_declared_callbacks!
+    RactorRailsShim::CallbackCapture.configure(
+      funnel: funnel, reassign_shareable_const: reassign
+    )
+    RactorRailsShim::CallbackCapture.instance_variable_set(:@declared_callbacks, { 1 => [{ kind: :before, filter: :x, only: nil, except: nil }] })
     RactorRailsShim::CallbackCapture.freeze_declared_callbacks!
     assert_includes funneled, "freeze declared callbacks"
     refute_empty reassigned, "reassign_shareable_const should have been called"
     assert_equal [:SHAREABLE_DECLARED_CALLBACKS], reassigned.map(&:first).uniq
   ensure
-    RactorRailsShim.remove_instance_variable(:@declared_callbacks) if RactorRailsShim.instance_variable_defined?(:@declared_callbacks)
+    RactorRailsShim::CallbackCapture.reset_declared_callbacks!
     RactorRailsShim::CallbackCapture.reset_configuration
   end
 
@@ -359,12 +362,12 @@ class CallbackCaptureSpec < Minitest::Spec
       reassign_shareable_const: reassign
     )
     table = { 99 => [{ kind: :after, filter: :y, only: nil, except: nil }] }
-    RactorRailsShim.instance_variable_set(:@declared_callbacks, table)
+    RactorRailsShim::CallbackCapture.instance_variable_set(:@declared_callbacks, table)
     RactorRailsShim::CallbackCapture.freeze_declared_callbacks!
     assert_equal 1, reassigned.size
     assert Ractor.shareable?(reassigned.first), "the reassigned value should be shareable"
   ensure
-    RactorRailsShim.remove_instance_variable(:@declared_callbacks) if RactorRailsShim.instance_variable_defined?(:@declared_callbacks)
+    RactorRailsShim::CallbackCapture.reset_declared_callbacks!
     RactorRailsShim::CallbackCapture.reset_configuration
   end
 
