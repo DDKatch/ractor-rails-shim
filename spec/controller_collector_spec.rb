@@ -111,6 +111,107 @@ class ControllerCollectorSpec < Minitest::Spec
     assert_kind_of Array, result
   end
 
+  # --- Issue #23: injected funnel collaborator (POODR §2 Dependencies) ---
+  #
+  # ControllerCollector must be constructible with its `funnel`
+  # collaborator (the `_swallow` role) instead of reaching it through
+  # the `RactorRailsShim` facade by global name. The seam is
+  # `configure(funnel:)`; the default is the facade lookup so existing
+  # call sites keep working during migration. The funnel contract: a
+  # callable responding to `call(label) { block }` that runs the block
+  # and rescues StandardError (matching `_swallow`).
+
+  it "responds to configure(funnel:)" do
+    assert_respond_to RactorRailsShim::ControllerCollector, :configure
+  end
+
+  it "responds to reset_configuration" do
+    assert_respond_to RactorRailsShim::ControllerCollector, :reset_configuration
+  end
+
+  it "responds to funnel" do
+    assert_respond_to RactorRailsShim::ControllerCollector, :funnel
+  end
+
+  it "funnels the routes branch through an injected funnel" do
+    funneled = []
+    funnel = ->(label, &blk) { funneled << label; blk&.call rescue StandardError; }
+    RactorRailsShim::ControllerCollector.configure(funnel: funnel)
+
+    fake_base = Class.new
+    fake_descendant = Class.new(fake_base)
+    fake_base.define_singleton_method(:descendants) { [fake_descendant] }
+    Object.send(:remove_const, :ApplicationController) if defined?(::ApplicationController)
+    Object.const_set(:ApplicationController, fake_base)
+
+    app = Object.new
+    def app.routes; raise "forced-routes-failure"; end
+    RactorRailsShim::ControllerCollector.call(app)
+    # The routes branch label was funneled (its block raised; the funnel
+    # rescued so the descendants branch still ran).
+    assert_includes funneled, "collect controller classes"
+  ensure
+    RactorRailsShim::ControllerCollector.reset_configuration
+    Object.send(:remove_const, :ApplicationController) if defined?(::ApplicationController) &&
+      defined?(fake_base) && ::ApplicationController.equal?(fake_base)
+  end
+
+  it "funnels the descendants branch through an injected funnel" do
+    funneled = []
+    funnel = ->(label, &blk) { funneled << label; blk&.call rescue StandardError; }
+    RactorRailsShim::ControllerCollector.configure(funnel: funnel)
+
+    fake_base = Class.new
+    fake_base.define_singleton_method(:descendants) { raise "forced-descendants-failure" }
+    Object.send(:remove_const, :ApplicationController) if defined?(::ApplicationController)
+    Object.const_set(:ApplicationController, fake_base)
+
+    app = empty_routes_app
+    RactorRailsShim::ControllerCollector.call(app)
+    assert_includes funneled, "collect controller classes (descendants)"
+  ensure
+    RactorRailsShim::ControllerCollector.reset_configuration
+    Object.send(:remove_const, :ApplicationController) if defined?(::ApplicationController) &&
+      defined?(fake_base) && ::ApplicationController.equal?(fake_base)
+  end
+
+  it "an injected funnel lets both branches run past failures" do
+    calls = []
+    funnel = ->(label, &blk) { calls << label; blk&.call rescue StandardError; }
+    RactorRailsShim::ControllerCollector.configure(funnel: funnel)
+
+    fake_base = Class.new
+    fake_descendant = Class.new(fake_base)
+    fake_base.define_singleton_method(:descendants) { [fake_descendant] }
+    Object.send(:remove_const, :ApplicationController) if defined?(::ApplicationController)
+    Object.const_set(:ApplicationController, fake_base)
+
+    app = Object.new
+    def app.routes; raise "forced-routes-failure"; end
+    result = RactorRailsShim::ControllerCollector.call(app)
+    # Both branches were funneled.
+    assert_equal ["collect controller classes", "collect controller classes (descendants)"], calls
+    # The descendants branch still produced its class despite the routes failure.
+    assert_includes result, fake_descendant
+  ensure
+    RactorRailsShim::ControllerCollector.reset_configuration
+    Object.send(:remove_const, :ApplicationController) if defined?(::ApplicationController) &&
+      defined?(fake_base) && ::ApplicationController.equal?(fake_base)
+  end
+
+  it "reset_configuration restores the facade-lookup default funnel" do
+    RactorRailsShim::ControllerCollector.configure(funnel: ->(label, &blk) { blk&.call })
+    injected = RactorRailsShim::ControllerCollector.funnel
+    assert_kind_of Proc, injected
+    refute_kind_of Method, injected
+    RactorRailsShim::ControllerCollector.reset_configuration
+    default = RactorRailsShim::ControllerCollector.funnel
+    assert_kind_of Method, default
+    assert_equal RactorRailsShim.method(:_swallow), default
+  ensure
+    RactorRailsShim::ControllerCollector.reset_configuration
+  end
+
   private
 
   # Build an app whose .routes returns an empty routes set (matching the

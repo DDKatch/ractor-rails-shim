@@ -13,8 +13,12 @@
 # Returns `compact.uniq` so duplicate references dedup.
 #
 # The facade method `_collect_controller_classes` delegates to `.call`
-# until Issue #31 removes it. `_swallow` is a collaborator reached
-# through the facade; Issue #23 will inject it as a constructor arg.
+# until Issue #31 removes it. `_swallow` is a collaborator reached via
+# the `funnel` seam. The default is the facade lookup
+# (`RactorRailsShim.method(:_swallow)`) so existing call sites keep
+# working; `configure(funnel:)` injects a different funnel so the role
+# is independently constructible and specable without the
+# `RactorRailsShim` god module loaded (Issue #23, POODR §2 Dependencies).
 #
 # NOTE: this method is currently not called from any lib/ path (the
 # declaration-time `CallbackCapture` flow replaced the older post-hoc
@@ -25,13 +29,34 @@
 
 module RactorRailsShim
   module ControllerCollector
+    @funnel = nil
+
+    # Inject the `funnel` collaborator — a callable responding to
+    # `call(label) { block }` that runs the block and rescues
+    # StandardError (matching `_swallow`). Passing `nil` (or calling
+    # `reset_configuration`) restores the facade-lookup default.
+    def self.configure(funnel:)
+      @funnel = funnel
+    end
+
+    # Restore the default (facade-lookup) funnel. Test seam.
+    def self.reset_configuration
+      @funnel = nil
+    end
+
+    # The active funnel: the injected one if configured, else the
+    # facade lookup (`RactorRailsShim.method(:_swallow)`).
+    def self.funnel
+      @funnel || RactorRailsShim.method(:_swallow)
+    end
+
     # Collect the set of loaded controller classes from `app`'s routes
     # table and `ApplicationController.descendants`. Best-effort: each
-    # branch is funneled through `_swallow`. Returns a compacted, uniq
+    # branch is funneled through `funnel`. Returns a compacted, uniq
     # Array of controller classes (may be empty).
     def self.call(app)
       classes = []
-      RactorRailsShim._swallow("collect controller classes") do
+      funnel.call("collect controller classes") do
         router = (app.respond_to?(:routes) ? app.routes : nil) ||
                  (defined?(::Rails) && ::Rails.application && ::Rails.application.routes)
         router.routes.each do |r|
@@ -41,7 +66,7 @@ module RactorRailsShim
           classes << klass if klass
         end
       end
-      RactorRailsShim._swallow("collect controller classes (descendants)") do
+      funnel.call("collect controller classes (descendants)") do
         if defined?(::ApplicationController) && ::ApplicationController.respond_to?(:descendants)
           classes.concat(::ApplicationController.descendants)
         end
