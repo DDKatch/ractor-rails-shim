@@ -107,10 +107,7 @@ module RactorRailsShim
 
               def #{sym}=(val)
                 ActiveSupport::IsolatedExecutionState[#{key_str}] = val
-                if Ractor.main?
-                  class_variable_set(#{cv_str}, val) if class_variable_defined?(#{cv_str})
-                  class_variable_set(#{cv_str}, val) unless class_variable_defined?(#{cv_str})
-                end
+                class_variable_set(#{cv_str}, val) if Ractor.main?
                 val
               end
             RUBY
