@@ -206,7 +206,6 @@ class DebugFunnelSpec < Minitest::Spec
     # A frozen parent with a Proc ivar: _replace_one_proc computes a
     # NoOpProc replacement and tries `parent.instance_variable_set(ivar, rep)`,
     # which raises FrozenError. The label should appear in stderr.
-    skip "requires RactorRailsShim::NoOpProc" unless RactorRailsShim.singleton_class.const_defined?(:NoOpProc)
     label = "replace proc ivar"
     parent = Class.new do
       attr_reader :p
@@ -285,7 +284,6 @@ class DebugFunnelSpec < Minitest::Spec
     # An ActionFilter-like object WITHOUT @conditional_key / @actions (simulating
     # a Rails rename). Under debug=true the missing ivars should emit a labeled
     # warning, not silently nil. The method should return [nil, nil].
-    skip "requires _read_action_filter_constraints" unless RactorRailsShim.respond_to?(:_read_action_filter_constraints, true)
     label = "action filter constraints"
     fake_af = Object.new # no @conditional_key / @actions
     result = nil
@@ -301,7 +299,6 @@ class DebugFunnelSpec < Minitest::Spec
   end
 
   it "_read_action_filter_constraints reads @conditional_key and @actions when present" do
-    skip "requires _read_action_filter_constraints" unless RactorRailsShim.respond_to?(:_read_action_filter_constraints, true)
     fake_af = Object.new
     fake_af.instance_variable_set(:@conditional_key, :only)
     fake_af.instance_variable_set(:@actions, Set.new(["index", "show"].freeze).freeze)
