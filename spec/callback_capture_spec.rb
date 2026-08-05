@@ -316,4 +316,108 @@ class CallbackCaptureSpec < Minitest::Spec
   ensure
     RactorRailsShim::VersionPolicy.policy = nil
   end
+
+  # --- Issue #23: injected collaborators (POODR §2 Dependencies) ---
+  #
+  # CallbackCapture must be constructible with the collaborators it
+  # currently reaches through the RactorRailsShim facade by global name:
+  #   - `funnel`                   (= `_swallow`)
+  #   - `reassign_shareable_const` (callable: `(sym, value) -> reassigns`)
+  #   - `register_patch`           (callable: `(name, ver) -> registers`)
+  # The seam is `configure(funnel:, reassign_shareable_const:, register_patch:)`;
+  # the defaults are the facade lookups so existing call sites keep working.
+  # The @declared_callbacks table and @callback_capture_installed flag stay
+  # on the facade singleton (Issue #24 moves them onto this role). The
+  # eval'd interceptor's `_record_declared_callback` / `_read_action_filter_
+  # constraints` calls stay as facade delegations — those names are
+  # load-bearing (they resolve at call time on whatever Ractor runs the
+  # interceptor; injecting them would change the eval'd method body's
+  # resolution semantics).
+
+  it "responds to configure(funnel:, reassign_shareable_const:, register_patch:)" do
+    assert_respond_to RactorRailsShim::CallbackCapture, :configure
+  end
+
+  it "responds to reset_configuration" do
+    assert_respond_to RactorRailsShim::CallbackCapture, :reset_configuration
+  end
+
+  it "responds to funnel" do
+    assert_respond_to RactorRailsShim::CallbackCapture, :funnel
+  end
+
+  it "responds to reassign_shareable_const" do
+    assert_respond_to RactorRailsShim::CallbackCapture, :reassign_shareable_const
+  end
+
+  it "responds to register_patch" do
+    assert_respond_to RactorRailsShim::CallbackCapture, :register_patch
+  end
+
+  it "freeze_declared_callbacks! funnels through an injected funnel" do
+    funneled = []
+    funnel = ->(label, &blk) { funneled << label; blk&.call rescue StandardError; }
+    reassigned = []
+    reassign = ->(sym, val) { reassigned << [sym, val]; val }
+    RactorRailsShim::CallbackCapture.configure(
+      funnel: funnel, reassign_shareable_const: reassign
+    )
+    RactorRailsShim.instance_variable_set(:@declared_callbacks, { 1 => [{ kind: :before, filter: :x, only: nil, except: nil }] })
+    RactorRailsShim::CallbackCapture.freeze_declared_callbacks!
+    assert_includes funneled, "freeze declared callbacks"
+    refute_empty reassigned, "reassign_shareable_const should have been called"
+    assert_equal [:SHAREABLE_DECLARED_CALLBACKS], reassigned.map(&:first).uniq
+  ensure
+    RactorRailsShim.remove_instance_variable(:@declared_callbacks) if RactorRailsShim.instance_variable_defined?(:@declared_callbacks)
+    RactorRailsShim::CallbackCapture.reset_configuration
+  end
+
+  it "freeze_declared_callbacks! reassigns via an injected reassign_shareable_const" do
+    reassigned = []
+    reassign = ->(sym, val) { reassigned << val; val }
+    RactorRailsShim::CallbackCapture.configure(
+      funnel: ->(label, &blk) { blk&.call rescue StandardError; },
+      reassign_shareable_const: reassign
+    )
+    table = { 99 => [{ kind: :after, filter: :y, only: nil, except: nil }] }
+    RactorRailsShim.instance_variable_set(:@declared_callbacks, table)
+    RactorRailsShim::CallbackCapture.freeze_declared_callbacks!
+    assert_equal 1, reassigned.size
+    assert Ractor.shareable?(reassigned.first), "the reassigned value should be shareable"
+  ensure
+    RactorRailsShim.remove_instance_variable(:@declared_callbacks) if RactorRailsShim.instance_variable_defined?(:@declared_callbacks)
+    RactorRailsShim::CallbackCapture.reset_configuration
+  end
+
+  it "install_callback_declaration_capture! registers via an injected register_patch" do
+    registered = []
+    register = ->(name, ver) { registered << [name, ver] }
+    # Clear the installed flag so install runs the body.
+    prev_installed = RactorRailsShim.instance_variable_get(:@callback_capture_installed)
+    RactorRailsShim.instance_variable_set(:@callback_capture_installed, nil)
+    RactorRailsShim::CallbackCapture.configure(register_patch: register)
+    RactorRailsShim::CallbackCapture.install_callback_declaration_capture!
+    assert_includes registered.map(&:first), :action_filter_introspection
+  ensure
+    RactorRailsShim.instance_variable_set(:@callback_capture_installed, prev_installed) if prev_installed
+    RactorRailsShim::CallbackCapture.reset_configuration
+  end
+
+  it "reset_configuration restores the facade-lookup defaults" do
+    RactorRailsShim::CallbackCapture.configure(
+      funnel: ->(label, &blk) { blk&.call },
+      reassign_shareable_const: ->(s, v) { v },
+      register_patch: ->(n, v) { }
+    )
+    refute_equal RactorRailsShim.method(:_swallow), RactorRailsShim::CallbackCapture.funnel
+    refute_equal RactorRailsShim.method(:_reassign_shareable_const), RactorRailsShim::CallbackCapture.reassign_shareable_const
+    refute_equal RactorRailsShim.method(:_register_patch), RactorRailsShim::CallbackCapture.register_patch
+
+    RactorRailsShim::CallbackCapture.reset_configuration
+    assert_equal RactorRailsShim.method(:_swallow), RactorRailsShim::CallbackCapture.funnel
+    assert_equal RactorRailsShim.method(:_reassign_shareable_const), RactorRailsShim::CallbackCapture.reassign_shareable_const
+    assert_equal RactorRailsShim.method(:_register_patch), RactorRailsShim::CallbackCapture.register_patch
+  ensure
+    RactorRailsShim::CallbackCapture.reset_configuration
+  end
 end

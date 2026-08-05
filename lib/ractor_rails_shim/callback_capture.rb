@@ -23,14 +23,66 @@
 # RactorRailsShim singleton (the interceptor writes @declared_callbacks
 # directly; keeping it on the singleton avoids changing the eval'd method
 # body). The SHAREABLE_DECLARED_CALLBACKS constant lives on RactorRailsShim.
-# _swallow, _reassign_shareable_const, debug? are collaborators reached
-# via the facade.
+#
+# The three callable collaborators — `_swallow` (funnel),
+# `_reassign_shareable_const`, and `_register_patch` — are reached via the
+# `funnel` / `reassign_shareable_const` / `register_patch` seams. The
+# defaults are the facade lookups (`RactorRailsShim.method(:_swallow)`,
+# `._reassign_shareable_const`, `._register_patch`) so existing call sites
+# keep working; `configure(funnel:, reassign_shareable_const:, register_
+# patch:)` injects different collaborators so the role is independently
+# constructible and specable without the `RactorRailsShim` god module
+# loaded (Issue #23, POODR §2 Dependencies). The @declared_callbacks table
+# and @callback_capture_installed flag stay on the facade singleton here —
+# Issue #24 moves them onto this role.
 #
 # The RactorRailsShim singleton keeps facade methods that delegate, so
 # debug_funnel_spec and the integration spec keep passing unchanged.
 
 module RactorRailsShim
   module CallbackCapture
+    @funnel = nil
+    @reassign_shareable_const = nil
+    @register_patch = nil
+
+    # Inject the callable collaborators. `funnel` responds to
+    # `call(label) { block }` (runs the block, rescues StandardError —
+    # matches `_swallow`). `reassign_shareable_const` responds to
+    # `call(sym, value)` (reassigns the shareable constant). `register_
+    # patch` responds to `call(name, version)` (records the patch tag).
+    # Passing `nil` for any (or calling `reset_configuration`) restores
+    # the facade-lookup default for that collaborator.
+    def self.configure(funnel: nil, reassign_shareable_const: nil, register_patch: nil)
+      @funnel = funnel
+      @reassign_shareable_const = reassign_shareable_const
+      @register_patch = register_patch
+    end
+
+    # Restore the default (facade-lookup) collaborators. Test seam.
+    def self.reset_configuration
+      @funnel = nil
+      @reassign_shareable_const = nil
+      @register_patch = nil
+    end
+
+    # The active funnel: the injected one if configured, else the
+    # facade lookup (`RactorRailsShim.method(:_swallow)`).
+    def self.funnel
+      @funnel || RactorRailsShim.method(:_swallow)
+    end
+
+    # The active reassign callable: the injected one if configured, else
+    # the facade lookup (`RactorRailsShim.method(:_reassign_shareable_const)`).
+    def self.reassign_shareable_const
+      @reassign_shareable_const || RactorRailsShim.method(:_reassign_shareable_const)
+    end
+
+    # The active register_patch callable: the injected one if configured,
+    # else the facade lookup (`RactorRailsShim.method(:_register_patch)`).
+    def self.register_patch
+      @register_patch || RactorRailsShim.method(:_register_patch)
+    end
+
     # Freeze (make Ractor-shareable) the captured declared-callbacks table
     # so worker Ractors can read it via the SHAREABLE_DECLARED_CALLBACKS
     # constant. Deep-freeze (make shareable) so workers can read the
@@ -39,9 +91,9 @@ module RactorRailsShim
     # Ractor::IsolationError when a worker reads it.
     def self.freeze_declared_callbacks!
       table = (RactorRailsShim.instance_variable_get(:@declared_callbacks) || {})
-      RactorRailsShim._swallow("freeze declared callbacks") do
+      funnel.call("freeze declared callbacks") do
         Ractor.make_shareable(table)
-        RactorRailsShim._reassign_shareable_const(:SHAREABLE_DECLARED_CALLBACKS, table)
+        reassign_shareable_const.call(:SHAREABLE_DECLARED_CALLBACKS, table)
       end
     end
 
@@ -65,7 +117,7 @@ module RactorRailsShim
     # ActiveSupport.on_load(:active_support) hook in `install`.
     def self.install_callback_declaration_capture!
       return if RactorRailsShim.instance_variable_get(:@callback_capture_installed)
-      RactorRailsShim._register_patch :action_filter_introspection, "8.1"
+      register_patch.call(:action_filter_introspection, "8.1")
       RactorRailsShim.instance_variable_set(:@callback_capture_installed, true)
       # ActiveSupport::Callbacks may not be loaded yet at
       # on_load(:active_support) time (it's required lazily). Require it so
@@ -152,7 +204,7 @@ module RactorRailsShim
       when :off
         nil
       else
-        RactorRailsShim._swallow(label) { warn "[ractor_rails_shim] #{label}: missing ivar #{ivar} on #{obj.class}" } if RactorRailsShim.debug?
+        funnel.call(label) { warn "[ractor_rails_shim] #{label}: missing ivar #{ivar} on #{obj.class}" } if RactorRailsShim.debug?
         nil
       end
     end
