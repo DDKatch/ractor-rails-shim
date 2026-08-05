@@ -36,6 +36,7 @@ rescue LoadError
 end
 require_relative "fallback_ies"
 require_relative "version_check"
+require_relative "version_policy"
 
 # Per-concern patch files. Each reopens RactorRailsShim's singleton class
 # to add its `_install_*` method(s). The order matters only for constants

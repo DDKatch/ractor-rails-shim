@@ -89,19 +89,15 @@ module RactorRailsShim
   # for those and must set their own).
   SHAREABLE_FALLBACK = Ractor.make_shareable({})
 
-  # Versions each patch was tested against. Populated by the install_*
-  # methods as they register themselves. A patch applies to a runtime Rails
-  # version only if the runtime segment matches one of its tested entries.
-  # This is the "load different patches for different Rails versions"
-  # infrastructure: to add 7.x support, write version-specific variants and
-  # tag them here. Defined on the module (not the singleton class) so it's
-  # readable from outside as RactorRailsShim::PATCH_VERSIONS.
-  PATCH_VERSIONS = {}
+  # Registry of patch names → tested Rails version segments. Owned by
+  # VersionPolicy; the constant here is an alias so the historical
+  # RactorRailsShim::PATCH_VERSIONS reference keeps working.
+  PATCH_VERSIONS = RactorRailsShim::VersionPolicy::PATCH_VERSIONS
 
-  # Raised under :strict version policy when the runtime Rails/Ruby version
-  # isn't in the tested set. Defined on the module so it's catchable as
-  # RactorRailsShim::UnsupportedVersionError.
-  class UnsupportedVersionError < StandardError; end
+  # Alias for backward compatibility — errors are catchable as either
+  # RactorRailsShim::UnsupportedVersionError or
+  # RactorRailsShim::VersionPolicy::UnsupportedVersionError.
+  UnsupportedVersionError = RactorRailsShim::VersionPolicy::UnsupportedVersionError
 
   class << self
     # Accessor for the abstract-controller registry (written by abstract! in
@@ -114,11 +110,14 @@ module RactorRailsShim
     # Policy for version mismatches. One of :warn (default), :strict, :off.
     # Set before `install`:
     #   RactorRailsShim.version_policy = :strict
-    # Defaults to :warn when never explicitly set.
+    # Delegates to RactorRailsShim::VersionPolicy.policy.
     def version_policy
-      @version_policy || :warn
+      RactorRailsShim::VersionPolicy.policy
     end
-    attr_writer :version_policy
+
+    def version_policy=(value)
+      RactorRailsShim::VersionPolicy.policy = value
+    end
 
     # When true, swallowed exceptions in freeze/shareability paths are
     # reported to $stderr so a worker Ractor that later crashes on an
@@ -469,7 +468,6 @@ module RactorRailsShim
     # (Gem::Version-based), not a string-prefix compare, so pre-release and
     # patch versions sort correctly.
     def _check_version_support
-      @version_policy ||= :warn
       unless RactorRailsShim::Version.supported_ruby?
         msg = "ractor-rails-shim: Ruby #{RUBY_VERSION} — shim requires " \
               "Ruby >= #{SUPPORTED_RUBY} (frozen-iseq call-cache fix #22075 " \
@@ -491,42 +489,23 @@ module RactorRailsShim
     end
 
     # Apply the configured policy to a mismatch message.
+    # Delegates to RactorRailsShim::VersionPolicy.mismatch.
     def _version_mismatch(message)
-      case version_policy
-      when :strict
-        raise UnsupportedVersionError, message
-      when :off
-        # silent
-      else
-        warn message
-      end
+      RactorRailsShim::VersionPolicy.mismatch(message)
     end
 
     # Report which registered patches apply to the runtime Rails version
     # (and which were skipped because they're untested on it). Useful for
     # diagnostics and CI. Returns a Hash: { applied: [...], skipped: [...] }.
+    # Delegates to RactorRailsShim::VersionPolicy.applicable.
     def applicable_patches
-      seg = RactorRailsShim::Version.rails_segment
-      applied = []
-      skipped = []
-      PATCH_VERSIONS.each do |name, tested|
-        if seg.nil? || tested.include?(seg)
-          applied << name
-        else
-          skipped << { name: name, tested: tested, runtime: seg }
-        end
-      end
-      { applied: applied, skipped: skipped }
+      RactorRailsShim::VersionPolicy.applicable
     end
 
     # Record that a patch was developed/tested against the given Rails version
-    # segments. Called by each install_* method. This populates PATCH_VERSIONS
-    # so `applicable_patches` can report what applied to the runtime. To add
-    # support for a new version, add the segment here (after writing/testing
-    # the variant) — no other wiring needed.
+    # segments. Delegates to RactorRailsShim::VersionPolicy.register.
     def _register_patch(name, *tested_segments)
-      existing = PATCH_VERSIONS[name] || []
-      PATCH_VERSIONS[name] = (existing + tested_segments).uniq
+      RactorRailsShim::VersionPolicy.register(name, *tested_segments)
     end
 
     # Capture a frozen name -> object map for every constant the application's
