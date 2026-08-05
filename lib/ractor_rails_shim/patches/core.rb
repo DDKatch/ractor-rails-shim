@@ -337,91 +337,32 @@ module RactorRailsShim
       [parent, parts.last.to_sym]
     end
 
-    # Shared list of every framework patch install method. Both
+    # _install_*_patch methods called from OTHER install paths, not from the
+    # dispatcher. They are installed by their parent install method (e.g.
+    # _install_callbacks_nil_safe_patch and _install_notifications_notifier_patch
+    # are called from patch_execution_wrapper!; _install_with_empty_template_cache_patch
+    # is called from install via ActiveSupport.on_load). Excluded from
+    # auto-discovery so they aren't double-installed.
+    NON_DISPATCHED_FRAMEWORK_PATCHES = Ractor.make_shareable(%i[
+      _install_callbacks_nil_safe_patch
+      _install_notifications_notifier_patch
+      _install_with_empty_template_cache_patch
+    ].freeze)
+
+    # Auto-discover and call every _install_*_patch singleton method. Both
     # `prepare_for_ractors!` (pre-worker boot) and `make_app_shareable!`
-    # (post-boot, pre-freeze) call this, so the two no longer duplicate the
-    # literal `_install_*` list. Each `_install_*` is idempotent (guarded by
-    # its own @*_patched flag), so calling the full set at either point is a
-    # no-op for already-applied patches. Duplicates from the original
-    # prepare_for_ractors! list (_install_csrf_reset_patch,
-    # _install_messages_serializer_patch, _install_activerecord_delegation_patch)
-    # are collapsed here.
+    # (post-boot, pre-freeze) call this. Each _install_* is idempotent (guarded
+    # by its own @*_patched flag), so calling the full set at either point is a
+    # no-op for already-applied patches. The method table IS the registry —
+    # adding a new _install_*_patch method to any patch file automatically
+    # includes it here without editing this dispatcher (Open/Closed).
     def _install_all_framework_patches
-      _install_rack_request_patch
-      _install_inflector_patch
-      _install_module_introspection_patch
-      _install_parameter_encoding_patch
-      _install_path_registry_patch
-      _install_action_view_resolver_patch
-      _install_action_view_partial_path_patch
-      _install_action_view_field_type_patch
-      _install_action_view_safe_join_patch
-      _install_abstract_controller_patch
-      _install_action_controller_controller_name_patch
-      _install_flash_helpers_patch
-      _install_csrf_reset_patch
-      _install_active_support_error_reporter_patch
-      _install_lookup_context_patch
-      _install_i18n_patch
-      _install_i18n_backend_patch
-      _install_i18n_interpolation_patch
-      _install_messages_serializer_patch
-      _install_template_handlers_patch
-      _install_execution_context_patch
-      _install_request_parameter_parsers_patch
-      _install_query_parser_patch
-      _install_rack_utils_patch
-      _install_log_subscriber_patch
-      _install_local_cache_patch
-      _install_reloader_patch
-      _install_exception_wrapper_patch
-      _install_action_dispatch_routing_patch
-      _install_action_dispatch_mounted_helpers_patch
-      _install_action_dispatch_http_url_patch
-      _install_journey_routes_patch
-      _install_warden_hooks_patch
-      _install_warden_strategies_patch
-      _install_devise_failure_app_patch
-      _install_activerecord_connection_handler_patch
-      _install_activerecord_configurations_patch
-      _install_activerecord_db_config_handlers_patch
-      _install_activerecord_query_transformers_patch
-      _install_activerecord_module_attrs_patch
-      _install_activerecord_deduplicable_patch
-      _install_activerecord_pool_config_patch
-      _install_activerecord_reaper_patch
-      _install_arel_visitor_dispatch_cache_patch
-      _install_arel_bind_block_patch
-      _install_activerecord_quoting_cache_patch
-      _install_activerecord_serialize_cast_value_patch
-      _install_activerecord_delegation_patch
-      _install_activerecord_primary_key_patch
-      _install_activerecord_query_constraints_patch
-      _install_activerecord_relation_delegate_cache_patch
-      _install_active_model_attribute_method_patterns_patch
-      _install_activerecord_model_classes_patch
-      _install_active_model_naming_patch
-      _install_active_record_core_patch
-      _install_active_record_inheritance_patch
-      _install_active_record_model_schema_patch
-      _install_activerecord_model_schema_patch
-      _install_openssl_digest_patch
-      _install_caching_key_generator_patch
-      _install_active_model_conversion_patch
-      _install_activerecord_find_by_cache_patch
-      _install_activerecord_migration_patch
-      _install_activerecord_transaction_callbacks_patch
-      _install_activerecord_query_logs_patch
-      _install_kaminari_config_patch
-      _install_propshaft_patch
-      _install_devise_url_helpers_patch
-      _install_devise_authenticatable_patch
-      _install_polymorphic_routes_patch
-      _install_orm_adapter_patch
-      _install_warden_serializer_patch
-      _install_json_encoding_patch
-      _install_active_model_attribute_patch
-      _install_hash_compute_if_absent_patch
+      (singleton_class.instance_methods(false) +
+       singleton_class.private_instance_methods(false))
+        .map(&:to_sym)
+        .select { |m| m.to_s.start_with?("_install_") && m.to_s.end_with?("_patch") }
+        .reject { |m| m == :_install_all_framework_patches || NON_DISPATCHED_FRAMEWORK_PATCHES.include?(m) }
+        .each { |m| __send__(m) }
     end
 
     # Public API: run after Rails.application.initialize! and BEFORE spawning
