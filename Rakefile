@@ -55,14 +55,22 @@ task :all do
   # 1. Unit suite under the shim's own bundle (fast, no Rails boot).
   Rake::Task[:spec].invoke
 
-  # 2. Integration + strategy_proc under the test app's bundle (separate
-  #    process — make_app_shareable! deep-freezes Rails constants, which
-  #    would break unit specs in the same process).
+  # 2. strategy_proc under the test app's bundle (loads action_dispatch but
+  #    doesn't boot Rails — separate process to avoid contaminating the
+  #    integration spec's make_app_shareable! graph).
   Dir.chdir(app_dir) do
     sh(base_env,
        "bundle exec ruby #{rubyopt} -e '" \
        "require \"minitest/autorun\"; " \
-       "require \"#{shim_dir}/spec/strategy_proc_spec.rb\"; " \
+       "require \"#{shim_dir}/spec/strategy_proc_spec.rb\"'")
+  end
+
+  # 3. Integration spec (full Rails boot, own process — make_app_shareable!
+  #    deep-freezes Rails constants).
+  Dir.chdir(app_dir) do
+    sh(base_env,
+       "bundle exec ruby #{rubyopt} -e '" \
+       "require \"minitest/autorun\"; " \
        "require \"#{shim_dir}/spec/integration_spec.rb\"'")
   end
 end
