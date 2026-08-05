@@ -262,9 +262,11 @@ class ShimSpec < Minitest::Spec
   it "_apply_shareable_constants! is idempotent: a flag marks it done after first run" do
     # Regression guard: `make_app_shareable!` guarded on @shareable_constants_done
     # but the flag was never SET, so _apply_shareable_constants! re-ran on
-    # every call. Verify the flag is set after the first run and a second call
-    # is a no-op (doesn't re-resolve constants).
+    # every call. Verify the flag is set after the first run (when all
+    # registered constants resolve) and a second call is a no-op.
     RactorRailsShim.remove_instance_variable(:@shareable_constants_done) if RactorRailsShim.instance_variable_defined?(:@shareable_constants_done)
+    saved = RactorRailsShim::SHAREABLE_CONSTANTS.dup
+    RactorRailsShim::SHAREABLE_CONSTANTS.replace([]) # vacuous: all resolve → flag sets
 
     refute RactorRailsShim.instance_variable_get(:@shareable_constants_done),
            "setup: flag should be unset before first run"
@@ -276,6 +278,7 @@ class ShimSpec < Minitest::Spec
     assert RactorRailsShim.instance_variable_get(:@shareable_constants_done),
            "flag should be truthy after first run"
   ensure
+    RactorRailsShim::SHAREABLE_CONSTANTS.replace(saved) if saved
     RactorRailsShim.remove_instance_variable(:@shareable_constants_done) if RactorRailsShim.instance_variable_defined?(:@shareable_constants_done)
   end
 

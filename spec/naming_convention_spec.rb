@@ -62,10 +62,12 @@ class NamingConventionSpec < Minitest::Spec
 
   it "_apply_shareable_constants! is idempotent via @shareable_constants_done" do
     RactorRailsShim.instance_variable_set(:@shareable_constants_done, false)
-    # No SHAREABLE_CONSTANTS registered → no-op but sets the flag.
+    saved = RactorRailsShim::SHAREABLE_CONSTANTS.dup
+    RactorRailsShim::SHAREABLE_CONSTANTS.replace([]) # vacuous: all resolve → flag sets
     RactorRailsShim.send(:_apply_shareable_constants!)
     assert RactorRailsShim.instance_variable_get(:@shareable_constants_done)
   ensure
+    RactorRailsShim::SHAREABLE_CONSTANTS.replace(saved) if saved
     RactorRailsShim.remove_instance_variable(:@shareable_constants_done) if RactorRailsShim.instance_variable_defined?(:@shareable_constants_done)
   end
 end

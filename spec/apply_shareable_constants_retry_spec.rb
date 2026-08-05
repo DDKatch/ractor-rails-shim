@@ -25,16 +25,22 @@ class ApplyShareableConstantsRetrySpec < Minitest::Spec
 
   def setup
     super
-    # Clean slate: no registered constants, flag unset.
+    # Save and clear: clean slate for each test.
+    @saved_constants = RactorRailsShim::SHAREABLE_CONSTANTS.dup
+    @saved_flag = RactorRailsShim.instance_variable_get(:@shareable_constants_done)
     RactorRailsShim::SHAREABLE_CONSTANTS.replace([])
     RactorRailsShim.remove_instance_variable(:@shareable_constants_done) if
       RactorRailsShim.instance_variable_defined?(:@shareable_constants_done)
   end
 
   def teardown
-    RactorRailsShim::SHAREABLE_CONSTANTS.replace([])
-    RactorRailsShim.remove_instance_variable(:@shareable_constants_done) if
-      RactorRailsShim.instance_variable_defined?(:@shareable_constants_done)
+    RactorRailsShim::SHAREABLE_CONSTANTS.replace(@saved_constants)
+    if @saved_flag.nil?
+      RactorRailsShim.remove_instance_variable(:@shareable_constants_done) if
+        RactorRailsShim.instance_variable_defined?(:@shareable_constants_done)
+    else
+      RactorRailsShim.instance_variable_set(:@shareable_constants_done, @saved_flag)
+    end
     super
   end
 

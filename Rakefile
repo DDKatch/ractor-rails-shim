@@ -26,3 +26,43 @@ Rake::TestTask.new(:integration) do |t|
 end
 
 task default: :spec
+
+# Run the FULL suite: unit specs (shim bundle) + integration spec (test app
+# bundle, separate process). The two environment-gated specs
+# (strategy_proc, integration) unskip under the test app's bundle where Rails
+# is loadable. Requires a test app at RAILS_SHIM_TEST_APP (or
+# ../ractor-rails-shim-test-app). To create one:
+#   ./script/make_test_app.sh /tmp/ractor-rails-shim-test-app
+# Usage (from the shim dir):
+#   bundle exec rake all
+desc "Run unit specs (shim bundle) + integration spec (test app bundle)"
+task :all do
+  require "tmpdir"
+  app_dir = ENV.fetch("RAILS_SHIM_TEST_APP",
+                      File.expand_path("../ractor-rails-shim-test-app", __dir__))
+  unless File.file?(File.join(app_dir, "config", "boot.rb"))
+    abort "No test app at #{app_dir}. Run `./script/make_test_app.sh #{app_dir}` first."
+  end
+  shim_dir = __dir__
+  base_env = {
+    "RAILS_SHIM_TEST_APP" => app_dir,
+    "RAILS_ENV" => "production",
+    "SECRET_KEY_BASE" => "dummy",
+    "BUNDLE_GEMFILE" => nil,
+  }
+  rubyopt = "-I#{shim_dir}/lib -I#{shim_dir}/spec"
+
+  # 1. Unit suite under the shim's own bundle (fast, no Rails boot).
+  Rake::Task[:spec].invoke
+
+  # 2. Integration + strategy_proc under the test app's bundle (separate
+  #    process — make_app_shareable! deep-freezes Rails constants, which
+  #    would break unit specs in the same process).
+  Dir.chdir(app_dir) do
+    sh(base_env,
+       "bundle exec ruby #{rubyopt} -e '" \
+       "require \"minitest/autorun\"; " \
+       "require \"#{shim_dir}/spec/strategy_proc_spec.rb\"; " \
+       "require \"#{shim_dir}/spec/integration_spec.rb\"'")
+  end
+end
