@@ -3,6 +3,12 @@
 # Spec for Issue #3: normalize bare `rescue` (implicit StandardError) to
 # explicit `rescue StandardError` in block-form rescues.
 #
+# Behavioral note: bare `rescue` (no class) and `rescue StandardError` are
+# SEMANTICALLY IDENTICAL in Ruby — both rescue StandardError and its
+# subclasses. This is a pure readability/intent change, not a behavioral
+# change. No behavioral equivalence test is needed because the behavior
+# is unchanged by definition.
+#
 # Inline rescues (`expr rescue nil`) cannot specify an error class in Ruby
 # syntax, so they are out of scope. Only block-form rescues (where `rescue`
 # appears at the start of a line or after `;` in a single-line begin/end)

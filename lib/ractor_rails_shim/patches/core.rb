@@ -328,10 +328,13 @@ module RactorRailsShim
     end
 
     # Resolve a constant path string (e.g. "A::B::C") to its value, returning
-    # nil if any segment isn't defined. Replaces dense rescue/& chains like:
+    # nil if any segment isn't defined. When inherit is false, each segment is
+    # looked up only in its parent's own constant table (const_get name, false),
+    # matching the original no-inherit lookups in _freeze_messages_constants!.
+    # Replaces dense rescue/& chains like:
     #   (Object.const_get(:A) rescue nil)&.const_get(:B, false) rescue nil
-    def _safe_const_get(path)
-      path.split("::").inject(Object) { |ns, n| ns.const_get(n) } rescue nil
+    def _safe_const_get(path, inherit: true)
+      path.split("::").inject(Object) { |ns, n| ns.const_get(n, inherit) } rescue nil
     end
 
     # Split "A::B::C" into [A::B (module), :C]. Returns [nil, nil] if the
@@ -716,7 +719,7 @@ module RactorRailsShim
 
       require "active_support/message_pack"
 
-      mod = _safe_const_get("ActiveSupport::Messages::Metadata")
+      mod = _safe_const_get("ActiveSupport::Messages::Metadata", inherit: false)
       return unless mod.is_a?(Module)
       %i[ENVELOPE_SERIALIZERS TIMESTAMP_SERIALIZERS].each do |name|
         next unless mod.const_defined?(name, false)
