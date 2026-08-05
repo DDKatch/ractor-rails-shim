@@ -19,15 +19,53 @@
 #
 # The facade method `_neutralize_logger_io!` delegates to `.call` until
 # Issue #31 removes it. The `_swallow` debug funnel and `NoOpLogDev`
-# (defined in `patches/callables.rb`) are collaborators reached through
-# the facade; Issue #23 will inject them as constructor arguments.
+# (defined in `patches/callables.rb`) are collaborators reached via the
+# `funnel` + `noop_log_dev_class` seams. The defaults are the facade
+# lookups (`RactorRailsShim.method(:_swallow)` and
+# `RactorRailsShim.singleton_class::NoOpLogDev`) so existing call sites
+# keep working; `configure(funnel:, noop_log_dev_class:)` injects
+# different collaborators so the role is independently constructible and
+# specable without the `RactorRailsShim` god module loaded (Issue #23,
+# POODR §2 Dependencies).
 
 module RactorRailsShim
   module LoggerIONeutralizer
+    @funnel = nil
+    @noop_log_dev_class = nil
+
+    # Inject the collaborators. `funnel` is a callable responding to
+    # `call(label) { block }` that runs the block and rescues
+    # StandardError (matching `_swallow`). `noop_log_dev_class` is a
+    # class responding to `.new` returning a sink object the role will
+    # freeze + make shareable. Passing `nil` (or calling
+    # `reset_configuration`) restores the facade-lookup defaults.
+    def self.configure(funnel: nil, noop_log_dev_class: nil)
+      @funnel = funnel
+      @noop_log_dev_class = noop_log_dev_class
+    end
+
+    # Restore the default (facade-lookup) collaborators. Test seam.
+    def self.reset_configuration
+      @funnel = nil
+      @noop_log_dev_class = nil
+    end
+
+    # The active funnel: the injected one if configured, else the
+    # facade lookup (`RactorRailsShim.method(:_swallow)`).
+    def self.funnel
+      @funnel || RactorRailsShim.method(:_swallow)
+    end
+
+    # The active NoOpLogDev class: the injected one if configured, else
+    # the facade lookup (`RactorRailsShim.singleton_class::NoOpLogDev`).
+    def self.noop_log_dev_class
+      @noop_log_dev_class || RactorRailsShim.singleton_class.const_get(:NoOpLogDev)
+    end
+
     # Neutralize the logger IO reachable from `app` so the subsequent
     # `Ractor.make_shareable(app)` doesn't freeze the process's real
     # `$stdout`/`$stderr`. Best-effort: failures on individual ivar
-    # swaps (e.g. frozen owners) are funneled through `_swallow` so
+    # swaps (e.g. frozen owners) are funneled through `funnel` so
     # `debug=` surfaces them. Returns nil (the mutate is in-place).
     def self.call(app)
       # A frozen, shareable no-op BroadcastLogger (no broadcasts → no
@@ -51,19 +89,18 @@ module RactorRailsShim
             if iv == :@logger
               # Replace the app-instance / config logger with the no-op
               # (so the frozen app graph holds no live IO). Best-effort;
-              # funnel through _swallow so a frozen-owner failure is
+              # funnel through `funnel` so a frozen-owner failure is
               # traceable under debug=.
-              RactorRailsShim._swallow("neutralize logger ivar") do
+              funnel.call("neutralize logger ivar") do
                 o.instance_variable_set(iv, noop_logger)
               end
             elsif v.is_a?(::IO) && (v == $stdout || v == $stderr || v == STDOUT || v == STDERR)
-              # Any stray IO reference → a shareable no-op sink. NoOpLogDev
-              # is defined on RactorRailsShim's singleton class (in
-              # patches/callables.rb); reach it through the facade.
-              sink = RactorRailsShim.singleton_class.const_get(:NoOpLogDev).new
+              # Any stray IO reference → a shareable no-op sink, built
+              # by the injected `noop_log_dev_class` collaborator.
+              sink = noop_log_dev_class.new
               sink.freeze
               Ractor.make_shareable(sink)
-              RactorRailsShim._swallow("neutralize logger IO ivar") do
+              funnel.call("neutralize logger IO ivar") do
                 o.instance_variable_set(iv, sink)
               end
             elsif v
