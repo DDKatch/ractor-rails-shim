@@ -275,11 +275,9 @@ module RactorRailsShim
     # non-shareable Monitor).
     def self.generate_ar_attribute_methods!
       return unless defined?(::ActiveRecord::Base)
-      ::ActiveRecord::Base.descendants.each do |klass|
+      ARModelWalker.each_model do |klass|
         next unless klass.respond_to?(:define_attribute_methods)
         klass.define_attribute_methods
-      rescue StandardError
-        nil
       end
     end
 
@@ -294,17 +292,13 @@ module RactorRailsShim
     # after build, so freezing is safe.
     def self.warm_attribute_method_patterns!
       return unless defined?(::ActiveRecord::Base)
-      ::ActiveRecord::Base.descendants.each do |klass|
+      ARModelWalker.each_model do |klass|
         next unless klass.respond_to?(:attribute_method_patterns_cache, true)
-        begin
-          cache = klass.send(:attribute_method_patterns_cache)
-          cache.freeze if cache
-          if klass.respond_to?(:attribute_method_matchers, true)
-            matchers = klass.send(:attribute_method_matchers)
-            matchers.freeze if matchers
-          end
-        rescue StandardError
-          nil
+        cache = klass.send(:attribute_method_patterns_cache)
+        cache.freeze if cache
+        if klass.respond_to?(:attribute_method_matchers, true)
+          matchers = klass.send(:attribute_method_matchers)
+          matchers.freeze if matchers
         end
       end
     end

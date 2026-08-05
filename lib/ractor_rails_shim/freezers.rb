@@ -53,9 +53,7 @@ module RactorRailsShim
       # funneled through _swallow so debug=true surfaces them.
       def self.call
         return true unless defined?(::ActiveRecord::Base)
-        models = [::ActiveRecord::Base] + (::ActiveRecord::Base.descendants rescue [])
-        models.each do |klass|
-          next if klass.respond_to?(:abstract_class?) && klass.abstract_class?
+        ARModelWalker.each_model(skip_abstract: true) do |klass|
           WARMER_METHODS.each do |m|
             next unless klass.respond_to?(m, true)
             RactorRailsShim._swallow("warm AR cache #{klass}##{m}") do
@@ -82,8 +80,7 @@ module RactorRailsShim
     module ClassIvarFreezer
       def self.call
         return true unless defined?(::ActiveRecord::Base)
-        models = [::ActiveRecord::Base] + (::ActiveRecord::Base.descendants rescue [])
-        models.each do |klass|
+        ARModelWalker.each_model do |klass|
           klass.instance_variables.each do |ivar|
             val = klass.instance_variable_get(ivar)
             next if Ractor.shareable?(val)
