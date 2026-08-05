@@ -137,86 +137,36 @@ module RactorRailsShim
             # Ractor-mode branch below avoids the walk entirely (literal key),
             # but thread mode must walk because subclass COW fallback is
             # load-bearing here.
-            target.module_eval <<-RUBY, __FILE__, __LINE__ + 1
-              def #{namespaced_name}
-                self.ancestors.each do |anc|
-                  v = RactorRailsShim::CLASS_ATTR_VALUES[:"ractor_rails_shim_class_attr_\#{anc.object_id}_#{namespaced_name}"]
-                  return v if RactorRailsShim::CLASS_ATTR_VALUES.key?(:"ractor_rails_shim_class_attr_\#{anc.object_id}_#{namespaced_name}")
-                end
-                #{missing_default}
-              end
-
-              def #{namespaced_name}=(new_value)
-                RactorRailsShim::CLASS_ATTR_VALUES[:"ractor_rails_shim_class_attr_\#{self.object_id}_#{namespaced_name}"] = new_value
-                new_value
-              end
-            RUBY
+            target.module_eval RactorRailsShim._class_attr_thread_methods(namespaced_name, namespaced_name, missing_default),
+                                __FILE__, __LINE__ + 1
 
             # When owner is a module's singleton class, also override the
             # public reader `def #{name}` with the shared-store version.
             if owner.singleton_class? && owner.attached_object.is_a?(Module)
-              owner.module_eval <<-RUBY, __FILE__, __LINE__ + 1
-                def #{name}
-                  self.ancestors.each do |anc|
-                    v = RactorRailsShim::CLASS_ATTR_VALUES[:"ractor_rails_shim_class_attr_\#{anc.object_id}_#{namespaced_name}"]
-                    return v if RactorRailsShim::CLASS_ATTR_VALUES.key?(:"ractor_rails_shim_class_attr_\#{anc.object_id}_#{namespaced_name}")
-                  end
-                  #{missing_default}
-                end
-
-                def #{name}=(new_value)
-                  RactorRailsShim::CLASS_ATTR_VALUES[:"ractor_rails_shim_class_attr_\#{self.object_id}_#{namespaced_name}"] = new_value
-                  new_value
-                end
-              RUBY
+              owner.module_eval RactorRailsShim._class_attr_thread_methods(name, namespaced_name, missing_default),
+                                __FILE__, __LINE__ + 1
             end
-            else
-             # Ractor mode: the writer (below) ALWAYS targets this owner's single
-             # `key` (#{key_str}), so there is no per-subclass copy-on-write to
-             # resolve by walking ancestors. The original `self.ancestors.each`
-             # + per-ancestor Symbol interpolation allocated a fresh Array AND a
-             # Symbol per ancestor on EVERY read — the dominant allocation source
-             # for GET requests. Replace it with a direct literal-key lookup
-             # (zero per-read allocation). The per-Ractor value already lives in
-             # ActiveSupport::IsolatedExecutionState[key]; SHAREABLE_FALLBACK[key]
-             # is the frozen, shared default built at prepare_for_ractors! time.
-             target.module_eval <<-RUBY, __FILE__, __LINE__ + 1
-               def #{namespaced_name}
-                 v = ActiveSupport::IsolatedExecutionState[#{key_str}]
-                 return v if ActiveSupport::IsolatedExecutionState.key?(#{key_str})
-                 fb = RactorRailsShim::SHAREABLE_FALLBACK[#{key_str}]
-                 return fb unless fb.nil?
-                 RactorRailsShim::CLASS_ATTR_VALUES[#{key_str}] if Ractor.main?
-               end
+          else
+            # Ractor mode: the writer (below) ALWAYS targets this owner's single
+            # `key` (#{key_str}), so there is no per-subclass copy-on-write to
+            # resolve by walking ancestors. The original `self.ancestors.each`
+            # + per-ancestor Symbol interpolation allocated a fresh Array AND a
+            # Symbol per ancestor on EVERY read — the dominant allocation source
+            # for GET requests. Replace it with a direct literal-key lookup
+            # (zero per-read allocation). The per-Ractor value already lives in
+            # ActiveSupport::IsolatedExecutionState[key]; SHAREABLE_FALLBACK[key]
+            # is the frozen, shared default built at prepare_for_ractors! time.
+            target.module_eval RactorRailsShim._class_attr_ractor_methods(namespaced_name, key_str),
+                                __FILE__, __LINE__ + 1
 
-               def #{namespaced_name}=(new_value)
-                 ActiveSupport::IsolatedExecutionState[#{key_str}] = new_value
-                 RactorRailsShim::CLASS_ATTR_VALUES[#{key_str}] = new_value if Ractor.main?
-                 new_value
-               end
-             RUBY
-
-             # When owner is a module's singleton class, the original also
-             # defines a public reader `def #{name} { value }` on owner directly
-             # (block-based). Override it with the IES-routed version + fallback.
-             if owner.singleton_class? && owner.attached_object.is_a?(Module)
-               owner.module_eval <<-RUBY, __FILE__, __LINE__ + 1
-                 def #{name}
-                   v = ActiveSupport::IsolatedExecutionState[#{key_str}]
-                   return v if ActiveSupport::IsolatedExecutionState.key?(#{key_str})
-                   fb = RactorRailsShim::SHAREABLE_FALLBACK[#{key_str}]
-                   return fb unless fb.nil?
-                   RactorRailsShim::CLASS_ATTR_VALUES[#{key_str}] if Ractor.main?
-                 end
-
-                 def #{name}=(new_value)
-                   ActiveSupport::IsolatedExecutionState[#{key_str}] = new_value
-                   RactorRailsShim::CLASS_ATTR_VALUES[#{key_str}] = new_value if Ractor.main?
-                   new_value
-                 end
-               RUBY
-             end
-           end
+            # When owner is a module's singleton class, the original also
+            # defines a public reader `def #{name} { value }` on owner directly
+            # (block-based). Override it with the IES-routed version + fallback.
+            if owner.singleton_class? && owner.attached_object.is_a?(Module)
+              owner.module_eval RactorRailsShim._class_attr_ractor_methods(name, key_str),
+                                __FILE__, __LINE__ + 1
+            end
+          end
         end
 
         # redefine_method is used by `redefine` internally and by other call
@@ -227,6 +177,48 @@ module RactorRailsShim
           super
         end
       })
+    end
+
+    # Build the thread-mode reader/writer pair for one method name. The body
+    # is shared between the namespaced method (`__class_attr_<name>`) and the
+    # public method (`<name>`); only `method_name` differs. `namespaced_name`
+    # is the storage key suffix (constant across both calls). `missing_default`
+    # is the inlined missing-slot default expression (string of Ruby source).
+    def _class_attr_thread_methods(method_name, namespaced_name, missing_default)
+      <<~RUBY
+        def #{method_name}
+          self.ancestors.each do |anc|
+            v = RactorRailsShim::CLASS_ATTR_VALUES[:"ractor_rails_shim_class_attr_\#{anc.object_id}_#{namespaced_name}"]
+            return v if RactorRailsShim::CLASS_ATTR_VALUES.key?(:"ractor_rails_shim_class_attr_\#{anc.object_id}_#{namespaced_name}")
+          end
+          #{missing_default}
+        end
+
+        def #{method_name}=(new_value)
+          RactorRailsShim::CLASS_ATTR_VALUES[:"ractor_rails_shim_class_attr_\#{self.object_id}_#{namespaced_name}"] = new_value
+          new_value
+        end
+      RUBY
+    end
+
+    # Build the ractor-mode reader/writer pair for one method name. `key_str`
+    # is the inspected IES key Symbol literal (constant across both calls).
+    def _class_attr_ractor_methods(method_name, key_str)
+      <<~RUBY
+        def #{method_name}
+          v = ActiveSupport::IsolatedExecutionState[#{key_str}]
+          return v if ActiveSupport::IsolatedExecutionState.key?(#{key_str})
+          fb = RactorRailsShim::SHAREABLE_FALLBACK[#{key_str}]
+          return fb unless fb.nil?
+          RactorRailsShim::CLASS_ATTR_VALUES[#{key_str}] if Ractor.main?
+        end
+
+        def #{method_name}=(new_value)
+          ActiveSupport::IsolatedExecutionState[#{key_str}] = new_value
+          RactorRailsShim::CLASS_ATTR_VALUES[#{key_str}] = new_value if Ractor.main?
+          new_value
+        end
+      RUBY
     end
   end
 end
