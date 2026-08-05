@@ -12,6 +12,7 @@
 # Run: ruby -Ilib -Ispec spec/debug_funnel_spec.rb
 
 require "minitest/autorun"
+require "set"
 require "active_support/isolated_execution_state"
 require "active_support/logger"
 require "active_support/broadcast_logger"
@@ -269,5 +270,43 @@ class DebugFunnelSpec < Minitest::Spec
     end
   ensure
     Object.send(:remove_const, :Devise) unless had_devise
+  end
+
+  # --- Step 4: gate ActionFilter private ivar reads by version ---
+  #
+  # The callback-capture interceptor reads @conditional_key / @actions off
+  # ActionController::Callbacks::ActionFilter instances (Rails internals).
+  # A silent Rails rename would leave only/except nil → callbacks run for
+  # actions they shouldn't (security-relevant). The fix: funnel through
+  # _swallow so a missing ivar is visible under debug, and gate the
+  # "expected to exist" assertion by tested Rails segment.
+
+  it "_read_action_filter_constraints funnels missing ivars through _swallow (labeled)" do
+    # An ActionFilter-like object WITHOUT @conditional_key / @actions (simulating
+    # a Rails rename). Under debug=true the missing ivars should emit a labeled
+    # warning, not silently nil. The method should return [nil, nil].
+    skip "requires _read_action_filter_constraints" unless RactorRailsShim.respond_to?(:_read_action_filter_constraints, true)
+    label = "action filter constraints"
+    fake_af = Object.new # no @conditional_key / @actions
+    result = nil
+    RactorRailsShim.debug = true
+    out = capture_stderr do
+      result = RactorRailsShim.send(:_read_action_filter_constraints, fake_af)
+    end
+    assert_includes out, "[ractor_rails_shim]", "missing ivars should be funneled through _swallow"
+    assert_includes out, label, "stderr should carry the action-filter label"
+    assert_equal [nil, nil], result, "method returns [nil, nil] for a bare object"
+  ensure
+    RactorRailsShim.debug = false
+  end
+
+  it "_read_action_filter_constraints reads @conditional_key and @actions when present" do
+    skip "requires _read_action_filter_constraints" unless RactorRailsShim.respond_to?(:_read_action_filter_constraints, true)
+    fake_af = Object.new
+    fake_af.instance_variable_set(:@conditional_key, :only)
+    fake_af.instance_variable_set(:@actions, Set.new(["index", "show"].freeze).freeze)
+    result = RactorRailsShim.send(:_read_action_filter_constraints, fake_af)
+    assert_equal :only, result[0]
+    assert_equal [:index, :show], result[1]
   end
 end

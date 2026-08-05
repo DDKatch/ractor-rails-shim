@@ -893,7 +893,7 @@ module RactorRailsShim
               # stored in the callback's `:if`/`:unless` options (NOT a bare
               # `:only` key). Read the constraint back from the ActionFilter's
               # @conditional_key (:only/:except) and @actions (a Set of action
-              # name Strings).
+              # name Strings) via the extracted, version-gated helper.
               opts = filters.find { |f| f.is_a?(Hash) }
               only = nil
               except = nil
@@ -901,10 +901,8 @@ module RactorRailsShim
                 [opts[:if], opts[:unless]].each do |arr|
                   next unless arr.is_a?(Array)
                   arr.each do |af|
-                    ck = af.instance_variable_get(:@conditional_key) rescue nil
-                    acts = af.instance_variable_get(:@actions) rescue nil
+                    ck, acts = ::RactorRailsShim._read_action_filter_constraints(af)
                     next unless ck && acts
-                    acts = acts.to_a.map(&:to_sym) if acts.respond_to?(:to_a)
                     only = acts if ck == :only
                     except = acts if ck == :except
                   end
@@ -918,6 +916,30 @@ module RactorRailsShim
         end
       RUBY
       @callback_capture_installed = true
+    end
+
+    # Read @conditional_key and @actions off an ActionFilter instance (Rails
+    # internal ivars). Returns [conditional_key, actions_as_symbols]. On a
+    # Rails version where the ivars are renamed/absent, returns [nil, nil].
+    # A missing ivar means callbacks run for actions they shouldn't
+    # (security-relevant). instance_variable_get returns nil for a missing
+    # ivar without raising, so we check instance_variable_defined? and emit
+    # a labeled warning via _swallow when debug=true so a silent Rails rename
+    # is visible during diagnosis.
+    def _read_action_filter_constraints(af)
+      ck = _read_ivar_or_warn(af, :@conditional_key, "action filter constraints")
+      acts = _read_ivar_or_warn(af, :@actions, "action filter constraints")
+      acts = acts.to_a.map(&:to_sym) if acts && acts.respond_to?(:to_a)
+      [ck, acts]
+    end
+
+    # Read an ivar; if it's undefined and debug? is true, emit a labeled
+    # warning so a silent Rails internal rename surfaces during diagnosis.
+    # Returns the ivar value or nil.
+    def _read_ivar_or_warn(obj, ivar, label)
+      return obj.instance_variable_get(ivar) if obj.instance_variable_defined?(ivar)
+      _swallow(label) { warn "[ractor_rails_shim] #{label}: missing ivar #{ivar} on #{obj.class}" } if debug?
+      nil
     end
 
     def _collect_controller_classes(app)
