@@ -627,22 +627,12 @@ module RactorRailsShim
     end
 
     # Freeze (make Ractor-shareable) unshareable class-level ivars on GLOBAL
-    # classes (Time/Date timezone caches, I18n locale caches, ...) in the MAIN
-    # Ractor, before the graph is frozen. Unlike model classes, these are shared
-    # singletons whose class ivars (e.g. Time's @zone_default / @zone_cache) hold
-    # unshareable values that a worker Ractor would otherwise fail to read
-    # (Ractor::IsolationError). Freezing them in main yields shareable values.
+    # classes (Time/Date timezone caches, I18n locale caches, ...). Delegates
+    # to RactorRailsShim::Freezers::GlobalClassIvarFreezer (extracted Issue #1);
+    # kept as a facade method for prepare_for_ractors! and the naming-convention
+    # spec. See GlobalClassIvarFreezer for the contract.
     def _freeze_global_class_ivars!
-      classes = %w[Time Date DateTime I18n].filter_map { |n| _safe_const_get(n) }
-      classes.each do |klass|
-        klass.instance_variables.each do |ivar|
-          val = klass.instance_variable_get(ivar)
-          next if Ractor.shareable?(val)
-          _swallow("freeze global ivar #{klass}#{ivar}") do
-            Ractor.make_shareable(val)
-          end
-        end
-      end
+      RactorRailsShim::Freezers::GlobalClassIvarFreezer.call
     end
 
     # Replace GLOBAL constants that hold non-shareable values (e.g.

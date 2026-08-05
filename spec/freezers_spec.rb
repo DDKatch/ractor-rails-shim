@@ -274,4 +274,59 @@ class FreezersSpec < Minitest::Spec
   ensure
     RactorRailsShim::Freezers::ClassIvarFreezer.define_singleton_method(:call, original)
   end
+
+  # --- GlobalClassIvarFreezer: global class-ivar freezing (Time/Date/I18n) ---
+
+  it "RactorRailsShim::Freezers::GlobalClassIvarFreezer is a Module" do
+    assert_kind_of Module, RactorRailsShim::Freezers::GlobalClassIvarFreezer
+  end
+
+  it "GlobalClassIvarFreezer.call makes unshareable global class-ivars shareable" do
+    # Use a real global class (Time) — set a temporary unshareable ivar, freeze,
+    # then verify it's shareable and clean up. Time is always defined.
+    Time.instance_variable_set(:@_shim_test_global_ivar, { tz: "UTC" })
+    refute Ractor.shareable?(Time.instance_variable_get(:@_shim_test_global_ivar))
+
+    RactorRailsShim::Freezers::GlobalClassIvarFreezer.call
+
+    val = Time.instance_variable_get(:@_shim_test_global_ivar)
+    assert Ractor.shareable?(val), "global class ivar should be shareable after freeze"
+  ensure
+    Time.remove_instance_variable(:@_shim_test_global_ivar) rescue nil
+  end
+
+  it "GlobalClassIvarFreezer.call skips already-shareable global ivars" do
+    Time.instance_variable_set(:@_shim_test_shareable_ivar, Ractor.make_shareable({ x: 1 }))
+    # Must not raise; already-shareable values are left as-is.
+    RactorRailsShim::Freezers::GlobalClassIvarFreezer.call
+    assert Ractor.shareable?(Time.instance_variable_get(:@_shim_test_shareable_ivar))
+  ensure
+    Time.remove_instance_variable(:@_shim_test_shareable_ivar) rescue nil
+  end
+
+  it "GlobalClassIvarFreezer.call funnels freeze failures through _swallow (labeled)" do
+    Time.instance_variable_set(:@_shim_test_unfreezable, ->(*) { :x })
+    RactorRailsShim.debug = true
+    out = capture_stderr do
+      RactorRailsShim::Freezers::GlobalClassIvarFreezer.call
+    end
+    assert_includes out, "[ractor_rails_shim]", "freeze failure should funnel through _swallow"
+    assert_match(/freeze global ivar/i, out, "stderr should carry the global-ivar-freeze label")
+  ensure
+    RactorRailsShim.debug = false
+    Time.remove_instance_variable(:@_shim_test_unfreezable) rescue nil
+  end
+
+  it "RactorRailsShim._freeze_global_class_ivars! delegates to GlobalClassIvarFreezer.call" do
+    delegated = false
+    original = RactorRailsShim::Freezers::GlobalClassIvarFreezer.method(:call)
+    RactorRailsShim::Freezers::GlobalClassIvarFreezer.define_singleton_method(:call) do
+      delegated = true
+      original.call
+    end
+    RactorRailsShim._freeze_global_class_ivars!
+    assert delegated, "facade should delegate to GlobalClassIvarFreezer.call"
+  ensure
+    RactorRailsShim::Freezers::GlobalClassIvarFreezer.define_singleton_method(:call, original)
+  end
 end
