@@ -38,17 +38,11 @@ module RactorRailsShim
   # per-Ractor IES). Made shareable (frozen) at prepare time.
   ABSTRACT_REGISTRY = Ractor.make_shareable({})
   # Runtime registry: mattr_accessor IES key → default value. Written at
-  # mattr-definition time (boot, in main). The mattr reader (string-eval'd)
-  # looks the default up here by key — we CANNOT inline arbitrary default
-  # values into the eval'd method body (a Logger's `.inspect` is
-  # `#<Logger:...>`, invalid Ruby). Read by workers when both their IES slot
-  # and SHAREABLE_FALLBACK are empty. NOT made shareable (some defaults like
-  # Logger are intrinsically unshareable); workers only reach here if the
-  # value is a simple shareable literal (Symbol/String/Integer), in which
-  # case reading the constant is fine because... actually it IS a constant
-  # holding an unshareable Hash → worker read would raise. So this registry is
-  # ONLY safe to read from workers for shareable defaults. We guard the reader
-  # to only consult it for defaults that are Ractor.shareable?.
+  # mattr-definition time (boot, in main); the mattr reader (string-eval'd)
+  # looks the default up here by key (defaults can't be inlined into the
+  # eval'd body — a Logger's `.inspect` is invalid Ruby). NOT made shareable
+  # (some defaults like Logger are intrinsically unshareable); the reader
+  # only consults this for defaults that are Ractor.shareable?.
   MATTR_DEFAULTS = {}
   # class_attribute default values, keyed by IES key. Written at
   # class_attribute-definition time (boot, in main). The class_attribute reader

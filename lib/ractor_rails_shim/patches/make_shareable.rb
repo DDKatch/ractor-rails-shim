@@ -460,11 +460,8 @@ module RactorRailsShim
     #   - Hash#default_proc (yields [proc, "path.default_proc", :__default_proc__])
     #   - Struct members (yields [value, "path.member", nil] via #each_pair)
     #
-    # Pre-fix the traversals only handled Array and Hash, so a Mutex or Proc
-    # nested inside a Set (Rails uses Set in several caches, e.g.
-    # ActionDispatch::Journey::Routes) or a Struct was missed and left
-    # unshareable. Centralized here so _collect_procs and
-    # _replace_locks_and_concurrent_maps! share the same container coverage.
+    # Centralized so _collect_procs and _replace_locks_and_concurrent_maps!
+    # share the same container coverage (Array, Hash, Set, Struct).
     def _each_ivar_and_child(o, path)
       begin
         o.instance_variables.each do |iv|

@@ -106,17 +106,9 @@ module RactorRailsShim
           # need their own mutable value call the writer, which writes their
           # IES slot and shadows the fallback.
           target = owner.singleton_class? ? owner : owner.singleton_class
-          # Static missing-slot default: inline a frozen shared Hash for
-          # the `__callbacks` attribute (Rails indexes the result, so nil
-          # would NoMethodError), nil for everything else. Decided ONCE
-          # at method-definition time from the public `name` — the
-          # previous reader compiled a runtime ternary that compared
-          # the namespaced name to :__callbacks (always false, since
-          # namespaced_name is `__class_attr_<name>`), so the `{}`
-          # branch was dead code AND the ternary allocated a Symbol
-          # via `namespaced_name.inspect` on every read. Inlining the
-          # decision removes both the dead branch and the per-read
-          # Symbol interpolation.
+          # Static missing-slot default: frozen shared Hash for __callbacks
+          # (Rails indexes the result, so nil would NoMethodError), nil for
+          # everything else. Decided once at method-definition time.
           missing_default = (name == :__callbacks) ? "RactorRailsShim::EMPTY_CALLBACKS_HASH" : "nil"
           if RactorRailsShim.thread_mode?
             # Thread (Puma/Falcon) mode: route through a SHARED (process-wide)
@@ -127,16 +119,11 @@ module RactorRailsShim
             #
             # Key format MUST stay `:"ractor_rails_shim_class_attr_<oid>_<name>"`
             # to match the writer below and the Ractor-mode key in
-            # `redefine`'s own `key` local. The original walked ancestors and
-            # interpolated the *whole* Symbol per ancestor on every read —
-            # allocating a fresh Array (ancestors) AND a fresh Symbol per
-            # ancestor, the dominant allocation source for GET requests. We
-            # interpolate only the per-ancestor `object_id` tail inside the
-            # lookup, which Ruby optimizes to a single Symbol allocation per
-            # ancestor (vs. the previous full-string interpolation). The
-            # Ractor-mode branch below avoids the walk entirely (literal key),
-            # but thread mode must walk because subclass COW fallback is
-            # load-bearing here.
+            # `redefine`'s own `key` local. Interpolates only the per-ancestor
+            # object_id tail (one Symbol allocation per ancestor) instead of
+            # the full namespaced Symbol. Thread mode must walk ancestors
+            # because subclass COW fallback is load-bearing here; Ractor mode
+            # below uses a literal key and avoids the walk.
             target.module_eval RactorRailsShim._class_attr_thread_methods(namespaced_name, namespaced_name, missing_default),
                                 __FILE__, __LINE__ + 1
 
