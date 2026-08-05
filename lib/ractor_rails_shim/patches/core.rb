@@ -310,18 +310,18 @@ module RactorRailsShim
     # values that couldn't be shared without freezing the app — set them
     # explicitly per worker, or use make_app_shareable!.
     def prepare_for_ractors!
-      _apply_shareable_constants!
-      RactorRailsShim._freeze_shareable_class_ivars! if RactorRailsShim.respond_to?(:_freeze_shareable_class_ivars!)
+      ConstantShareabilizer.apply!
+      Freezers::ShareableClassIvarFreezer.call
       snapshot_gem_paths!
       snapshot_query_logs!
-      _install_all_framework_patches
+      Installer.dispatch_all_framework_patches
       install_url_helpers_patch
       fix_url_helpers_singleton_routes!
-      _warm_active_record_class_caches!
-      _freeze_active_record_class_ivars!
-      _freeze_global_class_ivars!
-      _freeze_global_constants!
-      _freeze_messages_constants!
+      Freezers::CacheWarmer.call
+      Freezers::ClassIvarFreezer.call
+      Freezers::GlobalClassIvarFreezer.call
+      Freezers::GlobalConstantFreezer.call
+      Freezers::MessagesConstantsFreezer.call
     end
 
     # Verify the runtime matches the versions the shim was developed against.
