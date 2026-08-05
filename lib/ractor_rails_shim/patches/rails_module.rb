@@ -61,7 +61,7 @@ module RactorRailsShim
     def patch_rails_module!(mod)
       return if @rails_module_patched
       @rails_module_patched = true
-      _apply_shareable_constants!
+      RactorRailsShim::ConstantShareabilizer.apply!
       _patch_rails_module_body(mod)
     end
 

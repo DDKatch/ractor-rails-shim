@@ -32,7 +32,7 @@ class FrameworkPatchDispatchSpec < Minitest::Spec
       called << :test_auto_dispatch
     end
 
-    RactorRailsShim._install_all_framework_patches
+    RactorRailsShim::Installer.dispatch_all_framework_patches
 
     assert_includes called, :test_auto_dispatch,
                     "dispatcher should auto-discover _install_test_auto_dispatch_patch"
@@ -40,9 +40,9 @@ class FrameworkPatchDispatchSpec < Minitest::Spec
     RactorRailsShim.singleton_class.remove_method(:_install_test_auto_dispatch_patch) rescue nil
   end
 
-  # Read the source of _install_all_framework_patches from the file.
+  # Read the source of the dispatcher from the file.
   def dispatcher_source
-    file, line = RactorRailsShim.method(:_install_all_framework_patches).source_location
+    file, line = RactorRailsShim::Installer.method(:dispatch_all_framework_patches).source_location
     src = File.readlines(file)
     src[(line - 1)..].take_while { |l| !l.strip.eql?("end") }.join
   end
@@ -51,7 +51,7 @@ class FrameworkPatchDispatchSpec < Minitest::Spec
     # These are called from their parent install methods, not the dispatcher.
     NON_DISPATCHED.each do |m|
       refute dispatcher_source.include?(m.to_s),
-             "#{m} should not be called from _install_all_framework_patches"
+             "#{m} should not be called from dispatch_all_framework_patches"
     end
   end
 
@@ -172,7 +172,7 @@ class FrameworkPatchDispatchSpec < Minitest::Spec
       RactorRailsShim.define_singleton_method(m) { called << m }
     end
 
-    RactorRailsShim._install_all_framework_patches
+    RactorRailsShim::Installer.dispatch_all_framework_patches
 
     called_set = called.sort
     expected_set = ORIGINALLY_DISPATCHED.sort

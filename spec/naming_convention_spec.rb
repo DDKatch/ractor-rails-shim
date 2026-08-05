@@ -51,10 +51,12 @@ class NamingConventionSpec < Minitest::Spec
   end
 
   # --- do_install_shareable_constants -> _apply_shareable_constants! ---
+  # The facade delegation _apply_shareable_constants! was deleted in Issue #31;
+  # the role-object method ConstantShareabilizer.apply! owns the behavior.
 
-  it "_apply_shareable_constants! is the private worker name" do
-    assert RactorRailsShim.respond_to?(:_apply_shareable_constants!, true),
-           "_apply_shareable_constants! should be defined (private)"
+  it "ConstantShareabilizer.apply! is the role-object worker name" do
+    assert RactorRailsShim::ConstantShareabilizer.respond_to?(:apply!),
+           "ConstantShareabilizer.apply! should be defined"
     refute RactorRailsShim.method_defined?(:do_install_shareable_constants) &&
            RactorRailsShim.private_method_defined?(:do_install_shareable_constants),
            "do_install_shareable_constants should be renamed"
@@ -64,7 +66,7 @@ class NamingConventionSpec < Minitest::Spec
     RactorRailsShim::ConstantShareabilizer.reset_applied!
     saved = RactorRailsShim::SHAREABLE_CONSTANTS.dup
     RactorRailsShim::SHAREABLE_CONSTANTS.replace([]) # vacuous: all resolve → flag sets
-    RactorRailsShim.send(:_apply_shareable_constants!)
+    RactorRailsShim::ConstantShareabilizer.apply!
     assert RactorRailsShim::ConstantShareabilizer.applied?
   ensure
     RactorRailsShim::SHAREABLE_CONSTANTS.replace(saved) if saved

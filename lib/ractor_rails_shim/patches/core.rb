@@ -219,24 +219,12 @@ module RactorRailsShim
     # existing public/private API and the naming-convention / shim / safe_const
     # _get / make_value_shareable specs.
 
+    # Public reader for the SHAREABLE_CONSTANTS registry. Users register
+    # their own constants via `RactorRailsShim.shareable_constants << "MyGem::LIST"`.
+    # Delegates to ConstantShareabilizer.shareable_constants (which reads
+    # RactorRailsShim::SHAREABLE_CONSTANTS).
     def shareable_constants
       ConstantShareabilizer.shareable_constants
-    end
-
-    def install_shareable_constants
-      ConstantShareabilizer.install
-    end
-
-    # Run after Rails is fully booted (after Rails.application.initialize!)
-    # and BEFORE spawning worker Ractors. Re-attempts to make every
-    # registered constant shareable; constants that didn't exist at install
-    # time (e.g. Rails::Railtie, loaded after `module Rails` opens) get
-    # fixed here. Safe to call multiple times; already-shareable constants
-    # are no-ops. MUST run in the main Ractor (const_set writes the constant
-    # table). Public wrapper is `prepare_for_ractors!` above. Delegates to
-    # ConstantShareabilizer.apply! (extracted Issue #13, Step 13.1).
-    def _apply_shareable_constants!
-      ConstantShareabilizer.apply!
     end
 
     # Resolve a constant path string to a value, and if it exists and is
@@ -248,55 +236,12 @@ module RactorRailsShim
       ConstantShareabilizer.make_shareable!(const_path)
     end
 
-    # Best-effort shareable replacement for a constant value. Monitor/Mutex
-    # become a NoOpLock (never contended post-boot). BasicObject instances
-    # (used as sentinel sentinels, e.g. PRIMARY_KEY_NOT_SET) can't be frozen
-    # (BasicObject has no #freeze method) — replace with a frozen Symbol.
-    # Everything else is deep-frozen via Ractor.make_shareable; if that
-    # fails (e.g. a Proc, or a Concurrent::Map / TypeMap holding Procs —
-    # both intrinsically unshareable and needing upstream Rails changes),
-    # returns nil and the constant is left as-is (the worker will raise a
-    # clear IsolationError on read). Delegates to
-    # ConstantShareabilizer.make_value_shareable (extracted Issue #13,
-    # Step 13.1). Uses the existing _introspectable? helper (make_shareable.rb)
-    # instead of ad-hoc `rescue false` guards.
-    def _make_value_shareable(val)
-      ConstantShareabilizer.make_value_shareable(val)
-    end
-
-    # Resolve a constant path string (e.g. "A::B::C") to its value, returning
-    # nil if any segment isn't defined. When inherit is false, each segment
-    # is looked up only in its parent's own constant table (const_get name,
-    # false), matching the original no-inherit lookups in
-    # _freeze_messages_constants!. Replaces dense rescue/& chains like:
-    #   (Object.const_get(:A) rescue nil)&.const_get(:B, false) rescue nil
-    # Delegates to ConstantShareabilizer.safe_const_get (extracted Issue
-    # #13, Step 13.1).
-    def _safe_const_get(path, inherit: true)
-      ConstantShareabilizer.safe_const_get(path, inherit: inherit)
-    end
-
-    # Split "A::B::C" into [A::B (module), :C]. Returns [nil, nil] if the
-    # parent isn't defined. Delegates to ConstantShareabilizer.split_const_path
-    # (extracted Issue #13, Step 13.1).
-    def split_const_path(path)
-      ConstantShareabilizer.split_const_path(path)
-    end
-
     # _install_*_patch methods called from OTHER install paths, not from the
     # dispatcher. The constant + the dispatcher live on Installer (extracted
     # Issue #13, Step 13.6); kept as a facade delegation so the existing
     # framework_patch_dispatch_spec (which reads the dispatcher's source
     # location) and version_spec keep passing. See Installer for the contract.
     NON_DISPATCHED_FRAMEWORK_PATCHES = RactorRailsShim::Installer::NON_DISPATCHED_FRAMEWORK_PATCHES
-
-    # Auto-discover and call every _install_*_patch singleton method.
-    # Delegates to Installer.dispatch_all_framework_patches (extracted Issue
-    # #13, Step 13.6). See Installer for the Open/Closed auto-discovery
-    # contract.
-    def _install_all_framework_patches
-      Installer.dispatch_all_framework_patches
-    end
 
     # Public API: run after Rails.application.initialize! and BEFORE spawning
     # worker Ractors. Makes every registered constant shareable (deep-freeze).
@@ -451,59 +396,12 @@ module RactorRailsShim
       Patches::HashComputeIfAbsent.install
     end
 
-    # Freeze (make Ractor-shareable) every instance variable on every ActiveRecord
-    # model class in the MAIN Ractor, before the graph is frozen. Many AR model
-    # classes cache unshareable values in class-level ivars (@pending_attribute_
-    # modifications, @column_defaults, @symbol_column_to_string_name_hash,
-    # Freeze (make Ractor-shareable) unshareable class-level instance variables
-    # on ActiveRecord model classes. Delegates to
-    # RactorRailsShim::Freezers::ClassIvarFreezer (extracted Issue #1); kept as
-    # a facade method for the existing prepare_for_ractors! call site and the
-    # naming-convention spec. See ClassIvarFreezer for the contract.
-    def _freeze_active_record_class_ivars!
-      RactorRailsShim::Freezers::ClassIvarFreezer.call
-    end
-
-    # Freeze (make Ractor-shareable) unshareable class-level ivars on GLOBAL
-    # classes (Time/Date timezone caches, I18n locale caches, ...). Delegates
-    # to RactorRailsShim::Freezers::GlobalClassIvarFreezer (extracted Issue #1);
-    # kept as a facade method for prepare_for_ractors! and the naming-convention
-    # spec. See GlobalClassIvarFreezer for the contract.
-    def _freeze_global_class_ivars!
-      RactorRailsShim::Freezers::GlobalClassIvarFreezer.call
-    end
-
-    # Replace GLOBAL constants that hold non-shareable values (e.g.
-    # Time/Date/DateTime::DATE_FORMATS contain Proc values) with frozen,
-    # shareable equivalents. Delegates to
-    # RactorRailsShim::Freezers::GlobalConstantFreezer (extracted Issue #1);
-    # kept as a facade method for prepare_for_ractors! and the naming-convention
-    # spec. See GlobalConstantFreezer for the contract.
-    def _freeze_global_constants!
-      RactorRailsShim::Freezers::GlobalConstantFreezer.call
-    end
-
-    # ActiveSupport::Messages::Metadata holds non-shareable Array constants
-    # (ENVELOPE_SERIALIZERS / TIMESTAMP_SERIALIZERS) of serializer Modules.
-    # Delegates to RactorRailsShim::Freezers::MessagesConstantsFreezer
-    # (extracted Issue #1); kept as a facade method for prepare_for_ractors!
-    # and the naming-convention spec. See MessagesConstantsFreezer for the
-    # contract (incl. the msgpack pre-check and the load-order invariant).
-    def _freeze_messages_constants!
-      RactorRailsShim::Freezers::MessagesConstantsFreezer.call
-    end
-
-    # Warm ActiveRecord model classes' lazily-computed, shareable class-ivar
-    # memoizations in the MAIN Ractor, BEFORE the graph is frozen. Methods like
-    # the timestamp_attribute_* helpers cache frozen Arrays of strings (shareable
-    # once warmed), so pre-populating them here lets workers read via `||=`
-    # without ever setting the class ivar. (Class ivars holding unshareable
-    # values are handled by _freeze_active_record_class_ivars!.)
-    # Delegates to RactorRailsShim::Freezers::CacheWarmer (extracted Issue #1);
-    # kept as a facade method for the existing prepare_for_ractors! call site
-    # and the naming-convention spec.
-    def _warm_active_record_class_caches!
-      RactorRailsShim::Freezers::CacheWarmer.call
-    end
+    # The freezer delegations (_freeze_active_record_class_ivars!,
+    # _freeze_global_class_ivars!, _freeze_global_constants!,
+    # _freeze_messages_constants!, _warm_active_record_class_caches!)
+    # were deleted in Issue #31. prepare_for_ractors! calls the role objects
+    # (Freezers::ClassIvarFreezer.call, Freezers::GlobalClassIvarFreezer.call,
+    # Freezers::GlobalConstantFreezer.call, Freezers::MessagesConstantsFreezer.call,
+    # Freezers::CacheWarmer.call) directly. See freezers.rb for the contracts.
   end
 end

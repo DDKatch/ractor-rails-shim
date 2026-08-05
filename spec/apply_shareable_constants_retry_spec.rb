@@ -49,7 +49,7 @@ class ApplyShareableConstantsRetrySpec < Minitest::Spec
     RactorRailsShim::SHAREABLE_CONSTANTS.replace(["ShimProbe::UNDEFINED_CONST"])
     refute defined?(ShimProbe), "setup: ShimProbe should not exist"
 
-    RactorRailsShim.send(:_apply_shareable_constants!)
+    RactorRailsShim::ConstantShareabilizer.apply!
 
     refute RactorRailsShim::ConstantShareabilizer.applied?,
       "done flag should NOT be set when a registered constant is undefined " \
@@ -64,7 +64,7 @@ class ApplyShareableConstantsRetrySpec < Minitest::Spec
     mod.const_set(:SHAREABLE_VAL, ["a"].freeze)
 
     RactorRailsShim::SHAREABLE_CONSTANTS.replace(["ShimProbeOk::SHAREABLE_VAL"])
-    RactorRailsShim.send(:_apply_shareable_constants!)
+    RactorRailsShim::ConstantShareabilizer.apply!
 
     assert RactorRailsShim::ConstantShareabilizer.applied?,
       "done flag should be set when all registered constants are resolved"
@@ -77,7 +77,7 @@ class ApplyShareableConstantsRetrySpec < Minitest::Spec
     RactorRailsShim::SHAREABLE_CONSTANTS.replace(["ShimProbeRetry::VAL"])
     refute defined?(ShimProbeRetry), "setup: ShimProbeRetry should not exist"
 
-    RactorRailsShim.send(:_apply_shareable_constants!)
+    RactorRailsShim::ConstantShareabilizer.apply!
     refute RactorRailsShim::ConstantShareabilizer.applied? &&
           RactorRailsShim::ConstantShareabilizer.applied?
 
@@ -87,7 +87,7 @@ class ApplyShareableConstantsRetrySpec < Minitest::Spec
     Object.const_set(:ShimProbeRetry, mod)
     mod.const_set(:VAL, ["b"]) # mutable, unshareable
 
-    RactorRailsShim.send(:_apply_shareable_constants!)
+    RactorRailsShim::ConstantShareabilizer.apply!
 
     assert Ractor.shareable?(ShimProbeRetry::VAL),
       "second call should have made the now-defined constant shareable"
@@ -104,11 +104,11 @@ class ApplyShareableConstantsRetrySpec < Minitest::Spec
     mod.const_set(:VAL, ["c"].freeze)
 
     RactorRailsShim::SHAREABLE_CONSTANTS.replace(["ShimProbeIdem::VAL"])
-    RactorRailsShim.send(:_apply_shareable_constants!)
+    RactorRailsShim::ConstantShareabilizer.apply!
     assert RactorRailsShim::ConstantShareabilizer.applied?
 
     # Second call should not raise and should not re-process (flag already set).
-    RactorRailsShim.send(:_apply_shareable_constants!)
+    RactorRailsShim::ConstantShareabilizer.apply!
     assert RactorRailsShim::ConstantShareabilizer.applied?
   ensure
     Object.send(:remove_const, :ShimProbeIdem) if defined?(ShimProbeIdem)

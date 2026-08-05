@@ -121,15 +121,7 @@ class InstallerSpec < Minitest::Spec
     RactorRailsShim::Installer.define_singleton_method(:installed?, original)
   end
 
-  it "RactorRailsShim._install_all_framework_patches delegates to Installer.dispatch_all_framework_patches" do
-    delegated = false
-    original = RactorRailsShim::Installer.method(:dispatch_all_framework_patches)
-    RactorRailsShim::Installer.define_singleton_method(:dispatch_all_framework_patches) do
-      delegated = true
-    end
-    RactorRailsShim._install_all_framework_patches
-    assert delegated
-  ensure
-    RactorRailsShim::Installer.define_singleton_method(:dispatch_all_framework_patches, original)
-  end
+  # The facade delegation _install_all_framework_patches was deleted in
+  # Issue #31. The role-object method Installer.dispatch_all_framework_patches
+  # is tested directly above and in framework_patch_dispatch_spec.
 end

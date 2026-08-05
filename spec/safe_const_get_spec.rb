@@ -16,28 +16,28 @@ class SafeConstGetSpec < Minitest::Spec
   end
 
   it "resolves a top-level constant" do
-    assert_equal Object, RactorRailsShim._safe_const_get("Object")
+    assert_equal Object, RactorRailsShim::ConstantShareabilizer.safe_const_get("Object")
   end
 
   it "resolves a nested constant path" do
     assert_equal ActiveSupport::IsolatedExecutionState,
-                 RactorRailsShim._safe_const_get("ActiveSupport::IsolatedExecutionState")
+                 RactorRailsShim::ConstantShareabilizer.safe_const_get("ActiveSupport::IsolatedExecutionState")
   end
 
   it "returns nil for a missing top-level constant" do
-    assert_nil RactorRailsShim._safe_const_get("NonexistentModule")
+    assert_nil RactorRailsShim::ConstantShareabilizer.safe_const_get("NonexistentModule")
   end
 
   it "returns nil for a missing nested constant" do
-    assert_nil RactorRailsShim._safe_const_get("ActiveSupport::NonexistentThing")
+    assert_nil RactorRailsShim::ConstantShareabilizer.safe_const_get("ActiveSupport::NonexistentThing")
   end
 
   it "returns nil when the parent is missing" do
-    assert_nil RactorRailsShim._safe_const_get("Nonexistent::Child::Grandchild")
+    assert_nil RactorRailsShim::ConstantShareabilizer.safe_const_get("Nonexistent::Child::Grandchild")
   end
 
   it "returns nil when a middle segment is missing" do
-    assert_nil RactorRailsShim._safe_const_get("ActiveSupport::Missing::Deep")
+    assert_nil RactorRailsShim::ConstantShareabilizer.safe_const_get("ActiveSupport::Missing::Deep")
   end
 
   # --- Behavioral equivalence with the removed code ---
@@ -50,7 +50,7 @@ class SafeConstGetSpec < Minitest::Spec
   # must reproduce that exact behavior.
 
   it "with inherit: false, resolves directly-defined constants" do
-    result = RactorRailsShim._safe_const_get("ActiveSupport::IsolatedExecutionState", inherit: false)
+    result = RactorRailsShim::ConstantShareabilizer.safe_const_get("ActiveSupport::IsolatedExecutionState", inherit: false)
     assert_equal ActiveSupport::IsolatedExecutionState, result
   end
 
@@ -65,7 +65,7 @@ class SafeConstGetSpec < Minitest::Spec
     # _safe_const_get with inherit: false should match
     Object.const_set(:InheritTestChild, child) unless Object.const_defined?(:InheritTestChild)
     begin
-      assert_nil RactorRailsShim._safe_const_get("InheritTestChild::CHILD", inherit: false),
+      assert_nil RactorRailsShim::ConstantShareabilizer.safe_const_get("InheritTestChild::CHILD", inherit: false),
                  "inherit: false must not resolve inherited constants"
     ensure
       Object.send(:remove_const, :InheritTestChild)
@@ -79,7 +79,7 @@ class SafeConstGetSpec < Minitest::Spec
     child = Module.new { include mod }
     Object.const_set(:InheritTestChild2, child) unless Object.const_defined?(:InheritTestChild2)
     begin
-      result = RactorRailsShim._safe_const_get("InheritTestChild2::CHILD")
+      result = RactorRailsShim::ConstantShareabilizer.safe_const_get("InheritTestChild2::CHILD")
       assert_equal 42, result,
                    "inherit: true should resolve inherited constants"
     ensure

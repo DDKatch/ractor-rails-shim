@@ -138,9 +138,9 @@ class FreezersSpec < Minitest::Spec
     Object.send(:remove_const, :FakeARBase2) if defined?(FakeARBase2)
   end
 
-  # --- Facade delegation: RactorRailsShim._warm_active_record_class_caches! ---
+  # --- Facade delegation: RactorRailsShim::Freezers::CacheWarmer.call ---
 
-  it "RactorRailsShim._warm_active_record_class_caches! delegates to CacheWarmer.call" do
+  it "RactorRailsShim::Freezers::CacheWarmer.call delegates to CacheWarmer.call" do
     # The facade method must still exist and delegate. Verify by stubbing
     # CacheWarmer.call to record the delegation.
     delegated = false
@@ -149,7 +149,7 @@ class FreezersSpec < Minitest::Spec
       delegated = true
       original.call
     end
-    RactorRailsShim._warm_active_record_class_caches!
+    RactorRailsShim::Freezers::CacheWarmer.call
     assert delegated, "facade should delegate to CacheWarmer.call"
   ensure
     RactorRailsShim::Freezers::CacheWarmer.define_singleton_method(:call, original)
@@ -262,14 +262,14 @@ class FreezersSpec < Minitest::Spec
     Object.send(:remove_const, :FakeARBase6) if defined?(FakeARBase6)
   end
 
-  it "RactorRailsShim._freeze_active_record_class_ivars! delegates to ClassIvarFreezer.call" do
+  it "RactorRailsShim::Freezers::ClassIvarFreezer.call delegates to ClassIvarFreezer.call" do
     delegated = false
     original = RactorRailsShim::Freezers::ClassIvarFreezer.method(:call)
     RactorRailsShim::Freezers::ClassIvarFreezer.define_singleton_method(:call) do
       delegated = true
       original.call
     end
-    RactorRailsShim._freeze_active_record_class_ivars!
+    RactorRailsShim::Freezers::ClassIvarFreezer.call
     assert delegated, "facade should delegate to ClassIvarFreezer.call"
   ensure
     RactorRailsShim::Freezers::ClassIvarFreezer.define_singleton_method(:call, original)
@@ -317,14 +317,14 @@ class FreezersSpec < Minitest::Spec
     Time.remove_instance_variable(:@_shim_test_unfreezable) rescue nil
   end
 
-  it "RactorRailsShim._freeze_global_class_ivars! delegates to GlobalClassIvarFreezer.call" do
+  it "RactorRailsShim::Freezers::GlobalClassIvarFreezer.call delegates to GlobalClassIvarFreezer.call" do
     delegated = false
     original = RactorRailsShim::Freezers::GlobalClassIvarFreezer.method(:call)
     RactorRailsShim::Freezers::GlobalClassIvarFreezer.define_singleton_method(:call) do
       delegated = true
       original.call
     end
-    RactorRailsShim._freeze_global_class_ivars!
+    RactorRailsShim::Freezers::GlobalClassIvarFreezer.call
     assert delegated, "facade should delegate to GlobalClassIvarFreezer.call"
   ensure
     RactorRailsShim::Freezers::GlobalClassIvarFreezer.define_singleton_method(:call, original)
@@ -403,14 +403,14 @@ class FreezersSpec < Minitest::Spec
     Object.send(:remove_const, :ShimGCFShareableMod) if defined?(ShimGCFShareableMod)
   end
 
-  it "RactorRailsShim._freeze_global_constants! delegates to GlobalConstantFreezer.call" do
+  it "RactorRailsShim::Freezers::GlobalConstantFreezer.call delegates to GlobalConstantFreezer.call" do
     delegated = false
     original = RactorRailsShim::Freezers::GlobalConstantFreezer.method(:call)
     RactorRailsShim::Freezers::GlobalConstantFreezer.define_singleton_method(:call) do
       delegated = true
       original.call
     end
-    RactorRailsShim._freeze_global_constants!
+    RactorRailsShim::Freezers::GlobalConstantFreezer.call
     assert delegated, "facade should delegate to GlobalConstantFreezer.call"
   ensure
     RactorRailsShim::Freezers::GlobalConstantFreezer.define_singleton_method(:call, original)
@@ -505,14 +505,14 @@ class FreezersSpec < Minitest::Spec
     assert Ractor.shareable?(envelope)
   end
 
-  it "RactorRailsShim._freeze_messages_constants! delegates to MessagesConstantsFreezer.call" do
+  it "RactorRailsShim::Freezers::MessagesConstantsFreezer.call delegates to MessagesConstantsFreezer.call" do
     delegated = false
     original = RactorRailsShim::Freezers::MessagesConstantsFreezer.method(:call)
     RactorRailsShim::Freezers::MessagesConstantsFreezer.define_singleton_method(:call) do
       delegated = true
       original.call
     end
-    RactorRailsShim._freeze_messages_constants!
+    RactorRailsShim::Freezers::MessagesConstantsFreezer.call
     assert delegated, "facade should delegate to MessagesConstantsFreezer.call"
   ensure
     RactorRailsShim::Freezers::MessagesConstantsFreezer.define_singleton_method(:call, original)

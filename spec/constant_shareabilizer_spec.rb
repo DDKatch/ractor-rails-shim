@@ -248,53 +248,53 @@ class ConstantShareabilizerSpec < Minitest::Spec
     RactorRailsShim::ConstantShareabilizer.define_singleton_method(:make_shareable!, original)
   end
 
-  it "RactorRailsShim._make_value_shareable delegates to ConstantShareabilizer.make_value_shareable" do
+  it "RactorRailsShim::ConstantShareabilizer.make_value_shareable delegates to ConstantShareabilizer.make_value_shareable" do
     delegated = false
     original = RactorRailsShim::ConstantShareabilizer.method(:make_value_shareable)
     RactorRailsShim::ConstantShareabilizer.define_singleton_method(:make_value_shareable) do |v|
       delegated = true
       original.call(v)
     end
-    RactorRailsShim._make_value_shareable(["a"])
+    RactorRailsShim::ConstantShareabilizer.make_value_shareable(["a"])
     assert delegated, "facade should delegate to ConstantShareabilizer.make_value_shareable"
   ensure
     RactorRailsShim::ConstantShareabilizer.define_singleton_method(:make_value_shareable, original)
   end
 
-  it "RactorRailsShim._safe_const_get delegates to ConstantShareabilizer.safe_const_get" do
+  it "RactorRailsShim::ConstantShareabilizer.safe_const_get delegates to ConstantShareabilizer.safe_const_get" do
     delegated = false
     original = RactorRailsShim::ConstantShareabilizer.method(:safe_const_get)
     RactorRailsShim::ConstantShareabilizer.define_singleton_method(:safe_const_get) do |path, **kw|
       delegated = true
       original.call(path, **kw)
     end
-    RactorRailsShim._safe_const_get("Object")
+    RactorRailsShim::ConstantShareabilizer.safe_const_get("Object")
     assert delegated, "facade should delegate to ConstantShareabilizer.safe_const_get"
   ensure
     RactorRailsShim::ConstantShareabilizer.define_singleton_method(:safe_const_get, original)
   end
 
-  it "RactorRailsShim.split_const_path delegates to ConstantShareabilizer.split_const_path" do
+  it "RactorRailsShim::ConstantShareabilizer.split_const_path delegates to ConstantShareabilizer.split_const_path" do
     delegated = false
     original = RactorRailsShim::ConstantShareabilizer.method(:split_const_path)
     RactorRailsShim::ConstantShareabilizer.define_singleton_method(:split_const_path) do |path|
       delegated = true
       original.call(path)
     end
-    RactorRailsShim.split_const_path("Object")
+    RactorRailsShim::ConstantShareabilizer.split_const_path("Object")
     assert delegated, "facade should delegate to ConstantShareabilizer.split_const_path"
   ensure
     RactorRailsShim::ConstantShareabilizer.define_singleton_method(:split_const_path, original)
   end
 
-  it "RactorRailsShim._apply_shareable_constants! delegates to ConstantShareabilizer.apply!" do
+  it "RactorRailsShim::ConstantShareabilizer.apply! delegates to ConstantShareabilizer.apply!" do
     delegated = false
     original = RactorRailsShim::ConstantShareabilizer.method(:apply!)
     RactorRailsShim::ConstantShareabilizer.define_singleton_method(:apply!) do
       delegated = true
       original.call
     end
-    RactorRailsShim.send(:_apply_shareable_constants!)
+    RactorRailsShim::ConstantShareabilizer.apply!
     assert delegated, "facade should delegate to ConstantShareabilizer.apply!"
   ensure
     RactorRailsShim::ConstantShareabilizer.define_singleton_method(:apply!, original)

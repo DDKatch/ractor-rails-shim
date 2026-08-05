@@ -271,7 +271,7 @@ class ShimSpec < Minitest::Spec
     refute RactorRailsShim::ConstantShareabilizer.applied?,
            "setup: flag should be unset before first run"
 
-    RactorRailsShim.send(:_apply_shareable_constants!)
+    RactorRailsShim::ConstantShareabilizer.apply!
 
     assert RactorRailsShim::ConstantShareabilizer.applied?,
            "flag should be defined after first run"
