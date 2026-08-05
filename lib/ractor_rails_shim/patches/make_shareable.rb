@@ -411,7 +411,7 @@ module RactorRailsShim
       max_passes.times do
         procs = _collect_procs(app)
         break if procs.empty?
-        procs.each { |proc_obj, _path, parent, ivar| _replace_one_proc(proc_obj, parent, ivar, mw) }
+        procs.each { |proc_obj, parent, ivar| _replace_one_proc(proc_obj, parent, ivar, mw) }
       end
     end
 
@@ -427,26 +427,26 @@ module RactorRailsShim
     def _collect_procs(app)
       seen = {}
       procs = []
-      stack = [[app, "app", nil, nil]]
+      stack = [[app, nil, nil]]
       until stack.empty?
-        o, _path, parent, ivar = stack.pop
+        o, parent, ivar = stack.pop
         next if o.equal?(nil)
         # Skip BasicObject subclasses that don't respond to is_a?/object_id
         # (e.g. ActiveSupport::Callbacks::CallTemplate internals). Must guard
         # BEFORE calling is_a? — BasicObject doesn't define it.
         next unless _introspectable?(o)
         if o.is_a?(Proc)
-          procs << [o, _path, parent, ivar]
+          procs << [o, parent, ivar]
           next
         end
         next if seen[o.object_id]
         seen[o.object_id] = true
         next if o.is_a?(Mutex) || o.is_a?(Monitor)
-        _each_ivar_and_child(o, _path) do |child, child_path, child_ivar|
+        _each_ivar_and_child(o) do |child, child_ivar|
           if child_ivar == :__default_proc__
-            procs << [child, child_path, o, :__default_proc__]
+            procs << [child, o, :__default_proc__]
           else
-            stack << [child, child_path, o, child_ivar] if child
+            stack << [child, o, child_ivar] if child
           end
         end
       end
@@ -454,44 +454,45 @@ module RactorRailsShim
     end
 
     # Enumerate every child reference of `o` for the graph traversals:
-    #   - instance variables (yields [value, "path.iv", iv])
-    #   - Array / Set / Enumerable members (yields [member, "path[i]", nil])
-    #   - Hash pairs (yields [key, "path.key", nil] and [val, "path[k]", nil])
-    #   - Hash#default_proc (yields [proc, "path.default_proc", :__default_proc__])
-    #   - Struct members (yields [value, "path.member", nil] via #each_pair)
+    #   - instance variables (yields [value, iv])
+    #   - Array / Set / Enumerable members (yields [member, nil])
+    #   - Hash pairs (yields [key, nil] and [val, nil])
+    #   - Hash#default_proc (yields [proc, :__default_proc__])
+    #   - Struct members (yields [value, nil] via #each_pair)
     #
     # Centralized so _collect_procs and _replace_locks_and_concurrent_maps!
-    # share the same container coverage (Array, Hash, Set, Struct).
-    def _each_ivar_and_child(o, path)
+    # share the same container coverage (Array, Hash, Set, Struct). The
+    # caller no longer threads a debug path string — it was unused
+    # scaffolding (Issue #8); if a future debug label is needed, wire it
+    # through `_swallow` labels instead of a positional path.
+    def _each_ivar_and_child(o)
       begin
         o.instance_variables.each do |iv|
           begin; v = o.instance_variable_get(iv); rescue StandardError; next; end
-          yield v, "#{path}.#{iv}", iv
+          yield v, iv
         end
       rescue StandardError => e
         # BasicObject or frozen objects don't support instance_variables
       end
       if o.is_a?(Hash)
         o.each do |k, val|
-          yield k, "#{path}.key", nil
-          yield val, "#{path}[#{k.inspect}]", nil
+          yield k, nil
+          yield val, nil
         end
         dp = o.default_proc
-        yield dp, "#{path}.default_proc", :__default_proc__ if dp
+        yield dp, :__default_proc__ if dp
       elsif o.is_a?(Array)
-        o.each_with_index { |e, i| yield e, "#{path}[#{i}]", nil }
+        o.each_with_index { |e, i| yield e, nil }
       elsif o.is_a?(::Set)
-        o.each_with_index { |e, i| yield e, "#{path}.set[#{i}]", nil }
+        o.each_with_index { |e, i| yield e, nil }
       elsif o.is_a?(::Struct)
-        o.each_pair { |name, val| yield val, "#{path}.#{name}", nil }
+        o.each_pair { |name, val| yield val, nil }
       elsif _enumerable_but_not_basic?(o)
         # Generic Enumerable fallback (Range, Enumerator, custom Enumerable
         # mixes). Skip String/Hash/Array/Set/Struct — already handled. Best
         # effort; rescue per-element in case #each raises for some members.
-        idx = -1
         o.each do |e|
-          idx += 1
-          yield e, "#{path}.each[#{idx}]", nil
+          yield e, nil
         end rescue nil
       end
     end
@@ -599,15 +600,15 @@ module RactorRailsShim
 
     def _replace_locks_and_concurrent_maps!(app)
       seen = {}
-      stack = [[app, "app", nil, nil]]
+      stack = [[app, nil, nil]]
       until stack.empty?
-        o, _p, _parent, _ivar = stack.pop
+        o, _parent, _ivar = stack.pop
         next if o.equal?(nil)
         next unless _introspectable?(o)
         next if seen[o.object_id]
         seen[o.object_id] = true
         next if o.is_a?(Mutex) || o.is_a?(Monitor)
-        _each_ivar_and_child(o, _p) do |child, child_path, child_ivar|
+        _each_ivar_and_child(o) do |child, child_ivar|
           next if child_ivar == :__default_proc__
           if child.is_a?(Mutex) || child.is_a?(Monitor)
             _swallow("replace lock ivar") do
@@ -623,7 +624,7 @@ module RactorRailsShim
               o.instance_variable_set(child_ivar, hash_copy)
             end
           elsif child
-            stack << [child, child_path, o, child_ivar]
+            stack << [child, o, child_ivar]
           end
         end
       end

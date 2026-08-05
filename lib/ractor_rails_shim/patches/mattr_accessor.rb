@@ -147,6 +147,15 @@ module RactorRailsShim
     # Ractors can read it before prepare_for_ractors! runs. The constant
     # reassignment goes through _reassign_shareable_const (centralized
     # $VERBOSE suppression).
+    #
+    # INVARIANT: this method MUST only be called pre-spawn (i.e. during boot
+    # in the main Ractor, before worker Ractors are forked). The rebuild-
+    # from-scratch pattern (`dup`, `freeze`, `make_shareable`, `const_set`)
+    # reassigns the SHAREABLE_MATTR_DEFAULTS constant; any holder of a stale
+    # reference (e.g. a worker that already read the constant) won't see the
+    # update. The codebase is careful to call this only at mattr-definition
+    # time (boot), but a future maintainer adding a post-spawn call would
+    # silently break workers that cached the old constant. Don't.
     def _seed_mattr_default(key, default)
       MATTR_DEFAULTS[key] = default
       if default && Ractor.shareable?(default)

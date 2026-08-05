@@ -152,7 +152,22 @@ module RactorRailsShim
       def mon_exit; end
       def mon_locked?; false; end
       def try_lock; true; end
-      def new_cond; Struct.new(:wait, :signal, :broadcast).new(-> {}, -> {}, -> {}); end
+      # Returns a NoOpCond — a shareable, no-op stand-in for the
+      # MonitorMixin::ConditionVariable-like object that `lock.new_cond`
+      # yields in Rails' own Concurrent::Map / Monitor usage. Each method
+      # is a true no-op so callers that `cond.wait` / `cond.signal` /
+      # `cond.broadcast` from a worker Ractor don't block or touch
+      # unshareable state. Replaces the anonymous
+      # `Struct.new(:wait, :signal, :broadcast).new(-> {}, -> {}, -> {})`
+      # — same duck-typing shape, but a named class so the condvar
+      # contract is visible to readers (Issue #11).
+      def new_cond; NoOpCond.new; end
+    end
+
+    class NoOpCond
+      def wait(*_); nil; end
+      def signal; nil; end
+      def broadcast; nil; end
     end
 
     # No-op log device sink: a frozen, shareable stand-in for an IO, swapped

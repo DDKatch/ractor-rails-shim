@@ -543,8 +543,9 @@ module RactorRailsShim
       bindings = capture_app_constants
       wa = WorkerApp.new(frozen_app, bindings)
       wa.freeze
+      # Ractor.make_shareable returns the shareable object, so this is the
+      # factory's return value — no separate `wa` line needed (Issue #12).
       Ractor.make_shareable(wa)
-      wa
     end
 
     # See patches/active_model_attribute.rb. When the frozen `:ractor` graph is
