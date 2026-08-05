@@ -102,24 +102,28 @@ class FallbackBuilderSpec < Minitest::Spec
     refute_includes out, "ractor-rails-shim", "default path should not warn"
   end
 
-  # --- build! idempotency ---
+  # --- build! idempotency (Issue #24: flag lives on FallbackBuilder, not the facade) ---
 
-  it "build! is idempotent via @fallback_built" do
-    RactorRailsShim.remove_instance_variable(:@fallback_built) if RactorRailsShim.instance_variable_defined?(:@fallback_built)
-    # First call builds; second is a no-op. With an empty CLASS_ATTRIBUTES
-    # the fallback is an empty frozen shareable Hash.
+  it "FallbackBuilder responds to built? and reset_built!" do
+    assert_respond_to RactorRailsShim::FallbackBuilder, :built?
+    assert_respond_to RactorRailsShim::FallbackBuilder, :reset_built!
+  end
+
+  it "build! is idempotent via FallbackBuilder.@built (not the facade)" do
+    RactorRailsShim::FallbackBuilder.reset_built!
+    refute RactorRailsShim::FallbackBuilder.built?, "flag should be unset before first build"
     saved = RactorRailsShim::CLASS_ATTRIBUTES.dup
     RactorRailsShim::CLASS_ATTRIBUTES.replace([])
 
     result1 = RactorRailsShim::FallbackBuilder.build!
-    assert RactorRailsShim.instance_variable_get(:@fallback_built), "flag should be set after first build"
+    assert RactorRailsShim::FallbackBuilder.built?, "flag should be set after first build"
     result2 = RactorRailsShim::FallbackBuilder.build!
     assert_nil result2, "second build should be a no-op (return nil)"
     assert RactorRailsShim::SHAREABLE_FALLBACK.frozen?
     assert Ractor.shareable?(RactorRailsShim::SHAREABLE_FALLBACK)
   ensure
     RactorRailsShim::CLASS_ATTRIBUTES.replace(saved) if saved
-    RactorRailsShim.remove_instance_variable(:@fallback_built) if RactorRailsShim.instance_variable_defined?(:@fallback_built)
+    RactorRailsShim::FallbackBuilder.reset_built!
   end
 
   # --- Facade delegation ---
@@ -173,7 +177,7 @@ class FallbackBuilderSpec < Minitest::Spec
   #   - `shareable_mattr_defaults`  (SHAREABLE_MATTR_DEFAULTS array)
   #   - `storage`                   (IES storage, hash-like: storage[ies_key])
   # The seam is `configure(...)`; the defaults are the facade lookups so
-  # existing call sites keep working. The `@fallback_built` idempotency
+  # existing call sites keep working. The `@built` idempotency
   # flag stays on the facade singleton here — Issue #24 moves it.
 
   it "responds to configure" do
@@ -238,12 +242,12 @@ class FallbackBuilderSpec < Minitest::Spec
       class_attributes: [],
       shareable_mattr_defaults: []
     )
-    RactorRailsShim.remove_instance_variable(:@fallback_built) if RactorRailsShim.instance_variable_defined?(:@fallback_built)
+    RactorRailsShim::FallbackBuilder.reset_built!
     RactorRailsShim::FallbackBuilder.build!
     syms = reassigned.map(&:first)
     assert_includes syms, :SHAREABLE_FALLBACK, "build! should reassign SHAREABLE_FALLBACK via the injected callable"
   ensure
-    RactorRailsShim.remove_instance_variable(:@fallback_built) if RactorRailsShim.instance_variable_defined?(:@fallback_built)
+    RactorRailsShim::FallbackBuilder.reset_built!
     RactorRailsShim::FallbackBuilder.reset_configuration
   end
 
@@ -261,7 +265,7 @@ class FallbackBuilderSpec < Minitest::Spec
       safe_const_get: ->(name) { nil },
       reassign_shareable_const: ->(sym, val) { val }
     )
-    RactorRailsShim.remove_instance_variable(:@fallback_built) if RactorRailsShim.instance_variable_defined?(:@fallback_built)
+    RactorRailsShim::FallbackBuilder.reset_built!
     # Override the iteration by wrapping build! to capture the iteration
     # is hard; instead assert the build! returns a frozen shareable Hash
     # (the loop ran over the injected registry, produced an empty fallback
@@ -270,7 +274,7 @@ class FallbackBuilderSpec < Minitest::Spec
     assert result.frozen?, "build! should return a frozen fallback Hash"
     assert Ractor.shareable?(result), "build! should return a shareable fallback"
   ensure
-    RactorRailsShim.remove_instance_variable(:@fallback_built) if RactorRailsShim.instance_variable_defined?(:@fallback_built)
+    RactorRailsShim::FallbackBuilder.reset_built!
     RactorRailsShim::FallbackBuilder.reset_configuration
   end
 
@@ -286,11 +290,11 @@ class FallbackBuilderSpec < Minitest::Spec
       safe_const_get: ->(name) { nil },
       reassign_shareable_const: ->(sym, v) { v }
     )
-    RactorRailsShim.remove_instance_variable(:@fallback_built) if RactorRailsShim.instance_variable_defined?(:@fallback_built)
+    RactorRailsShim::FallbackBuilder.reset_built!
     result = RactorRailsShim::FallbackBuilder.build!
     assert_equal({ ies_key: val }, result, "fallback should read the live value from injected storage")
   ensure
-    RactorRailsShim.remove_instance_variable(:@fallback_built) if RactorRailsShim.instance_variable_defined?(:@fallback_built)
+    RactorRailsShim::FallbackBuilder.reset_built!
     RactorRailsShim::FallbackBuilder.reset_configuration
   end
 

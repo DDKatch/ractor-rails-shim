@@ -188,39 +188,42 @@ class ConstantShareabilizerSpec < Minitest::Spec
     assert_nil name
   end
 
-  # --- apply! (was _apply_shareable_constants!) ---
+  # --- apply! idempotency (Issue #24: flag lives on ConstantShareabilizer, not the facade) ---
 
-  it "apply! is idempotent via @shareable_constants_done" do
-    RactorRailsShim.remove_instance_variable(:@shareable_constants_done) if RactorRailsShim.instance_variable_defined?(:@shareable_constants_done)
+  it "ConstantShareabilizer responds to applied? and reset_applied!" do
+    assert_respond_to RactorRailsShim::ConstantShareabilizer, :applied?
+    assert_respond_to RactorRailsShim::ConstantShareabilizer, :reset_applied!
+  end
+
+  it "apply! is idempotent via ConstantShareabilizer.@applied (not the facade)" do
+    RactorRailsShim::ConstantShareabilizer.reset_applied!
     saved = RactorRailsShim::SHAREABLE_CONSTANTS.dup
     RactorRailsShim::SHAREABLE_CONSTANTS.replace([]) # vacuous: all resolve → flag sets
 
-    refute RactorRailsShim.instance_variable_get(:@shareable_constants_done),
+    refute RactorRailsShim::ConstantShareabilizer.applied?,
            "setup: flag should be unset before first run"
 
     RactorRailsShim::ConstantShareabilizer.apply!
 
-    assert RactorRailsShim.instance_variable_defined?(:@shareable_constants_done),
-           "flag should be defined after first run"
-    assert RactorRailsShim.instance_variable_get(:@shareable_constants_done),
+    assert RactorRailsShim::ConstantShareabilizer.applied?,
            "flag should be truthy after first run"
   ensure
     RactorRailsShim::SHAREABLE_CONSTANTS.replace(saved) if saved
-    RactorRailsShim.remove_instance_variable(:@shareable_constants_done) if RactorRailsShim.instance_variable_defined?(:@shareable_constants_done)
+    RactorRailsShim::ConstantShareabilizer.reset_applied!
   end
 
   it "apply! leaves the done flag unset when a constant is missing (retriable)" do
-    RactorRailsShim.remove_instance_variable(:@shareable_constants_done) if RactorRailsShim.instance_variable_defined?(:@shareable_constants_done)
+    RactorRailsShim::ConstantShareabilizer.reset_applied!
     saved = RactorRailsShim::SHAREABLE_CONSTANTS.dup
     RactorRailsShim::SHAREABLE_CONSTANTS.replace(["DefinitelyMissingCS::Thing"])
 
     RactorRailsShim::ConstantShareabilizer.apply!
 
-    refute RactorRailsShim.instance_variable_get(:@shareable_constants_done),
+    refute RactorRailsShim::ConstantShareabilizer.applied?,
            "flag should stay unset so a later call retries the now-loadable constants"
   ensure
     RactorRailsShim::SHAREABLE_CONSTANTS.replace(saved) if saved
-    RactorRailsShim.remove_instance_variable(:@shareable_constants_done) if RactorRailsShim.instance_variable_defined?(:@shareable_constants_done)
+    RactorRailsShim::ConstantShareabilizer.reset_applied!
   end
 
   # --- install / shareable_constants reader ---
@@ -320,7 +323,7 @@ class ConstantShareabilizerSpec < Minitest::Spec
   #   - `noop_lock_class`           (= `NoOpLogDev`-style class for Mutex/Monitor)
   #   - `shareable_constants_registry` (= `SHAREABLE_CONSTANTS` array)
   # The seam is `configure(...)`; the defaults are the facade lookups so
-  # existing call sites keep working. The `@shareable_constants_done`
+  # existing call sites keep working. The `@applied`
   # idempotency flag stays on the facade singleton here — Issue #24 moves
   # it onto this role.
 
@@ -414,7 +417,7 @@ class ConstantShareabilizerSpec < Minitest::Spec
     RactorRailsShim::ConstantShareabilizer.configure(
       shareable_constants_registry: fake_registry
     )
-    RactorRailsShim.remove_instance_variable(:@shareable_constants_done) if RactorRailsShim.instance_variable_defined?(:@shareable_constants_done)
+    RactorRailsShim::ConstantShareabilizer.reset_applied!
     refute Ractor.shareable?(mod::LIST), "setup: LIST should start unshareable"
 
     RactorRailsShim::ConstantShareabilizer.apply!
@@ -423,11 +426,11 @@ class ConstantShareabilizerSpec < Minitest::Spec
     # made our injected constant shareable.
     assert Ractor.shareable?(mod::LIST), "injected-registry constant should be made shareable"
     # The done flag set because every path resolved.
-    assert RactorRailsShim.instance_variable_get(:@shareable_constants_done),
+    assert RactorRailsShim::ConstantShareabilizer.applied?,
            "done flag should be set when all injected paths resolve"
   ensure
     Object.send(:remove_const, :ShimCSInject) if defined?(ShimCSInject)
-    RactorRailsShim.remove_instance_variable(:@shareable_constants_done) if RactorRailsShim.instance_variable_defined?(:@shareable_constants_done)
+    RactorRailsShim::ConstantShareabilizer.reset_applied!
     RactorRailsShim::ConstantShareabilizer.reset_configuration
   end
 

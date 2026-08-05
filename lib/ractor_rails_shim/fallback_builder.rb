@@ -21,14 +21,15 @@
 # (Issue #13, Step 13.2). This matches the Freezers::* and
 # ConstantShareabilizer pattern (Issue #23, POODR §2 Dependencies).
 #
-# The `@fallback_built` idempotency flag stays on the facade singleton
-# here — Issue #24 moves it onto this role.
+# The `@built` idempotency flag lives on `FallbackBuilder` itself
+# (Issue #24, POODR §2 — own your own state).
 #
 # The RactorRailsShim singleton keeps facade methods that delegate, so
 # reassign_const_spec and the integration spec keep passing unchanged.
 
 module RactorRailsShim
   module FallbackBuilder
+    @built = false
     @safe_const_get = nil
     @replace_unshareable_procs = nil
     @replace_locks_and_concurrent_maps = nil
@@ -107,6 +108,17 @@ module RactorRailsShim
       @storage || RactorRailsShim.storage
     end
 
+    # Has build! run? Lives on FallbackBuilder (Issue #24 — own your
+    # own state), NOT on the facade singleton.
+    def self.built?
+      @built
+    end
+
+    # Clear the built flag. Test seam + reinstall seam.
+    def self.reset_built!
+      @built = false
+    end
+
     # Build the shareable fallback for every class_attribute / mattr_accessor
     # value the shim has rerouted. For each registered attribute we:
     #   1. Read the main-ractor value (from its IES slot, which `redefine`
@@ -118,10 +130,10 @@ module RactorRailsShim
     #      is readable from every Ractor (it's a constant).
     # Workers' class_attribute readers fall back to this when their own IES
     # slot is nil. Must run in the main Ractor. Idempotent (guarded by
-    # @fallback_built on the RactorRailsShim singleton).
+    # @built on FallbackBuilder itself).
     def self.build!
-      return nil if RactorRailsShim.instance_variable_get(:@fallback_built)
-      RactorRailsShim.instance_variable_set(:@fallback_built, true)
+      return nil if @built
+      @built = true
 
       fallback = {}
       class_attributes.each do |(owner_name, attr_name, ies_key, default_val)|

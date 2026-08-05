@@ -29,9 +29,9 @@
 #
 # The collaborators are reached through the configure seam, defaulting to
 # the facade lookups so existing call sites keep working (Issue #23, POODR
-# §2 Dependencies). The `_apply_shareable_constants!` gate
-# (`@shareable_constants_done`) and the `SHAREABLE_APP` stash still live
-# on the facade; Issue #24/#29 will move them to their owners.
+# §2 Dependencies). The `ConstantShareabilizer.applied?` gate and the
+# `SHAREABLE_APP` stash still live on the facade; Issue #29 will move the
+# stash to its owner.
 
 module RactorRailsShim
   module AppShareabilizer
@@ -155,7 +155,7 @@ module RactorRailsShim
     end
 
     def self.make_shareable!(app = Rails.application)
-      apply_shareable_constants.call unless RactorRailsShim.instance_variable_get(:@shareable_constants_done)
+      apply_shareable_constants.call unless RactorRailsShim::ConstantShareabilizer.applied?
       install_all_framework_patches.call
       precompute_lazy_ivars.call(app)
       precompute_propshaft.call(app)

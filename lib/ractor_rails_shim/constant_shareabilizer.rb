@@ -20,9 +20,9 @@
 # `_introspectable?` (`introspectable`), and the `NoOpLock` constant
 # (`noop_lock_class`) are collaborators reached via the configure seam,
 # defaulting to the facade lookups so existing call sites keep working
-# (Issue #23, POODR §2 Dependencies). The `@shareable_constants_done`
-# idempotency flag stays on the facade singleton here — Issue #24 moves
-# it onto this role.
+# (Issue #23, POODR §2 Dependencies). The `@applied` idempotency flag
+# lives on `ConstantShareabilizer` itself (Issue #24, POODR §2 — own
+# your own state).
 #
 # The RactorRailsShim singleton keeps facade methods that delegate, so the
 # existing public/private API and naming_convention_spec / shim_spec /
@@ -55,11 +55,23 @@ module RactorRailsShim
 
     # Restore the default (facade-lookup) collaborators. Test seam.
     def self.reset_configuration
-      @funnel = nil
+    @applied = false
+    @funnel = nil
       @register_patch = nil
       @introspectable = nil
       @noop_lock_class = nil
       @shareable_constants_registry = nil
+    end
+
+    # Has apply! fully resolved? Lives on ConstantShareabilizer (Issue #24 —
+    # own your own state), NOT on the facade singleton.
+    def self.applied?
+      @applied
+    end
+
+    # Clear the applied flag. Test seam + reinstall seam.
+    def self.reset_applied!
+      @applied = false
     end
 
     def self.funnel
@@ -93,7 +105,7 @@ module RactorRailsShim
     # install time; if ActiveSupport isn't loaded yet, the constants don't
     # exist, so we re-run from patch_rails_module! (which fires once Rails —
     # and thus ActiveSupport — is defined). Guarded by
-    # @shareable_constants_done so both paths are safe.
+    # @applied so both paths are safe.
     def self.install
       register_patch.call(:shareable_constants, "8.1")
       return unless defined?(::ActiveSupport)
@@ -110,7 +122,7 @@ module RactorRailsShim
     # constant table). Public wrapper is `prepare_for_ractors!` on the
     # facade.
     def self.apply!
-      return if RactorRailsShim.instance_variable_get(:@shareable_constants_done)
+      return if @applied
       # Only set the done flag when every registered constant was made
       # shareable (or already was). If any returned false (constant doesn't
       # exist yet), leave the flag unset so a later call (from
@@ -118,7 +130,7 @@ module RactorRailsShim
       # constants — otherwise workers hit IsolationError on the unshareable
       # values that were missed on the first pass.
       all_resolved = shareable_constants.map { |path| make_shareable!(path) }.all?
-      RactorRailsShim.instance_variable_set(:@shareable_constants_done, true) if all_resolved
+      @applied = true if all_resolved
     end
 
     # Resolve a constant path string to a value, and if it exists and is

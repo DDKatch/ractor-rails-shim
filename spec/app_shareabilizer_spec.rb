@@ -47,9 +47,9 @@ class AppShareabilizerSpec < Minitest::Spec
     stub_facade_step(:_replace_unshareable_procs!) { |a| called << :replace_procs }
     stub_facade_step(:_replace_locks_and_concurrent_maps!) { |a| called << :replace_locks }
     stub_facade_step(:_build_shareable_fallback!) { called << :build_fallback }
-    # Stub the @shareable_constants_done flag so _apply_shareable_constants!
+    # Stub the @applied flag so _apply_shareable_constants!
     # fires once.
-    RactorRailsShim.instance_variable_set(:@shareable_constants_done, false)
+    RactorRailsShim::ConstantShareabilizer.reset_applied!
 
     # Stub Ractor.make_shareable to record + return the app unchanged.
     orig_ms = Ractor.method(:make_shareable)
@@ -66,8 +66,7 @@ class AppShareabilizerSpec < Minitest::Spec
     assert_equal expected_order, called,
                  "orchestration steps must fire in the documented order"
   ensure
-    RactorRailsShim.remove_instance_variable(:@shareable_constants_done) if
-      RactorRailsShim.instance_variable_defined?(:@shareable_constants_done)
+    RactorRailsShim::ConstantShareabilizer.reset_applied!
   end
 
   # Returns the (now-frozen) app — Ruby freeze-style: same object.
@@ -87,15 +86,14 @@ class AppShareabilizerSpec < Minitest::Spec
     stub_facade_step(:_replace_unshareable_procs!) { |a| }
     stub_facade_step(:_replace_locks_and_concurrent_maps!) { |a| }
     stub_facade_step(:_build_shareable_fallback!) { }
-    RactorRailsShim.instance_variable_set(:@shareable_constants_done, true)
+    RactorRailsShim::ConstantShareabilizer.reset_applied!; RactorRailsShim::ConstantShareabilizer.instance_variable_set(:@applied, true)
     orig_ms = Ractor.method(:make_shareable)
     Ractor.define_singleton_method(:make_shareable) { |o| o }
     result = RactorRailsShim::AppShareabilizer.make_shareable!(app)
     Ractor.define_singleton_method(:make_shareable, orig_ms)
     assert_same app, result, "should return the same app object"
   ensure
-    RactorRailsShim.remove_instance_variable(:@shareable_constants_done) if
-      RactorRailsShim.instance_variable_defined?(:@shareable_constants_done)
+    RactorRailsShim::ConstantShareabilizer.reset_applied!
   end
 
   # The facade delegates to the role object.
@@ -114,15 +112,14 @@ class AppShareabilizerSpec < Minitest::Spec
     stub_facade_step(:_replace_unshareable_procs!) { |a| }
     stub_facade_step(:_replace_locks_and_concurrent_maps!) { |a| }
     stub_facade_step(:_build_shareable_fallback!) { }
-    RactorRailsShim.instance_variable_set(:@shareable_constants_done, true)
+    RactorRailsShim::ConstantShareabilizer.reset_applied!; RactorRailsShim::ConstantShareabilizer.instance_variable_set(:@applied, true)
     orig_ms = Ractor.method(:make_shareable)
     Ractor.define_singleton_method(:make_shareable) { |o| o }
     result = RactorRailsShim.make_app_shareable!(app)
     Ractor.define_singleton_method(:make_shareable, orig_ms)
     assert_same app, result, "facade should return the same app"
   ensure
-    RactorRailsShim.remove_instance_variable(:@shareable_constants_done) if
-      RactorRailsShim.instance_variable_defined?(:@shareable_constants_done)
+    RactorRailsShim::ConstantShareabilizer.reset_applied!
   end
 
   private
@@ -142,7 +139,7 @@ class AppShareabilizerSpec < Minitest::Spec
   # methods. Each is a collaborator reached through the RactorRailsShim
   # facade by global name. The seam is `configure(...)` with 13 callable
   # kwargs + `make_shareable_fn`; the defaults are the facade lookups so
-  # existing call sites keep working. The `@shareable_constants_done` gate
+  # existing call sites keep working. The `@applied` gate
   # and `SHAREABLE_APP` stash stay on the facade singleton here —
   # Issue #24/#29 moves them.
 
@@ -197,7 +194,7 @@ class AppShareabilizerSpec < Minitest::Spec
       make_shareable_fn: ->(o) { called << :make_shareable; o },
       reassign_shareable_const: ->(s, v) { s }
     )
-    RactorRailsShim.instance_variable_set(:@shareable_constants_done, true)
+    RactorRailsShim::ConstantShareabilizer.reset_applied!; RactorRailsShim::ConstantShareabilizer.instance_variable_set(:@applied, true)
     app = Object.new
     RactorRailsShim::AppShareabilizer.make_shareable!(app)
     expected = %i[install_patches precompute_lazy precompute_propshaft
@@ -206,8 +203,7 @@ class AppShareabilizerSpec < Minitest::Spec
                   replace_procs replace_locks make_shareable build_fallback]
     assert_equal expected, called
   ensure
-    RactorRailsShim.remove_instance_variable(:@shareable_constants_done) if
-      RactorRailsShim.instance_variable_defined?(:@shareable_constants_done)
+    RactorRailsShim::ConstantShareabilizer.reset_applied!
     RactorRailsShim::AppShareabilizer.reset_configuration
   end
 

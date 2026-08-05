@@ -8,7 +8,7 @@
 #     methods that mutate global state, which take a bang.
 #   - `do_install_*` is a leftover with no encoded meaning — it should be
 #     renamed to a private bang method reflecting that it mutates the
-#     @shareable_constants_done flag + reassigns constants.
+#     @applied flag + reassigns constants.
 #
 # This spec asserts the *behavioural* contract of the renamed methods (they
 # still do what they did before, under their new names), NOT the source text.
@@ -60,15 +60,15 @@ class NamingConventionSpec < Minitest::Spec
            "do_install_shareable_constants should be renamed"
   end
 
-  it "_apply_shareable_constants! is idempotent via @shareable_constants_done" do
-    RactorRailsShim.instance_variable_set(:@shareable_constants_done, false)
+  it "_apply_shareable_constants! is idempotent via @applied" do
+    RactorRailsShim::ConstantShareabilizer.reset_applied!
     saved = RactorRailsShim::SHAREABLE_CONSTANTS.dup
     RactorRailsShim::SHAREABLE_CONSTANTS.replace([]) # vacuous: all resolve → flag sets
     RactorRailsShim.send(:_apply_shareable_constants!)
-    assert RactorRailsShim.instance_variable_get(:@shareable_constants_done)
+    assert RactorRailsShim::ConstantShareabilizer.applied?
   ensure
     RactorRailsShim::SHAREABLE_CONSTANTS.replace(saved) if saved
-    RactorRailsShim.remove_instance_variable(:@shareable_constants_done) if RactorRailsShim.instance_variable_defined?(:@shareable_constants_done)
+    RactorRailsShim::ConstantShareabilizer.reset_applied!
   end
 
   # --- Issue #20: mutating no-bang public methods renamed to bang versions ---
