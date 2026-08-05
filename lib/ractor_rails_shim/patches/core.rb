@@ -314,13 +314,18 @@ module RactorRailsShim
     # intrinsically unshareable and needing upstream Rails changes), returns
     # nil and the constant is left as-is (the worker will raise a clear
     # IsolationError on read).
+    #
+    # Uses the existing _introspectable? helper (make_shareable.rb) instead of
+    # ad-hoc `rescue false` guards. BasicObject subclasses don't define
+    # is_a?/respond_to? (Kernel not included); _introspectable? safely detects
+    # this via a guarded respond_to?(:is_a?) check.
     def _make_value_shareable(val)
-      if (val.is_a?(::Monitor) rescue false) || (val.is_a?(::Mutex) rescue false)
+      if _introspectable?(val) && (val.is_a?(::Monitor) || val.is_a?(::Mutex))
         Ractor.make_shareable(NoOpLock.new)
-      elsif !(val.respond_to?(:freeze) rescue false)
-        # BasicObject subclasses don't have #freeze/#respond_to? (Kernel not
-        # included). Replace with a frozen Symbol sentinel — it's compared
-        # with `equal?`, and a frozen Symbol is always shareable.
+      elsif !_introspectable?(val) || !val.respond_to?(:freeze)
+        # Non-introspectable (BasicObject without is_a?) OR lacks #freeze
+        # (BasicObject subclasses). Replace with a frozen Symbol sentinel —
+        # it's compared with `equal?`, and a frozen Symbol is always shareable.
         Ractor.make_shareable(:"__shim_unshareable_sentinel__")
       else
         _swallow("make_value_shareable #{val.class}") { Ractor.make_shareable(val) }
