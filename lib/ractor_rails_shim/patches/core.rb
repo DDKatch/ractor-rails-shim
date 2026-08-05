@@ -646,47 +646,13 @@ module RactorRailsShim
     end
 
     # ActiveSupport::Messages::Metadata holds non-shareable Array constants
-    # (ENVELOPE_SERIALIZERS / TIMESTAMP_SERIALIZERS) of serializer Modules, used
-    # by MessageEncryptor during flash/session cookie serialization. A worker
-    # Ractor reading these constants (e.g. on `redirect_to`, which encrypts a
-    # flash message) raises Ractor::IsolationError. The Arrays are shareable once
-    # frozen (their elements are Modules), so deep-freeze and const_set the
-    # shareable copy back so workers read a shareable constant.
+    # (ENVELOPE_SERIALIZERS / TIMESTAMP_SERIALIZERS) of serializer Modules.
+    # Delegates to RactorRailsShim::Freezers::MessagesConstantsFreezer
+    # (extracted Issue #1); kept as a facade method for prepare_for_ractors!
+    # and the naming-convention spec. See MessagesConstantsFreezer for the
+    # contract (incl. the msgpack pre-check and the load-order invariant).
     def _freeze_messages_constants!
-      # Load ActiveSupport::MessagePack in the MAIN Ractor FIRST. metadata.rb
-      # registers an `ActiveSupport.on_load(:message_pack)` callback that mutates
-      # ENVELOPE_SERIALIZERS / TIMESTAMP_SERIALIZERS via `<<`. If that callback
-      # first fires inside a worker Ractor (which happens the first time a
-      # cookie's `detect_format` probes MessagePackWithFallback.dumped?, because
-      # it lazily requires "active_support/message_pack"), it runs against the
-      # already-frozen arrays below and raises
-      #   FrozenError: can't modify frozen Array
-      # Loading here makes the callback fire once, in main, against the
-      # non-frozen arrays; load hooks never fire again in workers.
-      # Gem::LoadError is a ScriptError (not StandardError), so a bare
-      # `rescue nil` on the require would NOT catch a missing msgpack gem.
-      # Pre-check for the msgpack gem: active_support/message_pack loads
-      # without it but prints a "requires the msgpack gem" warning to $stderr
-      # before raising LoadError. Checking first avoids the warning entirely
-      # (no stderr suppression needed) and skips the freeze step cleanly when
-      # the C extension isn't installed (e.g. in the gem's no-Rails unit specs).
-      return unless Gem::Specification.find_all_by_name("msgpack").any?
-
-      require "active_support/message_pack"
-
-      mod = _safe_const_get("ActiveSupport::Messages::Metadata", inherit: false)
-      return unless mod.is_a?(Module)
-      %i[ENVELOPE_SERIALIZERS TIMESTAMP_SERIALIZERS].each do |name|
-        next unless mod.const_defined?(name, false)
-        val = mod.const_get(name, false)
-        next if Ractor.shareable?(val)
-        shareable = Ractor.make_shareable(val) rescue val
-        begin
-          mod.const_set(name, shareable)
-        rescue StandardError
-          nil
-        end
-      end
+      RactorRailsShim::Freezers::MessagesConstantsFreezer.call
     end
 
     # Warm ActiveRecord model classes' lazily-computed, shareable class-ivar

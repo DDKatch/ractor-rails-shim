@@ -415,4 +415,84 @@ class FreezersSpec < Minitest::Spec
   ensure
     RactorRailsShim::Freezers::GlobalConstantFreezer.define_singleton_method(:call, original)
   end
+
+  # --- MessagesConstantsFreezer: AS::Messages::Metadata constants ---
+
+  it "RactorRailsShim::Freezers::MessagesConstantsFreezer is a Module" do
+    assert_kind_of Module, RactorRailsShim::Freezers::MessagesConstantsFreezer
+  end
+
+  it "MessagesConstantsFreezer.call is a no-op when msgpack gem is absent" do
+    # msgpack is not in the shim's unit bundle; the call must not raise and
+    # must return a truthy value. This is the default path in unit specs.
+    assert RactorRailsShim::Freezers::MessagesConstantsFreezer.call
+  end
+
+  # Helper: set up a fake ActiveSupport::Messages::Metadata with the given
+  # constants, stub msgpack_available? to true, and stub the require of
+  # active_support/message_pack so it doesn't raise Gem::LoadError when the
+  # C extension isn't in the unit bundle. Yields, then cleans up.
+  def _with_fake_metadata(envelope_val, timestamp_val)
+    Object.const_set(:ActiveSupport, Module.new) unless defined?(::ActiveSupport)
+    as = ::ActiveSupport
+    as.const_set(:Messages, Module.new) unless as.const_defined?(:Messages, false)
+    as::Messages.const_set(:Metadata, Module.new) unless as::Messages.const_defined?(:Metadata, false)
+    metadata = as::Messages::Metadata
+    metadata.const_set(:ENVELOPE_SERIALIZERS, envelope_val)
+    metadata.const_set(:TIMESTAMP_SERIALIZERS, timestamp_val)
+
+    original_avail = RactorRailsShim::Freezers::MessagesConstantsFreezer.method(:msgpack_available?)
+    RactorRailsShim::Freezers::MessagesConstantsFreezer.define_singleton_method(:msgpack_available?) { true }
+    original_load = RactorRailsShim::Freezers::MessagesConstantsFreezer.method(:_load_message_pack)
+    RactorRailsShim::Freezers::MessagesConstantsFreezer.define_singleton_method(:_load_message_pack) { nil }
+
+    yield metadata
+  ensure
+    RactorRailsShim::Freezers::MessagesConstantsFreezer.define_singleton_method(:msgpack_available?, original_avail)
+    RactorRailsShim::Freezers::MessagesConstantsFreezer.define_singleton_method(:_load_message_pack, original_load)
+    if defined?(::ActiveSupport)
+      as = ::ActiveSupport
+      if as.const_defined?(:Messages, false)
+        as::Messages.send(:remove_const, :Metadata) if as::Messages.const_defined?(:Metadata, false)
+        as.send(:remove_const, :Messages)
+      end
+    end
+  end
+
+  it "MessagesConstantsFreezer.call freezes Metadata constants when msgpack + AS::Messages::Metadata are present" do
+    envelope = [Module.new]
+    timestamp = [Module.new]
+    refute Ractor.shareable?(envelope)
+
+    _with_fake_metadata(envelope, timestamp) do |metadata|
+      RactorRailsShim::Freezers::MessagesConstantsFreezer.call
+    end
+
+    assert Ractor.shareable?(envelope), "ENVELOPE_SERIALIZERS should be shareable after freeze"
+    assert Ractor.shareable?(timestamp), "TIMESTAMP_SERIALIZERS should be shareable after freeze"
+  end
+
+  it "MessagesConstantsFreezer.call skips already-shareable Metadata constants" do
+    envelope = Ractor.make_shareable([Module.new])
+    timestamp = Ractor.make_shareable([Module.new])
+
+    _with_fake_metadata(envelope, timestamp) do
+      # Must not raise; already-shareable values left as-is.
+      RactorRailsShim::Freezers::MessagesConstantsFreezer.call
+    end
+    assert Ractor.shareable?(envelope)
+  end
+
+  it "RactorRailsShim._freeze_messages_constants! delegates to MessagesConstantsFreezer.call" do
+    delegated = false
+    original = RactorRailsShim::Freezers::MessagesConstantsFreezer.method(:call)
+    RactorRailsShim::Freezers::MessagesConstantsFreezer.define_singleton_method(:call) do
+      delegated = true
+      original.call
+    end
+    RactorRailsShim._freeze_messages_constants!
+    assert delegated, "facade should delegate to MessagesConstantsFreezer.call"
+  ensure
+    RactorRailsShim::Freezers::MessagesConstantsFreezer.define_singleton_method(:call, original)
+  end
 end

@@ -161,5 +161,65 @@ module RactorRailsShim
         true
       end
     end
+
+    # ActiveSupport::Messages::Metadata holds non-shareable Array constants
+    # (ENVELOPE_SERIALIZERS / TIMESTAMP_SERIALIZERS) of serializer Modules, used
+    # by MessageEncryptor during flash/session cookie serialization. A worker
+    # Ractor reading these constants (e.g. on `redirect_to`, which encrypts a
+    # flash message) raises Ractor::IsolationError. The Arrays are shareable once
+    # frozen (their elements are Modules), so deep-freeze and const_set the
+    # shareable copy back so workers read a shareable constant.
+    #
+    # Loads ActiveSupport::MessagePack in the MAIN Ractor FIRST: metadata.rb
+    # registers an `ActiveSupport.on_load(:message_pack)` callback that mutates
+    # ENVELOPE_SERIALIZERS / TIMESTAMP_SERIALIZERS via `<<`. If that callback
+    # first fires inside a worker Ractor (which happens the first time a
+    # cookie's `detect_format` probes MessagePackWithFallback.dumped?, because
+    # it lazily requires "active_support/message_pack"), it runs against the
+    # already-frozen arrays and raises FrozenError. Loading here makes the
+    # callback fire once, in main, against the non-frozen arrays; load hooks
+    # never fire again in workers.
+    module MessagesConstantsFreezer
+      # The two Metadata constants that hold Arrays of serializer Modules.
+      TARGET_NAMES = Ractor.make_shareable(%i[ENVELOPE_SERIALIZERS TIMESTAMP_SERIALIZERS].freeze)
+
+      # True if the msgpack C extension is installed. Gem::LoadError is a
+      # ScriptError (not StandardError), so a bare `rescue nil` on the require
+      # would NOT catch a missing msgpack gem. active_support/message_pack
+      # loads without it but prints a "requires the msgpack gem" warning to
+      # $stderr before raising LoadError. Pre-checking avoids the warning
+      # entirely and skips the freeze step cleanly when the C extension isn't
+      # installed (e.g. in the gem's no-Rails unit specs).
+      def self.msgpack_available?
+        Gem::Specification.find_all_by_name("msgpack").any?
+      end
+
+      def self.call
+        return true unless msgpack_available?
+        _load_message_pack
+
+        mod = RactorRailsShim._safe_const_get("ActiveSupport::Messages::Metadata", inherit: false)
+        return true unless mod.is_a?(Module)
+        TARGET_NAMES.each do |name|
+          next unless mod.const_defined?(name, false)
+          val = mod.const_get(name, false)
+          next if Ractor.shareable?(val)
+          shareable = Ractor.make_shareable(val) rescue val
+          begin
+            mod.const_set(name, shareable)
+          rescue StandardError
+            nil
+          end
+        end
+        true
+      end
+
+      # Load active_support/message_pack in the MAIN Ractor. Extracted as a
+      # seam so tests can stub the load (the real require raises Gem::LoadError
+      # — a ScriptError — when the msgpack C extension isn't in the bundle).
+      def self._load_message_pack
+        require "active_support/message_pack"
+      end
+    end
   end
 end
