@@ -428,11 +428,11 @@ class ShareabilityTraversalSpec < Minitest::Spec
       ssl_loc: "a", files_loc: "b", cookie_loc: "c",
       devise_scope_loc: "d", mapper_loc: "e"
     )
-    refute_equal RactorRailsShim.method(:_swallow), RactorRailsShim::ShareabilityTraversal.funnel
+    refute_equal RactorRailsShim::Funnel.method(:swallow), RactorRailsShim::ShareabilityTraversal.funnel
     refute_equal RactorRailsShim.method(:_find_files_server), RactorRailsShim::ShareabilityTraversal.find_files_server
 
     RactorRailsShim::ShareabilityTraversal.reset_configuration
-    assert_equal RactorRailsShim.method(:_swallow), RactorRailsShim::ShareabilityTraversal.funnel
+    assert_equal RactorRailsShim::Funnel.method(:swallow), RactorRailsShim::ShareabilityTraversal.funnel
     assert_equal RactorRailsShim.method(:_find_files_server), RactorRailsShim::ShareabilityTraversal.find_files_server
     assert_equal RactorRailsShim.method(:_devise_mapping_replacement), RactorRailsShim::ShareabilityTraversal.devise_mapping_replacement
     assert_equal RactorRailsShim.method(:_strategy_replacement_for), RactorRailsShim::ShareabilityTraversal.strategy_replacement_for

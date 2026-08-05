@@ -207,7 +207,7 @@ class ControllerCollectorSpec < Minitest::Spec
     RactorRailsShim::ControllerCollector.reset_configuration
     default = RactorRailsShim::ControllerCollector.funnel
     assert_kind_of Method, default
-    assert_equal RactorRailsShim.method(:_swallow), default
+    assert_equal RactorRailsShim::Funnel.method(:swallow), default
   ensure
     RactorRailsShim::ControllerCollector.reset_configuration
   end

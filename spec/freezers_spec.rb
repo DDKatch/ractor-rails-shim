@@ -654,16 +654,16 @@ class FreezersSpec < Minitest::Spec
 
     funnel_only.each do |f|
       f.configure(funnel: ->(l, &b) { b&.call })
-      refute_equal RactorRailsShim.method(:_swallow), f.funnel
+      refute_equal RactorRailsShim::Funnel.method(:swallow), f.funnel
       f.reset_configuration
-      assert_equal RactorRailsShim.method(:_swallow), f.funnel
+      assert_equal RactorRailsShim::Funnel.method(:swallow), f.funnel
     end
     both.each do |f|
       f.configure(funnel: ->(l, &b) { b&.call }, safe_const_get: ->(n, **k) { nil })
-      refute_equal RactorRailsShim.method(:_swallow), f.funnel
+      refute_equal RactorRailsShim::Funnel.method(:swallow), f.funnel
       refute_equal RactorRailsShim.method(:_safe_const_get), f.safe_const_get
       f.reset_configuration
-      assert_equal RactorRailsShim.method(:_swallow), f.funnel
+      assert_equal RactorRailsShim::Funnel.method(:swallow), f.funnel
       assert_equal RactorRailsShim.method(:_safe_const_get), f.safe_const_get
     end
     scg_only.each do |f|

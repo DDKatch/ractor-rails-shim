@@ -23,7 +23,7 @@
 #   - returns the count of yielded models
 #
 # `_swallow` is reached via the `funnel` collaborator. The default is the
-# facade lookup (`RactorRailsShim.method(:_swallow)`) so existing call
+# facade lookup (`RactorRailsShim::Funnel.method(:swallow)`) so existing call
 # sites keep working; `configure(funnel:)` injects a different funnel so
 # the role is independently constructible and specable without the
 # `RactorRailsShim` god module loaded (Issue #23, POODR §2 Dependencies).
@@ -45,9 +45,9 @@ module RactorRailsShim
     end
 
     # The active funnel: the injected one if configured, else the
-    # facade lookup (`RactorRailsShim.method(:_swallow)`).
+    # facade lookup (`RactorRailsShim::Funnel.method(:swallow)`).
     def self.funnel
-      @funnel || RactorRailsShim.method(:_swallow)
+      @funnel || RactorRailsShim::Funnel.method(:swallow)
     end
 
     # Iterate every loaded ActiveRecord model — Base itself plus its

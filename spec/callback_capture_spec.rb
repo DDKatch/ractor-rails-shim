@@ -408,12 +408,12 @@ class CallbackCaptureSpec < Minitest::Spec
       reassign_shareable_const: ->(s, v) { v },
       register_patch: ->(n, v) { }
     )
-    refute_equal RactorRailsShim.method(:_swallow), RactorRailsShim::CallbackCapture.funnel
+    refute_equal RactorRailsShim::Funnel.method(:swallow), RactorRailsShim::CallbackCapture.funnel
     refute_equal RactorRailsShim.method(:_reassign_shareable_const), RactorRailsShim::CallbackCapture.reassign_shareable_const
     refute_equal RactorRailsShim.method(:_register_patch), RactorRailsShim::CallbackCapture.register_patch
 
     RactorRailsShim::CallbackCapture.reset_configuration
-    assert_equal RactorRailsShim.method(:_swallow), RactorRailsShim::CallbackCapture.funnel
+    assert_equal RactorRailsShim::Funnel.method(:swallow), RactorRailsShim::CallbackCapture.funnel
     assert_equal RactorRailsShim.method(:_reassign_shareable_const), RactorRailsShim::CallbackCapture.reassign_shareable_const
     assert_equal RactorRailsShim.method(:_register_patch), RactorRailsShim::CallbackCapture.register_patch
   ensure

@@ -196,13 +196,13 @@ class LoggerIONeutralizerSpec < Minitest::Spec
     )
     injected_funnel = RactorRailsShim::LoggerIONeutralizer.funnel
     injected_class = RactorRailsShim::LoggerIONeutralizer.noop_log_dev_class
-    refute_equal RactorRailsShim.method(:_swallow), injected_funnel
+    refute_equal RactorRailsShim::Funnel.method(:swallow), injected_funnel
     refute_equal RactorRailsShim.singleton_class::NoOpLogDev, injected_class
 
     RactorRailsShim::LoggerIONeutralizer.reset_configuration
     default_funnel = RactorRailsShim::LoggerIONeutralizer.funnel
     default_class = RactorRailsShim::LoggerIONeutralizer.noop_log_dev_class
-    assert_equal RactorRailsShim.method(:_swallow), default_funnel
+    assert_equal RactorRailsShim::Funnel.method(:swallow), default_funnel
     assert_equal RactorRailsShim.singleton_class::NoOpLogDev, default_class
   ensure
     RactorRailsShim::LoggerIONeutralizer.reset_configuration

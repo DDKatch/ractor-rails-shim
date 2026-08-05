@@ -27,7 +27,7 @@
 # The three callable collaborators — `_swallow` (funnel),
 # `_reassign_shareable_const`, and `_register_patch` — are reached via the
 # `funnel` / `reassign_shareable_const` / `register_patch` seams. The
-# defaults are the facade lookups (`RactorRailsShim.method(:_swallow)`,
+# defaults are the facade lookups (`RactorRailsShim::Funnel.method(:swallow)`,
 # `._reassign_shareable_const`, `._register_patch`) so existing call sites
 # keep working; `configure(funnel:, reassign_shareable_const:, register_
 # patch:)` injects different collaborators so the role is independently
@@ -80,9 +80,9 @@ module RactorRailsShim
     end
 
     # The active funnel: the injected one if configured, else the
-    # facade lookup (`RactorRailsShim.method(:_swallow)`).
+    # facade lookup (`RactorRailsShim::Funnel.method(:swallow)`).
     def self.funnel
-      @funnel || RactorRailsShim.method(:_swallow)
+      @funnel || RactorRailsShim::Funnel.method(:swallow)
     end
 
     # The active reassign callable: the injected one if configured, else

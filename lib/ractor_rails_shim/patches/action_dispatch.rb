@@ -428,7 +428,7 @@ module RactorRailsShim
         # @route reference would pull the whole route graph into the freeze,
         # freezing objects that make_app_shareable! must still be able to
         # mutate (e.g. Devise route constraints) -> FrozenError.
-        RactorRailsShim._swallow("freeze url helper") do
+        RactorRailsShim::Funnel.swallow("freeze url helper") do
           if helper.respond_to?(:instance_variable_get)
             helper.instance_variable_set(:@route, nil) rescue nil
             opts = helper.instance_variable_get(:@options)

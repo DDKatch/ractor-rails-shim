@@ -70,7 +70,7 @@ module RactorRailsShim
         # controllers is a Hash with a default proc (unshareable) — copy the
         # entries into a plain frozen Hash.
         h = {}
-        RactorRailsShim._swallow("devise mapping controllers") do
+        RactorRailsShim::Funnel.swallow("devise mapping controllers") do
           mapping.controllers.each { |k, v| h[k] = v }
         end
         @controllers = h.freeze

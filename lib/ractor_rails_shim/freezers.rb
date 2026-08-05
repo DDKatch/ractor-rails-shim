@@ -35,7 +35,7 @@ module RactorRailsShim
       end
 
       def self.funnel
-        @funnel || RactorRailsShim.method(:_swallow)
+        @funnel || RactorRailsShim::Funnel.method(:swallow)
       end
 
       WARMER_METHODS = Ractor.make_shareable(%i[
@@ -79,7 +79,7 @@ module RactorRailsShim
       end
 
       def self.funnel
-        @funnel || RactorRailsShim.method(:_swallow)
+        @funnel || RactorRailsShim::Funnel.method(:swallow)
       end
 
       def self.call
@@ -112,7 +112,7 @@ module RactorRailsShim
       end
 
       def self.funnel
-        @funnel || RactorRailsShim.method(:_swallow)
+        @funnel || RactorRailsShim::Funnel.method(:swallow)
       end
 
       def self.safe_const_get
@@ -257,7 +257,7 @@ module RactorRailsShim
       end
 
       def self.funnel
-        @funnel || RactorRailsShim.method(:_swallow)
+        @funnel || RactorRailsShim::Funnel.method(:swallow)
       end
 
       def self.safe_const_get

@@ -21,7 +21,7 @@
 # Issue #31 removes it. The `_swallow` debug funnel and `NoOpLogDev`
 # (defined in `patches/callables.rb`) are collaborators reached via the
 # `funnel` + `noop_log_dev_class` seams. The defaults are the facade
-# lookups (`RactorRailsShim.method(:_swallow)` and
+# lookups (`RactorRailsShim::Funnel.method(:swallow)` and
 # `RactorRailsShim.singleton_class::NoOpLogDev`) so existing call sites
 # keep working; `configure(funnel:, noop_log_dev_class:)` injects
 # different collaborators so the role is independently constructible and
@@ -51,9 +51,9 @@ module RactorRailsShim
     end
 
     # The active funnel: the injected one if configured, else the
-    # facade lookup (`RactorRailsShim.method(:_swallow)`).
+    # facade lookup (`RactorRailsShim::Funnel.method(:swallow)`).
     def self.funnel
-      @funnel || RactorRailsShim.method(:_swallow)
+      @funnel || RactorRailsShim::Funnel.method(:swallow)
     end
 
     # The active NoOpLogDev class: the injected one if configured, else

@@ -258,7 +258,7 @@ class ARModelWalkerSpec < Minitest::Spec
     default = RactorRailsShim::ARModelWalker.funnel
     # The default is the facade lookup — a bound Method on RactorRailsShim.
     assert_kind_of Method, default
-    assert_equal RactorRailsShim.method(:_swallow), default
+    assert_equal RactorRailsShim::Funnel.method(:swallow), default
   ensure
     RactorRailsShim::ARModelWalker.reset_configuration
   end

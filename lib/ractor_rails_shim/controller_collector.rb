@@ -15,7 +15,7 @@
 # The facade method `_collect_controller_classes` delegates to `.call`
 # until Issue #31 removes it. `_swallow` is a collaborator reached via
 # the `funnel` seam. The default is the facade lookup
-# (`RactorRailsShim.method(:_swallow)`) so existing call sites keep
+# (`RactorRailsShim::Funnel.method(:swallow)`) so existing call sites keep
 # working; `configure(funnel:)` injects a different funnel so the role
 # is independently constructible and specable without the
 # `RactorRailsShim` god module loaded (Issue #23, POODR §2 Dependencies).
@@ -45,9 +45,9 @@ module RactorRailsShim
     end
 
     # The active funnel: the injected one if configured, else the
-    # facade lookup (`RactorRailsShim.method(:_swallow)`).
+    # facade lookup (`RactorRailsShim::Funnel.method(:swallow)`).
     def self.funnel
-      @funnel || RactorRailsShim.method(:_swallow)
+      @funnel || RactorRailsShim::Funnel.method(:swallow)
     end
 
     # Collect the set of loaded controller classes from `app`'s routes

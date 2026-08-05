@@ -118,10 +118,15 @@ module RactorRailsShim
     # unshareable value has a traceable cause. Default false (silent, the
     # historical behaviour). Enable for diagnosis:
     #   RactorRailsShim.debug = true
+    # Delegates to RactorRailsShim::Funnel (extracted Issue #31, step
+    # 31.1d).
     def debug?
-      defined?(@debug) ? @debug : false
+      Funnel.debug?
     end
-    attr_writer :debug
+
+    def debug=(value)
+      Funnel.debug = value
+    end
 
     # Swallow an exception raised by the block, optionally logging it when
     # `debug?` is on. Used by freeze/shareability paths where individual
@@ -129,11 +134,10 @@ module RactorRailsShim
     # values like Procs) but a worker crash on the same value later has no
     # visible cause. `label` identifies the call site (e.g. "freeze AR ivar
     # Post@column_defaults"). Keep the label short — it's only for grepping.
+    # Delegates to RactorRailsShim::Funnel.swallow (extracted Issue #31,
+    # step 31.1d).
     def _swallow(label)
-      yield
-    rescue StandardError => e
-      warn "[ractor_rails_shim] #{label}: #{e.class}: #{e.message[0, 120]}" if debug?
-      nil
+      Funnel.swallow(label) { yield }
     end
 
     # Reassign a constant on RactorRailsShim with a new shareable value,

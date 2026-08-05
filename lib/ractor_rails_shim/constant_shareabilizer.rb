@@ -75,7 +75,7 @@ module RactorRailsShim
     end
 
     def self.funnel
-      @funnel || RactorRailsShim.method(:_swallow)
+      @funnel || RactorRailsShim::Funnel.method(:swallow)
     end
 
     def self.register_patch
