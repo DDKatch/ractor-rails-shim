@@ -116,7 +116,7 @@ class VersionSpec < Minitest::Spec
 
   it "install registers patches in PATCH_VERSIONS tagged with 8.1" do
     RactorRailsShim::PATCH_VERSIONS.clear
-    RactorRailsShim.instance_variable_set(:@installed, false)
+    RactorRailsShim::Installer.instance_variable_set(:@installed, false)
     # Reset the install_* idempotency flags so install re-registers. The
     # flags guard re-application, but registration happens before the guard
     # returns — a stale flag from a prior test makes install skip registration

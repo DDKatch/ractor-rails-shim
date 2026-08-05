@@ -24,14 +24,16 @@
 # ...) remain on the RactorRailsShim facade (defined by their patch files);
 # the orchestrator reaches them through the facade.
 #
-# The @installed flag lives on the RactorRailsShim singleton (the facade's
-# installed? reads it). The RactorRailsShim singleton keeps facade methods
-# (install, installed?, _install_all_framework_patches) that delegate, so
+# The `@installed` idempotency flag lives on `Installer` itself
+# (Issue #24, POODR §2 — own your own state). The RactorRailsShim
+# singleton keeps facade methods (install, installed?,
+# _install_all_framework_patches) that delegate, so
 # framework_patch_dispatch_spec, version_spec, and the integration spec
 # keep passing unchanged.
 
 module RactorRailsShim
   module Installer
+    @installed = false
     # _install_*_patch methods called from OTHER install paths, not from the
     # dispatcher. They are installed by their parent install method (e.g.
     # _install_callbacks_nil_safe_patch and _install_notifications_notifier_
@@ -104,14 +106,12 @@ module RactorRailsShim
           RactorRailsShim._install_with_empty_template_cache_patch
         end
       end
-      RactorRailsShim.instance_variable_set(:@installed, true)
+      @installed = true
       true
     end
 
     def self.installed?
-      v = RactorRailsShim.instance_variable_get(:@installed)
-      return v unless v.nil?
-      RactorRailsShim.instance_variable_set(:@installed, false)
+      @installed
     end
 
     # Auto-discover and call every _install_*_patch singleton method on
