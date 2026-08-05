@@ -46,7 +46,7 @@ module RactorRailsShim
       # Shareable constants + Rack::Request + Inflector + ParameterEncoding +
       # PathRegistry + AbstractController + error_reporter + LookupContext +
       # I18n + Template::Handlers + ExecutionContext + Request param parsers.
-      do_install_shareable_constants unless @shareable_constants_done
+      _apply_shareable_constants! unless @shareable_constants_done
       # Install (or re-run, idempotently) the full framework-patch set. Most
       # are already applied by prepare_for_ractors!; this guarantees every
       # patch is present after full boot even if prepare_for_ractors! ran

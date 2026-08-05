@@ -124,7 +124,7 @@ module RactorRailsShim
     # on the request hot-path, but make it shareable anyway. Called after the
     # module has been included into ActionView/ActionController (i.e. from
     # `prepare_for_ractors!`).
-    def fix_url_helpers_singleton_routes
+    def fix_url_helpers_singleton_routes!
       return unless defined?(::Rails) && ::Rails.application
       return unless ::Rails.application.routes.respond_to?(:url_helpers)
       mod = ::Rails.application.routes.url_helpers

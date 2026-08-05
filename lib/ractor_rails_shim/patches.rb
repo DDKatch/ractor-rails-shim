@@ -38,6 +38,42 @@ require_relative "fallback_ies"
 require_relative "version_check"
 require_relative "version_policy"
 
+# Naming convention for the patch methods on RactorRailsShim's singleton class:
+#
+#   install_<concern>      Public entry point called from `install` or
+#                         `prepare_for_ractors!`. No underscore, no bang.
+#                         Idempotent (guarded by its own @*_patched flag).
+#                         Examples: install_class_attribute,
+#                         install_shareable_constants, install_url_helpers_patch.
+#
+#   _install_<concern>_patch  Private worker that actually applies a patch.
+#                            Leading underscore = private. No bang (the
+#                            idempotency guard is on the public wrapper).
+#                            Examples: _install_rack_request_patch,
+#                            _install_activerecord_delegation_patch.
+#
+#   _freeze_*!            Private, mutates global state (freezes constants /
+#                         class ivars). Bang signals the mutation.
+#                         Examples: _freeze_shareable_class_ivars!,
+#                         _freeze_active_record_class_ivars!.
+#
+#   _apply_*!             Private, mutates the install-done flag + constants.
+#                         Examples: _apply_shareable_constants!.
+#
+#   <verb>_*!             Public lifecycle / build / snapshot verbs that mutate
+#                         global state or freeze. Bang signals the mutation.
+#                         Examples: prepare_for_ractors!, make_app_shareable!,
+#                         snapshot_gem_paths!, worker_app!,
+#                         fix_url_helpers_singleton_routes!.
+#
+#   _<helper>             Private, pure, or query helper. No bang.
+#                         Examples: _swallow, _reassign_shareable_const,
+#                         _make_value_shareable, _register_patch.
+#
+# The rule: leading underscore = private; bang = mutates receiver/global
+# state (lifecycle verbs) or has a non-bang query sibling; public entry
+# points are bang-less and idempotent.
+
 # Per-concern patch files. Each reopens RactorRailsShim's singleton class
 # to add its `_install_*` method(s). The order matters only for constants
 # (core.rb defines the module skeleton + constants that others reference).

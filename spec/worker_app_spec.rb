@@ -6,12 +6,12 @@
 #
 # Invariant exercised here:
 #
-#   * the WorkerApp instance returned by `worker_app` is `Ractor.shareable?`,
+#   * the WorkerApp instance returned by `worker_app!` is `Ractor.shareable?`,
 #     so it can be passed to `Ractor.new(app) { |a| ... }` without raising
 #     IsolationError. Pre-fix, `WorkerApp.new(app, bindings)` returned a bare
 #     instance that was NOT made shareable, so the caller had to know to
 #     freeze + make_shareable it themselves — an undocumented contract that
-#     bit any caller following the README's `worker_app` example.
+#     bit any caller following the README's `worker_app!` example.
 #
 # Run: ruby -Ilib -Ispec spec/worker_app_spec.rb
 
@@ -43,9 +43,9 @@ class WorkerAppSpec < Minitest::Spec
     bindings = { "ShimWorkerAppProbe" => app }.freeze
     Ractor.make_shareable(bindings)
 
-    worker_app = RactorRailsShim.worker_app(app)
+    worker_app = RactorRailsShim.worker_app!(app)
     assert Ractor.shareable?(worker_app),
-      "WorkerApp must be shareable so Ractor.new(worker_app) { |a| ... } works"
+      "WorkerApp must be shareable so Ractor.new(worker_app!) { |a| ... } works"
   ensure
     Object.send(:remove_const, :ShimWorkerAppProbe) if defined?(ShimWorkerAppProbe)
   end
@@ -53,7 +53,7 @@ class WorkerAppSpec < Minitest::Spec
   it "WorkerApp dispatches to the wrapped app and returns its response" do
     app = FrozenApp.new
     Ractor.make_shareable(app)
-    worker_app = RactorRailsShim.worker_app(app)
+    worker_app = RactorRailsShim.worker_app!(app)
 
     r = Ractor.new(worker_app) do |wa|
       wa.call({ "PATH_INFO" => "/up", "REQUEST_METHOD" => "GET" })

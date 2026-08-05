@@ -3,7 +3,7 @@
 # Patch the Rails module's class-level accessors (Rails.application,
 # Rails.env, Rails.cache, etc.) to route through IsolatedExecutionState.
 # The generic constant-sharing utilities (make_constant_shareable,
-# split_const_path, do_install_shareable_constants, install_shareable_constants,
+# split_const_path, _apply_shareable_constants!, install_shareable_constants,
 # shareable_constants) now live in core.rb (alongside SHAREABLE_CONSTANTS).
 
 module RactorRailsShim
@@ -61,7 +61,7 @@ module RactorRailsShim
     def patch_rails_module!(mod)
       return if @rails_module_patched
       @rails_module_patched = true
-      do_install_shareable_constants
+      _apply_shareable_constants!
       _patch_rails_module_body(mod)
     end
 

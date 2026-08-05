@@ -257,7 +257,7 @@ module RactorRailsShim
       _register_patch :shareable_constants, "8.1"
       return unless defined?(::ActiveSupport)
 
-      do_install_shareable_constants
+      _apply_shareable_constants!
     end
 
     # Run after Rails is fully booted (after Rails.application.initialize!)
@@ -269,7 +269,7 @@ module RactorRailsShim
     #
     # This MUST run in the main Ractor (const_set writes the constant table).
     # Public wrapper is `prepare_for_ractors!` above.
-    def do_install_shareable_constants
+    def _apply_shareable_constants!
       return if @shareable_constants_done
       shareable_constants.each { |path| make_constant_shareable(path) }
       @shareable_constants_done = true
@@ -440,13 +440,13 @@ module RactorRailsShim
     # values that couldn't be shared without freezing the app — set them
     # explicitly per worker, or use make_app_shareable!.
     def prepare_for_ractors!
-      do_install_shareable_constants
+      _apply_shareable_constants!
       RactorRailsShim._freeze_shareable_class_ivars! if RactorRailsShim.respond_to?(:_freeze_shareable_class_ivars!)
       snapshot_gem_paths!
       snapshot_query_logs!
       _install_all_framework_patches
       install_url_helpers_patch
-      fix_url_helpers_singleton_routes
+      fix_url_helpers_singleton_routes!
       _warm_active_record_class_caches!
       _freeze_active_record_class_ivars!
       _freeze_global_class_ivars!
@@ -569,9 +569,9 @@ module RactorRailsShim
     # ActiveRecord connection) on the first request served by each worker
     # Ractor. Returns a shareable WorkerApp instance — frozen and
     # `Ractor.make_shareable`'d — so it can be passed directly to
-    # `Ractor.new(worker_app) { |a| a.call(env) }` without the caller having
+    # `Ractor.new(worker_app!) { |a| a.call(env) }` without the caller having
     # to know the shareability contract.
-    def worker_app(frozen_app)
+    def worker_app!(frozen_app)
       bindings = capture_app_constants
       wa = WorkerApp.new(frozen_app, bindings)
       wa.freeze
@@ -829,7 +829,7 @@ module RactorRailsShim
   #   2. ensures the worker's ActiveRecord connection handler is initialized.
   #
   # The wrapper holds only shareable state (@app, @bindings), so the instance
-  # is `Ractor.make_shareable`'d by `worker_app` before being handed to worker
+  # is `Ractor.make_shareable`'d by `worker_app!` before being handed to worker
   # Ractors. `Ractor.current` provides per-worker storage for the one-time
   # guard, avoiding any top-level constant reference.
   class WorkerApp
