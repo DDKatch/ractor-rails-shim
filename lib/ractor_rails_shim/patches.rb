@@ -93,6 +93,7 @@ require_relative "app_shareabilizer"
 # to add its `_install_*` method(s). The order matters only for constants
 # (core.rb defines the module skeleton + constants that others reference).
 require_relative "patches/core"
+require_relative "registry"
 require_relative "patches/callables"
 require_relative "patches/hash_compute_if_absent"
 require_relative "patches/make_shareable"
