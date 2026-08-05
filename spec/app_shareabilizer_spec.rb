@@ -245,4 +245,46 @@ class AppShareabilizerSpec < Minitest::Spec
     end
     @stubbed_origins = nil
   end
+
+  # --- Issue #29: make_app_shareable! interface fixes ---
+
+  # Step 29.1: make_shareable! requires an explicit app argument
+  it "make_shareable! requires an explicit app argument (no default)" do
+    # Calling without arguments should raise ArgumentError
+    assert_raises ArgumentError do
+      RactorRailsShim::AppShareabilizer.make_shareable!
+    end
+  end
+
+  # Step 29.2: stash! is a one-shot idempotent method
+  it "AppShareabilizer.stash! stashes the app as SHAREABLE_APP" do
+    app = Object.new
+    RactorRailsShim::AppShareabilizer.reset_stashed!
+    RactorRailsShim::AppShareabilizer.stash!(app)
+    assert RactorRailsShim.const_defined?(:SHAREABLE_APP, false),
+           "SHAREABLE_APP should be defined after stash!"
+  ensure
+    RactorRailsShim::AppShareabilizer.reset_stashed!
+  end
+
+  it "AppShareabilizer.stash! is idempotent (second call is a no-op)" do
+    app1 = Object.new
+    app2 = Object.new
+    RactorRailsShim::AppShareabilizer.reset_stashed!
+    RactorRailsShim::AppShareabilizer.stash!(app1)
+    RactorRailsShim::AppShareabilizer.stash!(app2)
+    # First stash wins — const_defined? guard
+    assert RactorRailsShim.const_defined?(:SHAREABLE_APP, false)
+  ensure
+    RactorRailsShim::AppShareabilizer.reset_stashed!
+  end
+
+  it "AppShareabilizer.stashed? reflects the one-shot flag" do
+    RactorRailsShim::AppShareabilizer.reset_stashed!
+    refute RactorRailsShim::AppShareabilizer.stashed?
+    RactorRailsShim::AppShareabilizer.stash!(Object.new)
+    assert RactorRailsShim::AppShareabilizer.stashed?
+  ensure
+    RactorRailsShim::AppShareabilizer.reset_stashed!
+  end
 end

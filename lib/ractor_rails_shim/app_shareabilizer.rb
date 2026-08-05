@@ -154,7 +154,10 @@ module RactorRailsShim
       @reassign_shareable_const || RactorRailsShim.method(:_reassign_shareable_const)
     end
 
-    def self.make_shareable!(app = Rails.application)
+    # Make the app Ractor-shareable. App is mutated in place (frozen).
+    # Returns the same (now-frozen) app — Ruby freeze-style. Callers must
+    # not assume a new object.
+    def self.make_shareable!(app)
       apply_shareable_constants.call unless RactorRailsShim::ConstantShareabilizer.applied?
       install_all_framework_patches.call
       precompute_lazy_ivars.call(app)
@@ -168,11 +171,29 @@ module RactorRailsShim
       replace_unshareable_procs.call(app)
       replace_locks_and_concurrent_maps.call(app)
       make_shareable_fn.call(app)
-      if Ractor.main?
-        reassign_shareable_const.call(:SHAREABLE_APP, app) unless RactorRailsShim.const_defined?(:SHAREABLE_APP)
-      end
+      stash!(app)
       build_shareable_fallback.call
       app
+    end
+
+    # One-shot stash of the app as SHAREABLE_APP. Idempotent: first call
+    # wins (via const_defined? guard). Main-Ractor-only by contract —
+    # workers must not reassign the constant. Returns the app.
+    def self.stash!(app)
+      return app if RactorRailsShim.const_defined?(:SHAREABLE_APP, false)
+      return app unless Ractor.main?
+      reassign_shareable_const.call(:SHAREABLE_APP, app)
+      @stashed = true
+      app
+    end
+
+    def self.stashed?
+      @stashed
+    end
+
+    def self.reset_stashed!
+      @stashed = false
+      RactorRailsShim.send(:remove_const, :SHAREABLE_APP) if RactorRailsShim.const_defined?(:SHAREABLE_APP, false)
     end
   end
 end
