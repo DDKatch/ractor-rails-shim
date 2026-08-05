@@ -241,24 +241,7 @@ module RactorRailsShim
     # pre-touch any memoizing accessor so workers don't try to write the ivar
     # lazily (which would raise FrozenError on the frozen class).
     def _freeze_shareable_class_ivars!
-      SHAREABLE_CLASS_IVARS.each do |(class_name, ivar)|
-        mod = RactorRailsShim._safe_const_get(class_name)
-        next unless mod && mod.instance_variable_defined?(ivar)
-        val = mod.instance_variable_get(ivar)
-        next if val.nil?
-        _swallow("freeze global ivar #{class_name}#{ivar}") do
-          Ractor.make_shareable(val)
-          mod.instance_variable_set(ivar, val)
-        end
-      end
-      # Pre-touch memoizing accessors so workers short-circuit instead of
-      # writing the (now frozen) ivar on first read.
-      _swallow("freeze global ivar ActiveSupport::Editor.current") do
-        ::ActiveSupport::Editor.current if defined?(::ActiveSupport::Editor)
-      end
-      _swallow("freeze global ivar Warden::Strategies._strategies") do
-        ::Warden::Strategies._strategies if defined?(::Warden::Strategies)
-      end
+      Freezers::ShareableClassIvarFreezer.call
     end
 
     # Freeze (make Ractor-shareable) the captured declared-callbacks table.

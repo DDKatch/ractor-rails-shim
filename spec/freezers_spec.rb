@@ -655,6 +655,77 @@ class FreezersSpec < Minitest::Spec
      RactorRailsShim::Freezers::ClassIvarFreezer,
      RactorRailsShim::Freezers::GlobalClassIvarFreezer,
      RactorRailsShim::Freezers::GlobalConstantFreezer,
-     RactorRailsShim::Freezers::MessagesConstantsFreezer].each { |f| f.reset_configuration }
+     RactorRailsShim::Freezers::MessagesConstantsFreezer,
+     RactorRailsShim::Freezers::ShareableClassIvarFreezer].each { |f| f.reset_configuration }
+  end
+
+  # --- ShareableClassIvarFreezer: SHAREABLE_CLASS_IVARS freeze ---
+
+  it "RactorRailsShim::Freezers::ShareableClassIvarFreezer is a Module" do
+    assert_kind_of Module, RactorRailsShim::Freezers::ShareableClassIvarFreezer
+  end
+
+  it "ShareableClassIvarFreezer.call makes listed ivars shareable" do
+    target = Module.new
+    Object.const_set(:ShivFreezeIvarTest, target)
+    target.instance_variable_set(:@test_ivar, { foo: :bar })
+    RactorRailsShim::SHAREABLE_CLASS_IVARS << ["ShivFreezeIvarTest", :@test_ivar]
+    # Not shareable before call
+    refute Ractor.shareable?(target.instance_variable_get(:@test_ivar))
+    RactorRailsShim::Freezers::ShareableClassIvarFreezer.call
+    val = target.instance_variable_get(:@test_ivar)
+    assert Ractor.shareable?(val), "ivar should be shareable after freezer call"
+  ensure
+    RactorRailsShim::SHAREABLE_CLASS_IVARS.delete(["ShivFreezeIvarTest", :@test_ivar])
+    Object.send(:remove_const, :ShivFreezeIvarTest) if defined?(ShivFreezeIvarTest)
+  end
+
+  it "ShareableClassIvarFreezer.call skips classes not yet defined" do
+    RactorRailsShim::SHAREABLE_CLASS_IVARS << ["NonexistentClassForFreezer", :@x]
+    # Must not raise
+    RactorRailsShim::Freezers::ShareableClassIvarFreezer.call
+  ensure
+    RactorRailsShim::SHAREABLE_CLASS_IVARS.delete(["NonexistentClassForFreezer", :@x])
+  end
+
+  it "ShareableClassIvarFreezer.call skips nil ivar values" do
+    target = Module.new
+    Object.const_set(:ShivFreezeNilIvar, target)
+    target.instance_variable_set(:@nil_ivar, nil)
+    RactorRailsShim::SHAREABLE_CLASS_IVARS << ["ShivFreezeNilIvar", :@nil_ivar]
+    # Must not raise; nil value is skipped
+    RactorRailsShim::Freezers::ShareableClassIvarFreezer.call
+  ensure
+    RactorRailsShim::SHAREABLE_CLASS_IVARS.delete(["ShivFreezeNilIvar", :@nil_ivar])
+    Object.send(:remove_const, :ShivFreezeNilIvar) if defined?(ShivFreezeNilIvar)
+  end
+
+  it "ShareableClassIvarFreezer.call funnels through injected funnel" do
+    funneled = []
+    funnel = ->(label, &blk) { funneled << label; blk&.call rescue StandardError; }
+    RactorRailsShim::Freezers::ShareableClassIvarFreezer.configure(funnel: funnel)
+    target = Module.new
+    Object.const_set(:ShivFreezeFunnelTest, target)
+    target.instance_variable_set(:@fiv, { a: 1 })
+    RactorRailsShim::SHAREABLE_CLASS_IVARS << ["ShivFreezeFunnelTest", :@fiv]
+    RactorRailsShim::Freezers::ShareableClassIvarFreezer.call
+    assert funneled.any? { |l| l.include?("freeze global ivar") },
+           "funnel should have been called with freeze label"
+  ensure
+    RactorRailsShim::SHAREABLE_CLASS_IVARS.delete(["ShivFreezeFunnelTest", :@fiv])
+    Object.send(:remove_const, :ShivFreezeFunnelTest) if defined?(ShivFreezeFunnelTest)
+    RactorRailsShim::Freezers::ShareableClassIvarFreezer.reset_configuration
+  end
+
+  it "RactorRailsShim._freeze_shareable_class_ivars! delegates to ShareableClassIvarFreezer.call" do
+    delegated = false
+    original = RactorRailsShim::Freezers::ShareableClassIvarFreezer.method(:call)
+    RactorRailsShim::Freezers::ShareableClassIvarFreezer.define_singleton_method(:call) do
+      delegated = true
+    end
+    RactorRailsShim._freeze_shareable_class_ivars!
+    assert delegated, "facade should delegate to ShareableClassIvarFreezer.call"
+  ensure
+    RactorRailsShim::Freezers::ShareableClassIvarFreezer.define_singleton_method(:call, original)
   end
 end

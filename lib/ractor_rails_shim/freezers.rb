@@ -227,5 +227,57 @@ module RactorRailsShim
         require "active_support/message_pack"
       end
     end
+
+    # ShareableClassIvarFreezer: walks SHAREABLE_CLASS_IVARS (class name,
+    # ivar name pairs), reads each ivar, makes it Ractor-shareable
+    # (deep-frozen), and writes it back so workers read the shareable
+    # copy. Also pre-touches memoizing accessors so workers don't try to
+    # write the ivar lazily (which would raise FrozenError on the frozen
+    # class). Extracted from _freeze_shareable_class_ivars! in
+    # make_shareable.rb (Issue #27, POODR §6a Modules & Roles).
+    module ShareableClassIvarFreezer
+      @funnel = nil
+      @safe_const_get = nil
+
+      def self.configure(funnel: nil, safe_const_get: nil)
+        @funnel = funnel
+        @safe_const_get = safe_const_get
+      end
+
+      def self.reset_configuration
+        @funnel = nil
+        @safe_const_get = nil
+      end
+
+      def self.funnel
+        @funnel || RactorRailsShim.method(:_swallow)
+      end
+
+      def self.safe_const_get
+        @safe_const_get || RactorRailsShim.method(:_safe_const_get)
+      end
+
+      def self.call
+        RactorRailsShim::Registry.shareable_class_ivars.each do |(class_name, ivar)|
+          mod = safe_const_get.call(class_name)
+          next unless mod && mod.instance_variable_defined?(ivar)
+          val = mod.instance_variable_get(ivar)
+          next if val.nil?
+          funnel.call("freeze global ivar #{class_name}#{ivar}") do
+            Ractor.make_shareable(val)
+            mod.instance_variable_set(ivar, val)
+          end
+        end
+        # Pre-touch memoizing accessors so workers short-circuit instead of
+        # writing the (now frozen) ivar on first read (FrozenError avoidance).
+        funnel.call("freeze global ivar ActiveSupport::Editor.current") do
+          ::ActiveSupport::Editor.current if defined?(::ActiveSupport::Editor)
+        end
+        funnel.call("freeze global ivar Warden::Strategies._strategies") do
+          ::Warden::Strategies._strategies if defined?(::Warden::Strategies)
+        end
+        true
+      end
+    end
   end
 end
