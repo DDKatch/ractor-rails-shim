@@ -329,4 +329,90 @@ class FreezersSpec < Minitest::Spec
   ensure
     RactorRailsShim::Freezers::GlobalClassIvarFreezer.define_singleton_method(:call, original)
   end
+
+  # --- GlobalConstantFreezer: Time/Date::DATE_FORMATS etc. ---
+
+  it "RactorRailsShim::Freezers::GlobalConstantFreezer is a Module" do
+    assert_kind_of Module, RactorRailsShim::Freezers::GlobalConstantFreezer
+  end
+
+  # Helper: temporarily replace GlobalConstantFreezer::TARGETS with the given
+  # array of module names, yield, then restore. The real .call reads TARGETS,
+  # so this exercises the actual logic without duplicating it.
+  def _with_gc_targets(module_names)
+    original = RactorRailsShim::Freezers::GlobalConstantFreezer::TARGETS
+    verbose, $VERBOSE = $VERBOSE, nil
+    RactorRailsShim::Freezers::GlobalConstantFreezer.const_set(:TARGETS, module_names.freeze)
+    $VERBOSE = verbose
+    yield
+  ensure
+    verbose, $VERBOSE = $VERBOSE, nil
+    RactorRailsShim::Freezers::GlobalConstantFreezer.const_set(:TARGETS, original)
+    $VERBOSE = verbose
+  end
+
+  it "GlobalConstantFreezer.call drops non-shareable Hash values and freezes" do
+    mod = Module.new
+    Object.const_set(:ShimGCFTestMod, mod)
+    mod.const_set(:DATE_FORMATS, { db: "%Y-%m-%d", custom: ->(*) { "x" } })
+    refute Ractor.shareable?(mod.const_get(:DATE_FORMATS, false))
+
+    _with_gc_targets(["ShimGCFTestMod"]) do
+      RactorRailsShim::Freezers::GlobalConstantFreezer.call
+    end
+
+    val = mod.const_get(:DATE_FORMATS, false)
+    assert Ractor.shareable?(val), "DATE_FORMATS should be shareable after freeze"
+    assert val.frozen?, "DATE_FORMATS should be frozen"
+    assert_includes val, :db, "shareable entry should be kept"
+    refute_includes val, :custom, "non-shareable Proc entry should be dropped"
+  ensure
+    Object.send(:remove_const, :ShimGCFTestMod) if defined?(ShimGCFTestMod)
+  end
+
+  it "GlobalConstantFreezer.call filters non-shareable Array values and freezes" do
+    mod = Module.new
+    Object.const_set(:ShimGCFArrayMod, mod)
+    mod.const_set(:DATE_FORMATS, [:sym, ->(*) { :x }, "str"])
+    refute Ractor.shareable?(mod.const_get(:DATE_FORMATS, false))
+
+    _with_gc_targets(["ShimGCFArrayMod"]) do
+      RactorRailsShim::Freezers::GlobalConstantFreezer.call
+    end
+
+    val = mod.const_get(:DATE_FORMATS, false)
+    assert Ractor.shareable?(val), "Array DATE_FORMATS should be shareable"
+    assert val.frozen?, "Array should be frozen"
+    assert_includes val, :sym
+    assert_includes val, "str"
+    refute val.any? { |e| e.is_a?(Proc) }, "Proc entry should be filtered out"
+  ensure
+    Object.send(:remove_const, :ShimGCFArrayMod) if defined?(ShimGCFArrayMod)
+  end
+
+  it "GlobalConstantFreezer.call skips already-shareable constants" do
+    mod = Module.new
+    Object.const_set(:ShimGCFShareableMod, mod)
+    mod.const_set(:DATE_FORMATS, Ractor.make_shareable({ a: 1 }))
+
+    _with_gc_targets(["ShimGCFShareableMod"]) do
+      RactorRailsShim::Freezers::GlobalConstantFreezer.call
+    end
+    assert Ractor.shareable?(mod.const_get(:DATE_FORMATS, false))
+  ensure
+    Object.send(:remove_const, :ShimGCFShareableMod) if defined?(ShimGCFShareableMod)
+  end
+
+  it "RactorRailsShim._freeze_global_constants! delegates to GlobalConstantFreezer.call" do
+    delegated = false
+    original = RactorRailsShim::Freezers::GlobalConstantFreezer.method(:call)
+    RactorRailsShim::Freezers::GlobalConstantFreezer.define_singleton_method(:call) do
+      delegated = true
+      original.call
+    end
+    RactorRailsShim._freeze_global_constants!
+    assert delegated, "facade should delegate to GlobalConstantFreezer.call"
+  ensure
+    RactorRailsShim::Freezers::GlobalConstantFreezer.define_singleton_method(:call, original)
+  end
 end

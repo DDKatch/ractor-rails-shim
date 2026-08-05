@@ -637,33 +637,12 @@ module RactorRailsShim
 
     # Replace GLOBAL constants that hold non-shareable values (e.g.
     # Time/Date/DateTime::DATE_FORMATS contain Proc values) with frozen,
-    # shareable equivalents so worker Ractors can read them. Proc-valued format
-    # entries are dropped (to_fs falls back to to_s for those formats). This is
-    # done in the MAIN Ractor, where const_set is allowed.
+    # shareable equivalents. Delegates to
+    # RactorRailsShim::Freezers::GlobalConstantFreezer (extracted Issue #1);
+    # kept as a facade method for prepare_for_ractors! and the naming-convention
+    # spec. See GlobalConstantFreezer for the contract.
     def _freeze_global_constants!
-      constants = %w[Time Date DateTime].filter_map do |n|
-        mod = _safe_const_get(n)
-        mod.is_a?(Module) ? [mod, :DATE_FORMATS] : nil
-      end
-      constants.each do |mod, name|
-        next unless mod.const_defined?(name, false)
-        val = mod.const_get(name, false)
-        next if Ractor.shareable?(val)
-        shareable = if val.is_a?(Hash)
-          h = {}
-          val.each { |k, v| h[k] = v if Ractor.shareable?(v) }
-          h.freeze
-        elsif val.is_a?(Array)
-          val.select { |v| Ractor.shareable?(v) }.freeze
-        else
-          val
-        end
-        begin
-          mod.const_set(name, shareable)
-        rescue StandardError
-          nil
-        end
-      end
+      RactorRailsShim::Freezers::GlobalConstantFreezer.call
     end
 
     # ActiveSupport::Messages::Metadata holds non-shareable Array constants
