@@ -78,6 +78,18 @@ class LoggerIONeutralizerSpec < Minitest::Spec
                    "IO inside an Array child should be neutralized"
   end
 
+  # Recurses into Set children (uses CONTAINER_WALKERS dispatch).
+  it "walks Set children" do
+    holder = Object.new
+    holder.instance_variable_set(:@io, $stderr)
+    s = Set.new([holder])
+    app = Object.new
+    app.instance_variable_set(:@set, s)
+    RactorRailsShim::LoggerIONeutralizer.call(app)
+    assert_kind_of RactorRailsShim.singleton_class::NoOpLogDev, holder.instance_variable_get(:@io),
+                   "IO inside a Set child should be neutralized"
+  end
+
   # The facade delegates to the role object (the existing
   # debug_funnel_spec test covers the funnel path).
   it "facade _neutralize_logger_io! delegates to the role object" do

@@ -110,8 +110,14 @@ module RactorRailsShim
         rescue StandardError
           # BasicObject or frozen objects don't support instance_variables
         end
-        if o.is_a?(Array); o.each { |e| stack << e if e }
-        elsif o.is_a?(Hash); o.each { |_, val| stack << val if val }
+        # Use the shared CONTAINER_WALKERS dispatch table to push children
+        # onto the stack (Issue #32 — reuse traversal from
+        # ShareabilityTraversal instead of duplicating an is_a? chain).
+        walker = ShareabilityTraversal::CONTAINER_WALKERS.find { |klass, _| o.is_a?(klass) }&.last
+        if walker
+          walker.call(o) { |c, _| stack << c if c }
+        elsif ShareabilityTraversal.enumerable_but_not_basic?(o)
+          o.each { |e| stack << e if e } rescue nil
         end
       end
 
