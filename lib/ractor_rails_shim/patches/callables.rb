@@ -100,10 +100,30 @@ module RactorRailsShim
       def authenticatable?; @modules.any? { |m| m.to_s =~ /authenticatable/ }; end
       def no_input_strategies; @strategies & Devise::NO_INPUT; end
       def fullpath; "/#{@path_prefix}/#{@path}".squeeze("/"); end
-      # Devise::Mapping defines one `x?` predicate per Devise module
-      # (confirmable?, rememberable?, registerable?, ...) via `add_module`.
-      # Rather than enumerate them, fall back for any `x?` predicate to
-      # checking @modules — matching the generated behaviour.
+
+      # Explicit `x?` predicates for Devise's standard module set
+      # (devise-5.x/lib/devise/modules.rb). Defining these as real methods
+      # makes the message-based contract visible — a reader can see which
+      # predicates the snapshot answers without grepping Devise, and
+      # `method_defined?` returns true for them. Each returns true iff the
+      # module Symbol is in `@modules`, matching the generated
+      # `Devise::Mapping#x?` behaviour exactly.
+      def database_authenticatable?; @modules.include?(:database_authenticatable); end
+      def rememberable?;             @modules.include?(:rememberable);             end
+      def omniauthable?;             @modules.include?(:omniauthable);             end
+      def recoverable?;              @modules.include?(:recoverable);              end
+      def registerable?;             @modules.include?(:registerable);             end
+      def validatable?;              @modules.include?(:validatable);              end
+      def confirmable?;              @modules.include?(:confirmable);              end
+      def lockable?;                 @modules.include?(:lockable);                 end
+      def timeoutable?;              @modules.include?(:timeoutable);              end
+      def trackable?;                @modules.include?(:trackable);                end
+
+      # Fallback for custom modules added via `Devise.add_module` by
+      # third-party gems. The standard set is handled by the explicit
+      # methods above; anything else falls through here, answering `x?`
+      # predicates by checking `@modules` — matching the generated
+      # `Devise::Mapping.add_module` behaviour for non-standard modules.
       def respond_to_missing?(method, _)
         method.to_s.end_with?("?") || super
       end
