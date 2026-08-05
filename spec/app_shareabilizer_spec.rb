@@ -136,6 +136,111 @@ class AppShareabilizerSpec < Minitest::Spec
     RactorRailsShim.define_singleton_method(name, &blk)
   end
 
+  # --- Issue #23: injected collaborators (POODR §2 Dependencies) ---
+  #
+  # AppShareabilizer is the composition root that sequences 13 facade
+  # methods. Each is a collaborator reached through the RactorRailsShim
+  # facade by global name. The seam is `configure(...)` with 13 callable
+  # kwargs + `make_shareable_fn`; the defaults are the facade lookups so
+  # existing call sites keep working. The `@shareable_constants_done` gate
+  # and `SHAREABLE_APP` stash stay on the facade singleton here —
+  # Issue #24/#29 moves them.
+
+  it "responds to configure and reset_configuration" do
+    assert_respond_to RactorRailsShim::AppShareabilizer, :configure
+    assert_respond_to RactorRailsShim::AppShareabilizer, :reset_configuration
+  end
+
+  it "configure injects all 13 pipeline steps + make_shareable_fn" do
+    noop = ->(*) { }
+    RactorRailsShim::AppShareabilizer.configure(
+      apply_shareable_constants: noop,
+      install_all_framework_patches: noop,
+      precompute_lazy_ivars: noop,
+      precompute_propshaft: noop,
+      generate_ar_attribute_methods: noop,
+      warm_attribute_method_patterns: noop,
+      freeze_declared_callbacks: noop,
+      freeze_shareable_class_ivars: noop,
+      warm_journey_routes: noop,
+      neutralize_logger_io: noop,
+      replace_unshareable_procs: noop,
+      replace_locks_and_concurrent_maps: noop,
+      build_shareable_fallback: noop,
+      make_shareable_fn: ->(o) { o },
+      reassign_shareable_const: noop
+    )
+    # The readers return the injected callables.
+    assert_equal noop, RactorRailsShim::AppShareabilizer.apply_shareable_constants
+    assert_equal noop, RactorRailsShim::AppShareabilizer.build_shareable_fallback
+    assert_equal noop, RactorRailsShim::AppShareabilizer.reassign_shareable_const
+  ensure
+    RactorRailsShim::AppShareabilizer.reset_configuration
+  end
+
+  it "make_shareable! routes through the injected pipeline steps (not the facade)" do
+    called = []
+    RactorRailsShim::AppShareabilizer.configure(
+      apply_shareable_constants: -> { called << :apply_constants },
+      install_all_framework_patches: -> { called << :install_patches },
+      precompute_lazy_ivars: ->(a) { called << :precompute_lazy },
+      precompute_propshaft: ->(a) { called << :precompute_propshaft },
+      generate_ar_attribute_methods: -> { called << :generate_ar_attrs },
+      warm_attribute_method_patterns: -> { called << :warm_attr_patterns },
+      freeze_declared_callbacks: -> { called << :freeze_callbacks },
+      freeze_shareable_class_ivars: -> { called << :freeze_class_ivars },
+      warm_journey_routes: -> { called << :warm_routes },
+      neutralize_logger_io: ->(a) { called << :neutralize_logger },
+      replace_unshareable_procs: ->(a) { called << :replace_procs },
+      replace_locks_and_concurrent_maps: ->(a) { called << :replace_locks },
+      build_shareable_fallback: -> { called << :build_fallback },
+      make_shareable_fn: ->(o) { called << :make_shareable; o },
+      reassign_shareable_const: ->(s, v) { s }
+    )
+    RactorRailsShim.instance_variable_set(:@shareable_constants_done, true)
+    app = Object.new
+    RactorRailsShim::AppShareabilizer.make_shareable!(app)
+    expected = %i[install_patches precompute_lazy precompute_propshaft
+                  generate_ar_attrs warm_attr_patterns freeze_callbacks
+                  freeze_class_ivars warm_routes neutralize_logger
+                  replace_procs replace_locks make_shareable build_fallback]
+    assert_equal expected, called
+  ensure
+    RactorRailsShim.remove_instance_variable(:@shareable_constants_done) if
+      RactorRailsShim.instance_variable_defined?(:@shareable_constants_done)
+    RactorRailsShim::AppShareabilizer.reset_configuration
+  end
+
+  it "reset_configuration restores the facade-lookup defaults" do
+    RactorRailsShim::AppShareabilizer.configure(
+      apply_shareable_constants: ->(*) { },
+      reassign_shareable_const: ->(s, v) { v }
+    )
+    refute_equal RactorRailsShim.method(:_apply_shareable_constants!),
+                 RactorRailsShim::AppShareabilizer.apply_shareable_constants
+    refute_equal RactorRailsShim.method(:_reassign_shareable_const),
+                 RactorRailsShim::AppShareabilizer.reassign_shareable_const
+
+    RactorRailsShim::AppShareabilizer.reset_configuration
+    assert_equal RactorRailsShim.method(:_apply_shareable_constants!),
+                 RactorRailsShim::AppShareabilizer.apply_shareable_constants
+    assert_equal RactorRailsShim.method(:_reassign_shareable_const),
+                 RactorRailsShim::AppShareabilizer.reassign_shareable_const
+  ensure
+    RactorRailsShim::AppShareabilizer.reset_configuration
+  end
+
+  private
+
+  # Stub a private facade method for the duration of the test. The stub
+  # is restored in the teardown via @stubbed_origins. Accepts the method
+  # name and a block that receives the same args the facade method would.
+  def stub_facade_step(name, &blk)
+    @stubbed_origins ||= {}
+    @stubbed_origins[name] = RactorRailsShim.method(name) unless @stubbed_origins.key?(name)
+    RactorRailsShim.define_singleton_method(name, &blk)
+  end
+
   # Restore all stubbed facade methods between tests so state doesn't leak.
   def teardown
     super

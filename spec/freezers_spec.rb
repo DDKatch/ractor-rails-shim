@@ -495,4 +495,166 @@ class FreezersSpec < Minitest::Spec
   ensure
     RactorRailsShim::Freezers::MessagesConstantsFreezer.define_singleton_method(:call, original)
   end
+
+  # --- Issue #23: injected collaborators (POODR §2 Dependencies) ---
+  #
+  # Each Freezers::* sub-module reaches its collaborators (the _swallow
+  # debug funnel and _safe_const_get helper) through the RactorRailsShim
+  # facade by global name. The seam is per-sub-module `configure(funnel:,
+  # safe_const_get:)` + `reset_configuration` + readers, defaulting to the
+  # facade lookups so existing call sites keep working.
+
+  it "CacheWarmer responds to configure/reset_configuration/funnel" do
+    f = RactorRailsShim::Freezers::CacheWarmer
+    assert_respond_to f, :configure
+    assert_respond_to f, :reset_configuration
+    assert_respond_to f, :funnel
+  end
+
+  it "CacheWarmer.call funnels per-method failures through an injected funnel" do
+    funneled = []
+    funnel = ->(label, &blk) { funneled << label; blk&.call rescue StandardError; }
+    RactorRailsShim::Freezers::CacheWarmer.configure(funnel: funnel)
+    fake_base = Class.new
+    fake_base.define_singleton_method(:sequence_name) { raise "boom" }
+    fake_base.define_singleton_method(:abstract_class?) { false }
+    fake_base.define_singleton_method(:descendants) { [] }
+    prev_ar = Object.const_defined?(:ActiveRecord) ? ::ActiveRecord : nil
+    had_ar = Object.const_defined?(:ActiveRecord)
+    Object.send(:remove_const, :ActiveRecord) if had_ar
+    fake_ar = Module.new
+    Object.const_set(:ActiveRecord, fake_ar)
+    fake_ar.const_set(:Base, fake_base)
+    RactorRailsShim::Freezers::CacheWarmer.call
+    assert(funneled.any? { |l| l.include?("warm AR cache") },
+           "expected a warm-AR-cache funnel label, got #{funneled.inspect}")
+  ensure
+    RactorRailsShim::Freezers::CacheWarmer.reset_configuration
+    Object.send(:remove_const, :ActiveRecord) if Object.const_defined?(:ActiveRecord) && !prev_ar
+    Object.const_set(:ActiveRecord, prev_ar) if prev_ar
+  end
+
+  it "ClassIvarFreezer responds to configure/reset_configuration/funnel" do
+    f = RactorRailsShim::Freezers::ClassIvarFreezer
+    assert_respond_to f, :configure
+    assert_respond_to f, :reset_configuration
+    assert_respond_to f, :funnel
+  end
+
+  it "ClassIvarFreezer.call funnels ivar-freeze failures through an injected funnel" do
+    funneled = []
+    funnel = ->(label, &blk) { funneled << label; blk&.call rescue StandardError; }
+    RactorRailsShim::Freezers::ClassIvarFreezer.configure(funnel: funnel)
+    fake_base = Class.new
+    fake_base.instance_variable_set(:@proc, ->(*) { :x })
+    fake_base.define_singleton_method(:descendants) { [] }
+    fake_base.define_singleton_method(:abstract_class?) { false }
+    prev_ar = Object.const_defined?(:ActiveRecord) ? ::ActiveRecord : nil
+    had_ar = Object.const_defined?(:ActiveRecord)
+    Object.send(:remove_const, :ActiveRecord) if had_ar
+    fake_ar = Module.new
+    Object.const_set(:ActiveRecord, fake_ar)
+    fake_ar.const_set(:Base, fake_base)
+    RactorRailsShim::Freezers::ClassIvarFreezer.call
+    assert(funneled.any? { |l| l.include?("freeze AR ivar") },
+           "expected a freeze-AR-ivar funnel label, got #{funneled.inspect}")
+  ensure
+    RactorRailsShim::Freezers::ClassIvarFreezer.reset_configuration
+    Object.send(:remove_const, :ActiveRecord) if Object.const_defined?(:ActiveRecord) && !prev_ar
+    Object.const_set(:ActiveRecord, prev_ar) if prev_ar
+  end
+
+  it "GlobalClassIvarFreezer responds to configure/reset_configuration/funnel/safe_const_get" do
+    f = RactorRailsShim::Freezers::GlobalClassIvarFreezer
+    assert_respond_to f, :configure
+    assert_respond_to f, :reset_configuration
+    assert_respond_to f, :funnel
+    assert_respond_to f, :safe_const_get
+  end
+
+  it "GlobalClassIvarFreezer.call resolves targets via an injected safe_const_get" do
+    resolved = []
+    scg = ->(name) { resolved << name; nil }
+    RactorRailsShim::Freezers::GlobalClassIvarFreezer.configure(safe_const_get: scg)
+    RactorRailsShim::Freezers::GlobalClassIvarFreezer.call
+    assert_includes resolved, "Time"
+    assert_includes resolved, "Date"
+    assert_includes resolved, "DateTime"
+    assert_includes resolved, "I18n"
+  ensure
+    RactorRailsShim::Freezers::GlobalClassIvarFreezer.reset_configuration
+  end
+
+  it "GlobalConstantFreezer responds to configure/reset_configuration/safe_const_get" do
+    f = RactorRailsShim::Freezers::GlobalConstantFreezer
+    assert_respond_to f, :configure
+    assert_respond_to f, :reset_configuration
+    assert_respond_to f, :safe_const_get
+  end
+
+  it "GlobalConstantFreezer.call resolves targets via an injected safe_const_get" do
+    resolved = []
+    scg = ->(name) { resolved << name; nil }
+    RactorRailsShim::Freezers::GlobalConstantFreezer.configure(safe_const_get: scg)
+    RactorRailsShim::Freezers::GlobalConstantFreezer.call
+    assert_includes resolved, "Time"
+    assert_includes resolved, "Date"
+    assert_includes resolved, "DateTime"
+  ensure
+    RactorRailsShim::Freezers::GlobalConstantFreezer.reset_configuration
+  end
+
+  it "MessagesConstantsFreezer responds to configure/reset_configuration/safe_const_get" do
+    f = RactorRailsShim::Freezers::MessagesConstantsFreezer
+    assert_respond_to f, :configure
+    assert_respond_to f, :reset_configuration
+    assert_respond_to f, :safe_const_get
+  end
+
+  it "MessagesConstantsFreezer.call resolves via an injected safe_const_get" do
+    resolved = []
+    scg = ->(name, **kw) { resolved << name; nil }
+    RactorRailsShim::Freezers::MessagesConstantsFreezer.configure(safe_const_get: scg)
+    RactorRailsShim::Freezers::MessagesConstantsFreezer.define_singleton_method(:msgpack_available?) { true }
+    RactorRailsShim::Freezers::MessagesConstantsFreezer.define_singleton_method(:_load_message_pack) { }
+    RactorRailsShim::Freezers::MessagesConstantsFreezer.call
+    assert_includes resolved, "ActiveSupport::Messages::Metadata"
+  ensure
+    RactorRailsShim::Freezers::MessagesConstantsFreezer.reset_configuration
+  end
+
+  it "reset_configuration restores the facade-lookup defaults for all Freezers" do
+    funnel_only = [RactorRailsShim::Freezers::CacheWarmer,
+                   RactorRailsShim::Freezers::ClassIvarFreezer]
+    both = [RactorRailsShim::Freezers::GlobalClassIvarFreezer]
+    scg_only = [RactorRailsShim::Freezers::GlobalConstantFreezer,
+                RactorRailsShim::Freezers::MessagesConstantsFreezer]
+
+    funnel_only.each do |f|
+      f.configure(funnel: ->(l, &b) { b&.call })
+      refute_equal RactorRailsShim.method(:_swallow), f.funnel
+      f.reset_configuration
+      assert_equal RactorRailsShim.method(:_swallow), f.funnel
+    end
+    both.each do |f|
+      f.configure(funnel: ->(l, &b) { b&.call }, safe_const_get: ->(n, **k) { nil })
+      refute_equal RactorRailsShim.method(:_swallow), f.funnel
+      refute_equal RactorRailsShim.method(:_safe_const_get), f.safe_const_get
+      f.reset_configuration
+      assert_equal RactorRailsShim.method(:_swallow), f.funnel
+      assert_equal RactorRailsShim.method(:_safe_const_get), f.safe_const_get
+    end
+    scg_only.each do |f|
+      f.configure(safe_const_get: ->(n, **k) { nil })
+      refute_equal RactorRailsShim.method(:_safe_const_get), f.safe_const_get
+      f.reset_configuration
+      assert_equal RactorRailsShim.method(:_safe_const_get), f.safe_const_get
+    end
+  ensure
+    [RactorRailsShim::Freezers::CacheWarmer,
+     RactorRailsShim::Freezers::ClassIvarFreezer,
+     RactorRailsShim::Freezers::GlobalClassIvarFreezer,
+     RactorRailsShim::Freezers::GlobalConstantFreezer,
+     RactorRailsShim::Freezers::MessagesConstantsFreezer].each { |f| f.reset_configuration }
+  end
 end
