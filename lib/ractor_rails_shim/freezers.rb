@@ -119,7 +119,14 @@ module RactorRailsShim
         @safe_const_get || RactorRailsShim::ConstantShareabilizer.method(:safe_const_get)
       end
 
-      TARGETS = Ractor.make_shareable(%w[Time Date DateTime I18n].freeze)
+      # Mutable target list — downstream apps can register their own global
+      # classes via add_target without monkey-patching. Read at boot time
+      # (main Ractor only) before workers spawn.
+      TARGETS = %w[Time Date DateTime I18n]
+
+      def self.add_target(class_name)
+        TARGETS << class_name unless TARGETS.include?(class_name)
+      end
 
       def self.call
         classes = TARGETS.filter_map { |n| safe_const_get.call(n) }
@@ -138,17 +145,24 @@ module RactorRailsShim
 
     module GlobalConstantFreezer
       @safe_const_get = nil
+      @funnel = nil
 
-      def self.configure(safe_const_get: nil)
+      def self.configure(safe_const_get: nil, funnel: nil)
         @safe_const_get = safe_const_get
+        @funnel = funnel
       end
 
       def self.reset_configuration
         @safe_const_get = nil
+        @funnel = nil
       end
 
       def self.safe_const_get
         @safe_const_get || RactorRailsShim::ConstantShareabilizer.method(:safe_const_get)
+      end
+
+      def self.funnel
+        @funnel || RactorRailsShim::Funnel.method(:swallow)
       end
 
       # Mutable target list — downstream apps can register their own
@@ -181,8 +195,8 @@ module RactorRailsShim
           end
           begin
             mod.const_set(name, shareable)
-          rescue StandardError
-            nil
+          rescue StandardError => e
+            funnel.call("freeze global constant #{mod}::#{name}") { raise e }
           end
         end
         true
@@ -204,7 +218,13 @@ module RactorRailsShim
         @safe_const_get || RactorRailsShim::ConstantShareabilizer.method(:safe_const_get)
       end
 
-      TARGET_NAMES = Ractor.make_shareable(%i[ENVELOPE_SERIALIZERS TIMESTAMP_SERIALIZERS].freeze)
+      # Mutable target list — downstream apps can register their own
+      # message-serializer constants via add_target without monkey-patching.
+      TARGET_NAMES = %i[ENVELOPE_SERIALIZERS TIMESTAMP_SERIALIZERS]
+
+      def self.add_target(name)
+        TARGET_NAMES << name unless TARGET_NAMES.include?(name)
+      end
 
       def self.msgpack_available?
         Gem::Specification.find_all_by_name("msgpack").any?
@@ -264,6 +284,20 @@ module RactorRailsShim
         @safe_const_get || RactorRailsShim::ConstantShareabilizer.method(:safe_const_get)
       end
 
+      # Mutable registry of [class_name, method_name] pairs to pre-touch
+      # before the main shareable-class-ivar freeze. A pre-touch forces
+      # lazy memoizing accessors to populate in the MAIN Ractor so workers
+      # don't try to write the (now frozen) ivar on first read. Downstream
+      # apps can register their own entries via add_pre_touch.
+      PRE_TOUCH = [
+        ["ActiveSupport::Editor", :current],
+        ["Warden::Strategies", :_strategies],
+      ]
+
+      def self.add_pre_touch(class_name, method_name)
+        PRE_TOUCH << [class_name, method_name] unless PRE_TOUCH.any? { |n, m| n == class_name && m == method_name }
+      end
+
       def self.call
         RactorRailsShim::Registry.shareable_class_ivars.each do |(class_name, ivar)|
           mod = safe_const_get.call(class_name)
@@ -277,11 +311,14 @@ module RactorRailsShim
         end
         # Pre-touch memoizing accessors so workers short-circuit instead of
         # writing the (now frozen) ivar on first read (FrozenError avoidance).
-        funnel.call("freeze global ivar ActiveSupport::Editor.current") do
-          ::ActiveSupport::Editor.current if defined?(::ActiveSupport::Editor)
-        end
-        funnel.call("freeze global ivar Warden::Strategies._strategies") do
-          ::Warden::Strategies._strategies if defined?(::Warden::Strategies)
+        # Walked from the PRE_TOUCH registry (Issue #41) — data-driven
+        # instead of hardcoded.
+        PRE_TOUCH.each do |class_name, method_name|
+          mod = safe_const_get.call(class_name)
+          next unless mod && mod.respond_to?(method_name, true)
+          funnel.call("pre-touch #{class_name}.#{method_name}") do
+            mod.send(method_name)
+          end
         end
         true
       end

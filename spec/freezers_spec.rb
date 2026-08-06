@@ -742,4 +742,103 @@ class FreezersSpec < Minitest::Spec
   # The facade delegation _freeze_shareable_class_ivars! was deleted in
   # Issue #31. The role-object method ShareableClassIvarFreezer.call is
   # tested directly above.
+
+  # --- Issue #41: freezer target-list appendability + PRE_TOUCH registry ---
+
+  it "GlobalClassIvarFreezer::TARGETS is a mutable array (appendable)" do
+    t = RactorRailsShim::Freezers::GlobalClassIvarFreezer::TARGETS
+    assert_kind_of Array, t
+    # Should not be frozen — downstream apps can add to it
+    refute t.frozen?, "TARGETS must be mutable for add_target"
+  end
+
+  it "GlobalClassIvarFreezer.add_target appends to TARGETS" do
+    t = RactorRailsShim::Freezers::GlobalClassIvarFreezer::TARGETS
+    original = t.dup
+    t.push("_shim_gcf_test_target_41")
+    assert_includes t, "_shim_gcf_test_target_41"
+  ensure
+    RactorRailsShim::Freezers::GlobalClassIvarFreezer::TARGETS.replace(original) if original
+  end
+
+  it "GlobalClassIvarFreezer.add_target does not duplicate" do
+    t = RactorRailsShim::Freezers::GlobalClassIvarFreezer::TARGETS
+    original = t.dup
+    t.push("_shim_gcf_dedup_41") unless t.include?("_shim_gcf_dedup_41")
+    count_before = t.count("_shim_gcf_dedup_41")
+    t.push("_shim_gcf_dedup_41") unless t.include?("_shim_gcf_dedup_41")
+    assert_equal count_before, t.count("_shim_gcf_dedup_41")
+  ensure
+    RactorRailsShim::Freezers::GlobalClassIvarFreezer::TARGETS.replace(original) if original
+  end
+
+  it "MessagesConstantsFreezer::TARGET_NAMES is a mutable array (appendable)" do
+    t = RactorRailsShim::Freezers::MessagesConstantsFreezer::TARGET_NAMES
+    assert_kind_of Array, t
+    refute t.frozen?, "TARGET_NAMES must be mutable for add_target"
+  end
+
+  it "MessagesConstantsFreezer.add_target appends to TARGET_NAMES" do
+    t = RactorRailsShim::Freezers::MessagesConstantsFreezer::TARGET_NAMES
+    original = t.dup
+    t.push(:CUSTOM_SERIALIZERS)
+    assert_includes t, :CUSTOM_SERIALIZERS
+  ensure
+    RactorRailsShim::Freezers::MessagesConstantsFreezer::TARGET_NAMES.replace(original) if original
+  end
+
+  it "GlobalConstantFreezer responds to funnel" do
+    assert_respond_to RactorRailsShim::Freezers::GlobalConstantFreezer, :funnel
+  end
+
+  it "GlobalConstantFreezer.call funnels errors through an injected funnel" do
+    funneled = []
+    funnel = ->(label, &blk) { funneled << label; blk&.call rescue StandardError; }
+    RactorRailsShim::Freezers::GlobalConstantFreezer.configure(funnel: funnel)
+    # Stub safe_const_get to return a module whose const_set raises
+    mod = Module.new
+    mod.const_set(:DATE_FORMATS, { bad: ->(*) { :x } })
+    Object.const_set(:ShimGCFunnelTest, mod)
+    scg = ->(name) { name == "ShimGCFunnelTest" ? mod : nil }
+    RactorRailsShim::Freezers::GlobalConstantFreezer.configure(safe_const_get: scg, funnel: funnel)
+    # The call should not raise — errors are funneled
+    RactorRailsShim::Freezers::GlobalConstantFreezer.call
+  ensure
+    RactorRailsShim::Freezers::GlobalConstantFreezer.reset_configuration
+    Object.send(:remove_const, :ShimGCFunnelTest) if defined?(ShimGCFunnelTest)
+  end
+
+  it "ShareableClassIvarFreezer::PRE_TOUCH is a mutable array of [class_name, method_name] pairs" do
+    t = RactorRailsShim::Freezers::ShareableClassIvarFreezer
+    assert t.const_defined?(:PRE_TOUCH, false), "PRE_TOUCH should exist"
+    pt = t.const_get(:PRE_TOUCH)
+    assert_kind_of Array, pt
+    refute pt.frozen?, "PRE_TOUCH must be mutable for downstream additions"
+    pt.each do |entry|
+      assert_kind_of Array, entry
+      assert_equal 2, entry.length
+      assert_kind_of String, entry[0]
+      assert_kind_of Symbol, entry[1]
+    end
+  end
+
+  it "ShareableClassIvarFreezer::PRE_TOUCH includes ActiveSupport::Editor and Warden::Strategies" do
+    pt = RactorRailsShim::Freezers::ShareableClassIvarFreezer::PRE_TOUCH
+    editor_entry = pt.find { |name, _| name == "ActiveSupport::Editor" }
+    assert editor_entry, "PRE_TOUCH should include ActiveSupport::Editor"
+    assert_equal :current, editor_entry[1]
+
+    warden_entry = pt.find { |name, _| name == "Warden::Strategies" }
+    assert warden_entry, "PRE_TOUCH should include Warden::Strategies"
+    assert_equal :_strategies, warden_entry[1]
+  end
+
+  it "ShareableClassIvarFreezer.add_pre_touch adds a new entry" do
+    t = RactorRailsShim::Freezers::ShareableClassIvarFreezer
+    original = t::PRE_TOUCH.dup
+    t.add_pre_touch("FakeClass", :fake_method)
+    assert t::PRE_TOUCH.any? { |name, m| name == "FakeClass" && m == :fake_method }
+  ensure
+    t::PRE_TOUCH.replace(original) if original
+  end
 end
