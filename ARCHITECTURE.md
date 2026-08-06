@@ -232,3 +232,85 @@ main** that swaps worker pools; workers are always non-main.
   `SHAREABLE_CONSTANTS` (mutable module constants read by workers). `config_ractor.ru`
   made mode-aware (`KINO_MODE`/`RAILS_ENV`). Verified: prod `:ractor` and dev
   `:threaded` both serve all routes 200.
+
+## 9. File structure: layered, POODR-aligned design
+
+The directory structure mirrors the dependency layers:
+
+```
+Layer 1: Entry        ractor_rails_shim.rb, loader.rb
+Layer 2: Foundation   foundation/  (no internal deps)
+Layer 3: Roles        roles/       (depend on foundation)
+Layer 4: Patches      patches/     (depend on roles + foundation)
+```
+
+The gem follows **Practical Object-Oriented Design in Ruby** (POODR)
+principles. Every file defines exactly one concern.
+
+### Layer 1: Entry point + loader
+
+- `lib/ractor_rails_shim.rb` — the entry point. Requires version, loader,
+  and check. Defines `autoload_install!` convenience method. Auto-installs
+  if Rails is loaded.
+- `lib/ractor_rails_shim/loader.rb` — pure require hub. One file, one job:
+  require every component in dependency order. No constants, no logic, no
+  class/module definitions.
+- `lib/ractor_rails_shim/patches.rb` — backward-compatibility redirect to
+  `loader.rb`. Exists so `require "ractor_rails_shim/patches"` still works.
+
+### Layer 2: Foundation modules — foundation/ (no internal deps)
+
+- `funnel.rb` — debug-aware exception-swallowing role
+- `registry.rb` — canonical home for the nine shared registries
+- `storage.rb` — pluggable key-value store contract (IES / ThreadLocal)
+- `storage_strategy.rb` — composed Ractor/Thread strategy for class_attribute
+- `ies_accessor.rb` — 3-tier IES lookup pattern generator
+- `const_reassign.rb` — $VERBOSE-suppressed const_set utility
+- `version_check.rb` — Ruby/Rails version detection (Gem::Version-based)
+- `version_policy.rb` — mismatch policy (:warn/:strict/:off) + patch registry
+- `run_mode.rb` — thread vs Ractor mode decision
+- `role_defaults.rb` — DRY mixin for shared default-proc patterns
+
+### Layer 3: Role objects — roles/ (depend on foundation)
+
+Each role object:
+- lives in `lib/ractor_rails_shim/roles/<role>.rb`
+- exposes `self.call` (or a small set of class methods)
+- receives collaborators via `configure` seams (keyword arguments)
+- defaults to facade lookups when seams are unset
+- gets its own spec file under `spec/<role>_spec.rb`
+
+Role objects:
+- `lifecycle.rb` — prepare_for_ractors! orchestration
+- `installer.rb` — install orchestrator + framework-patch dispatcher
+- `install_strategy.rb` — per-mode install bodies (Ractor / Thread)
+- `pre_spawn_steps.rb` — shared orchestration steps
+- `ar_model_walker.rb` — ActiveRecord model enumeration
+- `constant_shareabilizer.rb` — constant shareability
+- `shareability_traversal.rb` — app-graph traversal
+- `callback_capture.rb` — callback-declaration capture
+- `fallback_builder.rb` — shareable-fallback builder
+- `worker_app.rb` — shareable Rack wrapper (per-worker init)
+- `worker_app_factory.rb` — shareable-Rack-app factory
+- `app_shareabilizer.rb` — make_app_shareable! orchestrator
+- `freezers.rb` — freeze/warm sub-domain (6 freezer roles)
+- `logger_io_neutralizer.rb` — logger IO detachment
+- `fallback_ies.rb` — backward-compat alias → Storage::ThreadLocal
+- `check.rb` — ractor-rails-check audit
+
+### Layer 4: Patch files — patches/ (depend on roles + foundation)
+
+Each patch file reopens `RactorRailsShim`'s singleton class to add
+`_install_*` methods. The loader requires them in dependency order
+(`core.rb` first). Each `_install_*` is idempotent.
+
+### POODR principles applied
+
+| Principle | Application |
+|---|---|
+| **SRP (§1)** | Every file defines one concern. `loader.rb` is a pure require hub. `lifecycle.rb` owns `prepare_for_ractors!`. Role objects each own one responsibility. |
+| **Dependencies (§2)** | Role objects receive collaborators via `configure` seams, defaulting to facade lookups. Only the composition root (`Installer`) resolves by name. |
+| **Interfaces (§3)** | `Storage` contract (`[]`, `[]=`, `key?`, `delete`) implemented by `Storage::IES` and `Storage::ThreadLocal`. `StorageStrategy` contract implemented by `Ractor` and `Thread`. |
+| **Duck Typing (§4)** | `CONTAINER_WALKERS` dispatch table instead of `is_a?` chains. `respond_to?(:synchronize)` instead of `is_a?(Mutex)`. |
+| **Composition (§5)** | `AppShareabilizer` composes 15 collaborators. `FallbackBuilder` uses `ValueLookup` chain of responsibility. `Installer` selects strategies. |
+| **Roles (§6)** | Modules as roles (`Funnel`, `ARModelWalker`, etc.) — each `extend RoleDefaults` for DRY defaults. |

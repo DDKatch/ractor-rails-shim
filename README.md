@@ -64,49 +64,123 @@ kino `:ractor` vs Puma vs Falcon are documented in
 ## Repository layout
 
 ```
-lib/ractor_rails_shim.rb            # entry point — autoload-install if Rails is loaded
+lib/ractor_rails_shim.rb                  # entry point — autoload-install if Rails is loaded
 lib/ractor_rails_shim/
-  version.rb                        # VERSION constant (currently 0.2.5)
-  version_check.rb                  # Gem::Version-based Ruby/Rails detection + policy
-  fallback_ies.rb                   # thread-local IES shim when ActiveSupport is absent
-  check.rb                          # the ractor-rails-check audit (Check.scan / report)
-  patches.rb                        # requires all per-concern patch files in order
-  patches/
-    core.rb                         # module skeleton, registries, install, prepare_for_ractors!, WorkerApp
-    make_shareable.rb               # make_app_shareable!, callable/lock replacement, shareable fallback
-    rails_module.rb                 # Rails.application / Rails.cache / Rails.logger / Rails.env …
-    mattr_accessor.rb               # Module#mattr_accessor / cattr_accessor macro rewrite
-    class_attribute.rb              # ActiveSupport class_attribute macro rewrite
-    zeitwerk_registry.rb            # Zeitwerk::Registry class ivars
-    route_helpers.rb                # ActionDispatch::Routing::RouteSet#generate_url_helpers
-    url_helpers.rb                  # URL helper singleton + module fixes
-    execution_wrapper.rb            # ActiveSupport::ExecutionWrapper + callback replay
-    rack.rb                         # Rack::Request / Rack::Utils
-    action_view.rb                  # PathRegistry, LookupContext, Template handlers, compiled_method_container
-    action_controller.rb            # AbstractController, ActionController name/encoding
-    action_dispatch.rb              # ActionDispatch routing, http_url, journey, mounted helpers
-    polymorphic_routes.rb           # polymorphic_path(s) URL helpers
-    active_support.rb               # Inflector, error_reporter, ExecutionContext, I18n, JSON encoding, Reloader
-    warden.rb                       # Warden hooks / strategies / serializer
-    devise.rb                       # Devise url_helpers / authenticatable / failure_app
-    active_model_attribute.rb       # ActiveModel::Attribute dup_or_share for frozen graphs
-    active_record_model_schema.rb   # AR ModelSchema reload_schema_from_cache (worker-safe)
-    activerecord.rb                 # AR connection handler, configurations, query caches, …
-    kaminari.rb                     # Kaminari config
-    propshaft.rb                    # Propshaft asset server
-    orm_adapter.rb                  # orm_adapter
-    openssl.rb                      # OpenSSL digest cache
-    rubygems.rb                     # Rubygems msgpack pre-check
-exe/ractor-rails-check              # CLI audit tool
-spec/                               # 7 spec files, 61 unit tests (no Rails dep) + integration spec
-script/make_test_app.sh             # build the minimal Rails 8.1 test app (CI uses this)
-script/make_full_test_app.sh        # build the full-featured test app (Devise/PG/Kaminari)
-.github/workflows/ci.yml            # unit job + integration job (GET /up → 200 in a worker Ractor)
+  version.rb                              # VERSION constant (currently 0.3.0)
+  loader.rb                               # pure require hub — one file, one job (POODR §1)
+  patches.rb                              # backward-compat redirect → loader.rb
+
+  foundation/                             # Layer 2: no internal deps
+    funnel.rb                             #   debug-aware exception-swallowing role
+    registry.rb                           #   canonical home for the nine shared registries
+    storage.rb                            #   pluggable key-value store contract (IES / ThreadLocal)
+    storage_strategy.rb                   #   composed Ractor/Thread strategy for class_attribute
+    ies_accessor.rb                       #   3-tier IES lookup pattern generator
+    const_reassign.rb                     #   $VERBOSE-suppressed const_set utility
+    version_check.rb                      #   Gem::Version-based Ruby/Rails detection
+    version_policy.rb                     #   mismatch policy (:warn/:strict/:off) + patch registry
+    run_mode.rb                           #   thread vs Ractor mode decision
+    role_defaults.rb                      #   DRY mixin for shared default-proc patterns
+
+  roles/                                  # Layer 3: depend on foundation
+    lifecycle.rb                          #   prepare_for_ractors! orchestration
+    installer.rb                          #   install orchestrator + framework-patch dispatcher
+    install_strategy.rb                   #   per-mode install bodies (Ractor / Thread)
+    pre_spawn_steps.rb                    #   shared orchestration steps
+    ar_model_walker.rb                    #   ActiveRecord model enumeration
+    constant_shareabilizer.rb             #   constant shareability
+    shareability_traversal.rb             #   app-graph traversal
+    callback_capture.rb                   #   callback-declaration capture
+    fallback_builder.rb                   #   shareable-fallback builder
+    worker_app.rb                         #   shareable Rack wrapper (per-worker init)
+    worker_app_factory.rb                 #   shareable-Rack-app factory
+    app_shareabilizer.rb                  #   make_app_shareable! orchestrator
+    freezers.rb                           #   freeze/warm sub-domain (6 freezer roles)
+    logger_io_neutralizer.rb              #   logger IO detachment
+    fallback_ies.rb                       #   backward-compat alias → Storage::ThreadLocal
+    check.rb                              #   ractor-rails-check audit (Check.scan / report)
+
+  patches/                                # Layer 4: monkey-patches (depend on roles + foundation)
+    core.rb                               #   module skeleton, registries, facade delegations
+    callables.rb                          #   NoOpProc, Callable, CallableConst, RequestCallable, …
+    make_shareable.rb                     #   make_app_shareable!, proc/lock replacement
+    rails_module.rb                       #   Rails.application / Rails.cache / Rails.logger / Rails.env …
+    mattr_accessor.rb                     #   Module#mattr_accessor / cattr_accessor macro rewrite
+    class_attribute.rb                    #   ActiveSupport class_attribute macro rewrite
+    zeitwerk_registry.rb                  #   Zeitwerk::Registry class ivars
+    route_helpers.rb                      #   ActionDispatch::Routing::RouteSet#generate_url_helpers
+    url_helpers.rb                        #   URL helper singleton + module fixes
+    execution_wrapper.rb                  #   ActiveSupport::ExecutionWrapper + callback replay
+    rack.rb                               #   Rack::Request / Rack::Utils
+    action_view.rb                        #   PathRegistry, LookupContext, Template handlers
+    action_controller.rb                  #   AbstractController, ActionController name/encoding
+    action_dispatch.rb                    #   ActionDispatch routing, http_url, journey
+    polymorphic_routes.rb                 #   polymorphic_path(s) URL helpers
+    active_support.rb                     #   Inflector, error_reporter, ExecutionContext, I18n, JSON
+    i18n.rb                               #   I18n locale/fallback patches
+    warden.rb                             #   Warden hooks / strategies / serializer
+    devise.rb                             #   Devise url_helpers / authenticatable / failure_app
+    active_model_attribute.rb             #   ActiveModel::Attribute dup_or_share for frozen graphs
+    active_record_model_schema.rb         #   AR ModelSchema reload_schema_from_cache
+    activerecord.rb                       #   AR connection handler, configurations, query caches
+    kaminari.rb                           #   Kaminari config
+    propshaft.rb                          #   Propshaft asset server
+    orm_adapter.rb                        #   orm_adapter
+    openssl.rb                            #   OpenSSL digest cache
+    rubygems.rb                           #   Rubygems msgpack pre-check
+    hash_compute_if_absent.rb             #   Hash#compute_if_absent for Concurrent::Map replacement
+
+exe/ractor-rails-check                    # CLI audit tool
+spec/                                     # 724 unit tests (no Rails dep) + integration spec
+script/make_test_app.sh                   # build the minimal Rails 8.1 test app (CI uses this)
+script/make_full_test_app.sh              # build the full-featured test app (Devise/PG/Kaminari)
+.github/workflows/ci.yml                  # unit job + integration job (GET /up → 200 in a worker Ractor)
 ```
 
+### Architecture: layered, POODR-aligned design
+
+The directory structure mirrors the dependency layers:
+
+```
+Layer 1: Entry        ractor_rails_shim.rb, loader.rb
+Layer 2: Foundation   foundation/  (no internal deps)
+Layer 3: Roles        roles/       (depend on foundation)
+Layer 4: Patches      patches/     (depend on roles + foundation)
+```
+
+The gem follows **Practical Object-Oriented Design in Ruby** (POODR) principles:
+
+- **SRP (§1):** Every file defines exactly one concern. `loader.rb` is a pure
+  require hub (no logic). `lifecycle.rb` owns `prepare_for_ractors!` orchestration.
+  Role objects (`Funnel`, `Registry`, `CallbackCapture`, etc.) each own one
+  responsibility.
+
+- **Dependencies (§2):** Role objects receive collaborators via `configure` seams
+  (keyword arguments), defaulting to facade lookups. No role reaches past its
+  own namespace by name — the composition root (`Installer`) is the one place
+  allowed to resolve by name.
+
+- **Interfaces (§3):** The `Storage` contract (`[]`, `[]=`, `key?`, `delete`)
+  is implemented by `Storage::IES` and `Storage::ThreadLocal`. The
+  `StorageStrategy` contract (`lookup`, `store`, `replay_callbacks?`,
+  `replay_callbacks!`) is implemented by `StorageStrategy::Ractor` and
+  `StorageStrategy::Thread`.
+
+- **Duck Typing (§4):** `ShareabilityTraversal` uses a `CONTAINER_WALKERS`
+  dispatch table (Hash → lambda) instead of `is_a?` chains. Lock detection
+  uses `respond_to?(:synchronize)` instead of `is_a?(Mutex)`.
+
+- **Composition (§5):** `AppShareabilizer` composes 15 collaborators via the
+  configure seam. `FallbackBuilder` uses a `ValueLookup` chain of responsibility.
+  `Installer` selects between `InstallStrategy::Ractor` and `InstallStrategy::Thread`.
+
+- **Roles (§6):** Modules as roles (`Funnel`, `ARModelWalker`,
+  `ConstantShareabilizer`, `CallbackCapture`, etc.) — each `extend RoleDefaults`
+  for DRY default-proc patterns.
+
 Per-concern patch files reopen `RactorRailsShim`'s singleton class to add
-their `_install_*` methods. `patches.rb` requires them in dependency order
-(`core.rb` first — it defines the module skeleton + registries the rest
+their `_install_*` methods. `loader.rb` requires them in dependency order
+(`core.rb` first — it defines the module skeleton + constants that others
 reference). Each `_install_*` method is idempotent (guarded by its own
 `@*_patched` flag), so `install`, `prepare_for_ractors!`, and
 `make_app_shareable!` can all call the full set safely.
