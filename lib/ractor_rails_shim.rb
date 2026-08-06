@@ -2,7 +2,6 @@
 
 require_relative "ractor_rails_shim/version"
 require_relative "ractor_rails_shim/loader"
-require_relative "ractor_rails_shim/check"
 
 # A monkey-patch shim that reroutes Rails' class-level instance variable
 # accessors (Rails.application, Rails.cache, Rails.logger, mattr_accessor,
