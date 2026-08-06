@@ -284,6 +284,23 @@ module RactorRailsShim
           def request_forgery_protection_token
             super || :authenticity_token
           end
+
+          # `allow_forgery_protection` is delegated to `config` (a class_attribute
+          # carrying the full, unshareable action_controller config graph). That
+          # graph cannot be deep-frozen, so the shareable fallback built at
+          # prepare_for_ractors! falls back to the EMPTY default — and a worker's
+          # view `config` therefore reports `allow_forgery_protection = nil`,
+          # making `protect_against_forgery?` false and suppressing CSRF token
+          # issuance (no `<meta name="csrf-token">`, no hidden form field). The
+          # CLASS-level `ActionController::Base.config.allow_forgery_protection`
+          # IS correct in workers (it reads the frozen shareable class config),
+          # so fall back to it when the per-instance/config value is unavailable.
+          # The real value still wins whenever it is readable (main, or workers
+          # whose config propagated), so apps that disable forgery protection
+          # are unaffected.
+          def allow_forgery_protection
+            super || ::ActionController::Base.config.allow_forgery_protection
+          end
         end)
       end
 
