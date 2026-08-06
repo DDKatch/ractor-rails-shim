@@ -69,7 +69,8 @@ module RactorRailsShim
       if defined?(::ActionDispatch::Routing::RouteSet::NamedRouteCollection)
         ::ActionDispatch::Routing::RouteSet::NamedRouteCollection.class_eval <<-RUBY, __FILE__, __LINE__ + 1
           def add_url_helper(name, defaults, &block)
-            helper = CustomUrlHelper.new(name, defaults, &block)
+            helper_class = defined?(CustomUrlHelper) ? CustomUrlHelper : UrlHelper
+            helper = helper_class.new(name, defaults, &block)
             path_name = :"\#{name}_path"
             url_name  = :"\#{name}_url"
             @path_helpers_module.const_set(:"RRS_HELPER_\#{path_name}", helper)
