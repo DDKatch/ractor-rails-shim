@@ -14,7 +14,7 @@
 require "minitest/autorun"
 require "active_support/isolated_execution_state"
 require "active_support"
-require_relative "../lib/ractor_rails_shim/fallback_ies"
+require_relative "../lib/ractor_rails_shim/roles/fallback_ies"
 require_relative "../lib/ractor_rails_shim/patches"
 
 class LoggerIONeutralizerSpec < Minitest::Spec

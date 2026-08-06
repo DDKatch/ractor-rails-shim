@@ -22,7 +22,7 @@ require "minitest/autorun"
 require "set"
 require "active_support/class_attribute"
 require "active_support/execution_wrapper"
-require_relative "../lib/ractor_rails_shim/fallback_ies"
+require_relative "../lib/ractor_rails_shim/roles/fallback_ies"
 require_relative "../lib/ractor_rails_shim/patches"
 
 # Minimal mattr_accessor stub on Module, so super in the prepended patch

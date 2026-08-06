@@ -13,7 +13,7 @@
 
 require "minitest/autorun"
 require "active_support/isolated_execution_state"
-require_relative "../lib/ractor_rails_shim/check"
+require_relative "../lib/ractor_rails_shim/roles/check"
 
 # Test fixtures. Defined as *named* constants (anonymous classes/modules get
 # deep-copied across Ractors, which would defeat the scan). Each fixture holds

@@ -30,7 +30,7 @@
 require "minitest/autorun"
 require "active_support/class_attribute"
 require "active_support/execution_wrapper"
-require_relative "../lib/ractor_rails_shim/fallback_ies"
+require_relative "../lib/ractor_rails_shim/roles/fallback_ies"
 require_relative "../lib/ractor_rails_shim/patches"
 
 # This spec exercises the THREAD-MODE class_attribute reader branch,
@@ -61,7 +61,7 @@ describe "thread-mode class_attribute __callbacks missing-slot default" do
     $LOAD_PATH.unshift("__SHIM_LIB__")
     require "active_support/class_attribute"
     require "active_support/execution_wrapper"
-    require "ractor_rails_shim/fallback_ies"
+    require "ractor_rails_shim/roles/fallback_ies"
     require "ractor_rails_shim/patches"
 
     RactorRailsShim.thread_mode = true

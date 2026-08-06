@@ -2,7 +2,7 @@
 
 require "minitest/autorun"
 require "active_support/isolated_execution_state"
-require_relative "../lib/ractor_rails_shim/fallback_ies"
+require_relative "../lib/ractor_rails_shim/roles/fallback_ies"
 require_relative "../lib/ractor_rails_shim/patches"
 
 # Pins the Issue #37 contract: VersionPolicy::Strategy replaces the two

@@ -220,19 +220,10 @@ module RactorRailsShim
     # make_app_shareable!), worker Ractors will see nil for framework config
     # values that couldn't be shared without freezing the app — set them
     # explicitly per worker, or use make_app_shareable!.
+    #
+    # Delegates to Lifecycle.prepare_for_ractors! (extracted POODR §1 SRP).
     def prepare_for_ractors!
-      PreSpawnSteps.apply_shareable_constants
-      PreSpawnSteps.freeze_shareable_class_ivars
-      PreSpawnSteps.install_framework_patches
-      snapshot_gem_paths!
-      snapshot_query_logs!
-      install_url_helpers_patch
-      fix_url_helpers_singleton_routes!
-      Freezers::CacheWarmer.call
-      Freezers::ClassIvarFreezer.call
-      Freezers::GlobalClassIvarFreezer.call
-      Freezers::GlobalConstantFreezer.call
-      Freezers::MessagesConstantsFreezer.call
+      Lifecycle.prepare_for_ractors!
     end
 
     # Verify the runtime matches the versions the shim was developed against.

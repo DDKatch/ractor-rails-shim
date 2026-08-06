@@ -32,7 +32,7 @@ class StorageSpec < Minitest::Spec
   it "Storage is a module under RactorRailsShim" do
     script = <<~'RUBY'
       require "active_support/isolated_execution_state"
-      require "ractor_rails_shim/storage"
+      require "ractor_rails_shim/foundation/storage"
       puts RactorRailsShim::Storage.class
       puts RactorRailsShim::Storage::IES.class
     RUBY
@@ -46,7 +46,7 @@ class StorageSpec < Minitest::Spec
   it "Storage::IES delegates to ActiveSupport::IsolatedExecutionState" do
     script = <<~'RUBY'
       require "active_support/isolated_execution_state"
-      require "ractor_rails_shim/storage"
+      require "ractor_rails_shim/foundation/storage"
       s = RactorRailsShim::Storage::IES
       s[:rrs_storage_test] = "v"
       r = []
@@ -67,7 +67,7 @@ class StorageSpec < Minitest::Spec
 
   it "Storage::ThreadLocal round-trips a value and supports key?/delete" do
     script = <<~'RUBY'
-      require "ractor_rails_shim/storage"
+      require "ractor_rails_shim/foundation/storage"
       s = RactorRailsShim::Storage::ThreadLocal
       s[:foo] = "bar"
       r = []
@@ -87,7 +87,7 @@ class StorageSpec < Minitest::Spec
 
   it "Storage::ThreadLocal isolates state per thread" do
     script = <<~'RUBY'
-      require "ractor_rails_shim/storage"
+      require "ractor_rails_shim/foundation/storage"
       s = RactorRailsShim::Storage::ThreadLocal
       s[:shared] = "main"
       t = Thread.new do
@@ -105,7 +105,7 @@ class StorageSpec < Minitest::Spec
 
   it "Storage::ThreadLocal supports clear" do
     script = <<~'RUBY'
-      require "ractor_rails_shim/storage"
+      require "ractor_rails_shim/foundation/storage"
       s = RactorRailsShim::Storage::ThreadLocal
       s[:a] = 1; s[:b] = 2
       s.clear
@@ -122,7 +122,7 @@ class StorageSpec < Minitest::Spec
   it "RactorRailsShim.storage is Storage::IES when AS is loaded" do
     script = <<~'RUBY'
       require "active_support/isolated_execution_state"
-      require "ractor_rails_shim/storage"
+      require "ractor_rails_shim/foundation/storage"
       puts RactorRailsShim.storage.equal?(RactorRailsShim::Storage::IES)
     RUBY
     out, _err, status = run_subprocess_assertions(script)
@@ -132,7 +132,7 @@ class StorageSpec < Minitest::Spec
 
   it "RactorRailsShim.storage is Storage::ThreadLocal when AS is absent" do
     script = <<~'RUBY'
-      require "ractor_rails_shim/storage"
+      require "ractor_rails_shim/foundation/storage"
       puts RactorRailsShim.storage.equal?(RactorRailsShim::Storage::ThreadLocal)
     RUBY
     out, _err, status = run_subprocess_assertions(script)
@@ -142,7 +142,7 @@ class StorageSpec < Minitest::Spec
 
   it "RactorRailsShim.storage honors the contract (round-trip via the indirection)" do
     script = <<~'RUBY'
-      require "ractor_rails_shim/storage"
+      require "ractor_rails_shim/foundation/storage"
       st = RactorRailsShim.storage
       st[:rrs_indirection] = 42
       r = [st[:rrs_indirection], st.key?(:rrs_indirection), st.delete(:rrs_indirection), st.key?(:rrs_indirection)]
@@ -162,7 +162,7 @@ class StorageSpec < Minitest::Spec
   it "a generated (eval'd) method body routes through RactorRailsShim.storage" do
     script = <<~'RUBY'
       require "active_support/isolated_execution_state"
-      require "ractor_rails_shim/storage"
+      require "ractor_rails_shim/foundation/storage"
       require "ractor_rails_shim/patches"
       RactorRailsShim.send(:_install_hash_compute_if_absent_patch)
       h = {}.freeze

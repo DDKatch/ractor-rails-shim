@@ -12,7 +12,7 @@
 require "minitest/autorun"
 require "active_support/class_attribute" # for the class_attribute spec
 require "active_support/execution_wrapper" # ExecutionWrapper for the class_attribute spec
-require_relative "../lib/ractor_rails_shim/fallback_ies"
+require_relative "../lib/ractor_rails_shim/roles/fallback_ies"
 require_relative "../lib/ractor_rails_shim/patches"
 
 # Install the class_attribute patch so the spec exercises it (the shim's

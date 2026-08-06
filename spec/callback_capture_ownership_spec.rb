@@ -4,7 +4,7 @@ require "minitest/autorun"
 require "set"
 require "active_support/isolated_execution_state"
 require "active_support/callbacks"
-require_relative "../lib/ractor_rails_shim/fallback_ies"
+require_relative "../lib/ractor_rails_shim/roles/fallback_ies"
 require_relative "../lib/ractor_rails_shim/patches"
 
 # Pins the Issue #36a contract: CallbackCapture OWNS its declared_callbacks

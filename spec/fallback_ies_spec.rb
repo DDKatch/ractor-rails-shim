@@ -32,7 +32,7 @@ class FallbackIESSpec < Minitest::Spec
 
   it "FallbackIES is an alias for Storage::ThreadLocal" do
     script = <<~'RUBY'
-      require "ractor_rails_shim/fallback_ies"
+      require "ractor_rails_shim/roles/fallback_ies"
       puts RactorRailsShim::FallbackIES.equal?(RactorRailsShim::Storage::ThreadLocal)
     RUBY
     out, _err, status = run_subprocess_assertions(script)
@@ -42,7 +42,7 @@ class FallbackIESSpec < Minitest::Spec
 
   it "round-trips a value and supports key?/delete/clear" do
     script = <<~'RUBY'
-      require "ractor_rails_shim/fallback_ies"
+      require "ractor_rails_shim/roles/fallback_ies"
       IES = RactorRailsShim::FallbackIES
       IES[:foo] = "bar"
       results = []
@@ -66,7 +66,7 @@ class FallbackIESSpec < Minitest::Spec
 
   it "isolates state per thread" do
     script = <<~'RUBY'
-      require "ractor_rails_shim/fallback_ies"
+      require "ractor_rails_shim/roles/fallback_ies"
       IES = RactorRailsShim::FallbackIES
       IES[:shared] = "main"
       t = Thread.new do
@@ -86,7 +86,7 @@ class FallbackIESSpec < Minitest::Spec
     # The shim no longer opens the ActiveSupport namespace to alias the
     # fallback. Confirm AS::IES stays undefined when only the shim is loaded.
     script = <<~'RUBY'
-      require "ractor_rails_shim/fallback_ies"
+      require "ractor_rails_shim/roles/fallback_ies"
       puts defined?(ActiveSupport::IsolatedExecutionState).inspect
       puts defined?(ActiveSupport).inspect
     RUBY
@@ -104,7 +104,7 @@ class FallbackIESSpec < Minitest::Spec
     # and RactorRailsShim.storage is Storage::IES (not the fallback).
     script = <<~'RUBY'
       require "active_support/isolated_execution_state"
-      require "ractor_rails_shim/fallback_ies"
+      require "ractor_rails_shim/roles/fallback_ies"
       puts RactorRailsShim.storage.equal?(RactorRailsShim::Storage::IES)
       puts RactorRailsShim::Storage::IES.equal?(RactorRailsShim::FallbackIES)
     RUBY

@@ -29,7 +29,7 @@ class FallbackNamespaceSpec < Minitest::Spec
 
   it "RactorRailsShim::FallbackIES is defined (as an alias for Storage::ThreadLocal)" do
     script = <<~'RUBY'
-      require "ractor_rails_shim/fallback_ies"
+      require "ractor_rails_shim/roles/fallback_ies"
       puts defined?(RactorRailsShim::FallbackIES)
       puts RactorRailsShim::FallbackIES.equal?(RactorRailsShim::Storage::ThreadLocal)
     RUBY
@@ -44,7 +44,7 @@ class FallbackNamespaceSpec < Minitest::Spec
 
   it "FallbackIES provides the IES API ([] / []= / key? / delete / clear)" do
     script = <<~'RUBY'
-      require "ractor_rails_shim/fallback_ies"
+      require "ractor_rails_shim/roles/fallback_ies"
       IES = RactorRailsShim::FallbackIES
       IES[:foo] = "bar"
       results = []
@@ -69,7 +69,7 @@ class FallbackNamespaceSpec < Minitest::Spec
 
   it "when AS is absent, ActiveSupport::IsolatedExecutionState is NOT defined by the shim" do
     script = <<~'RUBY'
-      require "ractor_rails_shim/fallback_ies"
+      require "ractor_rails_shim/roles/fallback_ies"
       puts defined?(ActiveSupport).inspect
       puts defined?(ActiveSupport::IsolatedExecutionState).inspect
     RUBY
@@ -84,7 +84,7 @@ class FallbackNamespaceSpec < Minitest::Spec
 
   it "RactorRailsShim.storage is ThreadLocal when AS is absent" do
     script = <<~'RUBY'
-      require "ractor_rails_shim/fallback_ies"
+      require "ractor_rails_shim/roles/fallback_ies"
       puts RactorRailsShim.storage.equal?(RactorRailsShim::Storage::ThreadLocal)
     RUBY
     out, _err, status = run_subprocess_assertions(script)
@@ -97,7 +97,7 @@ class FallbackNamespaceSpec < Minitest::Spec
   it "when AS is present, RactorRailsShim.storage is Storage::IES (the real AS IES)" do
     script = <<~'RUBY'
       require "active_support/isolated_execution_state"
-      require "ractor_rails_shim/fallback_ies"
+      require "ractor_rails_shim/roles/fallback_ies"
       puts RactorRailsShim.storage.equal?(RactorRailsShim::Storage::IES)
       # The real AS IES module should NOT be the same object as FallbackIES.
       puts ActiveSupport::IsolatedExecutionState.equal?(RactorRailsShim::FallbackIES)

@@ -19,7 +19,7 @@ require "minitest/autorun"
 require "set"
 require "active_support/isolated_execution_state"
 require "concurrent" # for Concurrent::Map, used by Rails caches the rewriter targets
-require_relative "../lib/ractor_rails_shim/fallback_ies"
+require_relative "../lib/ractor_rails_shim/roles/fallback_ies"
 require_relative "../lib/ractor_rails_shim/patches"
 
 class MakeShareableSpec < Minitest::Spec

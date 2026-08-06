@@ -16,7 +16,7 @@ require "set"
 require "active_support/isolated_execution_state"
 require "active_support/logger"
 require "active_support/broadcast_logger"
-require_relative "../lib/ractor_rails_shim/fallback_ies"
+require_relative "../lib/ractor_rails_shim/roles/fallback_ies"
 require_relative "../lib/ractor_rails_shim/patches"
 
 class DebugFunnelSpec < Minitest::Spec

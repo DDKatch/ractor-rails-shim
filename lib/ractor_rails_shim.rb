@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "ractor_rails_shim/version"
-require_relative "ractor_rails_shim/patches"
+require_relative "ractor_rails_shim/loader"
 require_relative "ractor_rails_shim/check"
 
 # A monkey-patch shim that reroutes Rails' class-level instance variable
