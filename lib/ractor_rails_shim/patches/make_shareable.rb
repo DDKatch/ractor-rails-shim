@@ -6,7 +6,7 @@
 # The graph-traversal, callable/lock replacement, shareable-fallback, and
 # logger-neutralization machinery that used to live here was extracted to
 # role objects (ShareabilityTraversal, FallbackBuilder, LoggerIONeutralizer,
-# CallbackCapture, ControllerCollector, ActionDispatchStrategy, Freezers::*)
+# CallbackCapture, ActionDispatchStrategy, Freezers::*)
 # in Issues #13/#22. Issue #31 deletes the facade delegations that forwarded
 # to those role objects; the role objects are now called directly. This file
 # keeps only the genuine public entry (`make_app_shareable!`) and the two

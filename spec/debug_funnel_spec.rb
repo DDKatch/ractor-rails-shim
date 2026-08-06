@@ -138,17 +138,6 @@ class DebugFunnelSpec < Minitest::Spec
     RactorRailsShim.singleton_class.send(:remove_method, :_orig_const_set)
   end
 
-  it "_collect_controller_classes funnels failures through _swallow (labeled)" do
-    # Pass an app whose routes() raises so the begin block in
-    # _collect_controller_classes fires its rescue path.
-    label = "collect controller classes"
-    app = Object.new
-    def app.routes; raise RuntimeError, "forced-routes-failure"; end
-    _with_silent_const_path(label) do
-      RactorRailsShim::ControllerCollector.call(app)
-    end
-  end
-
   # --- Step 2b: freeze-path make_shareable / graph-mutation sites ---
   #
   # Each of the following forces a failure inside a freeze-path block that

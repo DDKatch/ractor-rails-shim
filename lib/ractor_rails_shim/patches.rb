@@ -52,7 +52,6 @@ require_relative "callback_capture"
 require_relative "installer"
 require_relative "install_strategy"
 require_relative "logger_io_neutralizer"
-require_relative "controller_collector"
 require_relative "app_shareabilizer"
 
 # Naming convention for the patch methods on RactorRailsShim's singleton class:
