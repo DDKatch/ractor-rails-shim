@@ -41,27 +41,39 @@ module RactorRailsShim
     @callable_class = nil
     @callable_const_class = nil
     @request_callable_class = nil
-    @ssl_loc = nil
-    @files_loc = nil
-    @cookie_loc = nil
-    @devise_scope_loc = nil
-    @mapper_loc = nil
+    @locs = nil
+
+    # Value object grouping the 5 LOC strings used to identify which
+    # source file a Proc came from during proc-replacement dispatch
+    # (Issue #39, POODR §4c). The `configure` seam accepts a single
+    # `locs:` kwarg instead of 5 string kwargs; the 5 individual readers
+    # (`ssl_loc` etc.) delegate to the Locs object for backward compat.
+    Locs = Struct.new(:ssl, :files, :cookie, :devise_scope, :mapper,
+                       keyword_init: true) do
+      def self.default
+        new(
+          ssl: RactorRailsShim::SSL_LOC,
+          files: RactorRailsShim::FILES_LOC,
+          cookie: RactorRailsShim::COOKIE_LOC,
+          devise_scope: RactorRailsShim::DEVISE_SCOPE_LOC,
+          mapper: RactorRailsShim::MAPPER_LOC,
+        )
+      end
+    end
 
     # Inject the collaborators. Callables: `funnel` (= _swallow),
     # `find_files_server`, `devise_mapping_replacement`,
     # `strategy_replacement_for`. Callable classes: `noop_lock_class`,
     # `noop_proc_class`, `callable_class`, `callable_const_class`,
-    # `request_callable_class`. LOC strings: `ssl_loc`, `files_loc`,
-    # `cookie_loc`, `devise_scope_loc`, `mapper_loc`. Passing `nil` for
-    # any (or calling `reset_configuration`) restores the facade-lookup
-    # default for that collaborator.
+    # `request_callable_class`. LOC strings: `locs:` (a `Locs` value
+    # object). Passing `nil` for any (or calling `reset_configuration`)
+    # restores the facade-lookup default for that collaborator.
     def self.configure(funnel: nil, find_files_server: nil,
                        devise_mapping_replacement: nil, strategy_replacement_for: nil,
                        noop_lock_class: nil, noop_proc_class: nil,
                        callable_class: nil, callable_const_class: nil,
                        request_callable_class: nil,
-                       ssl_loc: nil, files_loc: nil, cookie_loc: nil,
-                       devise_scope_loc: nil, mapper_loc: nil)
+                       locs: nil)
       @funnel = funnel
       @find_files_server = find_files_server
       @devise_mapping_replacement = devise_mapping_replacement
@@ -71,11 +83,7 @@ module RactorRailsShim
       @callable_class = callable_class
       @callable_const_class = callable_const_class
       @request_callable_class = request_callable_class
-      @ssl_loc = ssl_loc
-      @files_loc = files_loc
-      @cookie_loc = cookie_loc
-      @devise_scope_loc = devise_scope_loc
-      @mapper_loc = mapper_loc
+      @locs = locs
     end
 
     # Restore the default (facade-lookup) collaborators. Test seam.
@@ -89,11 +97,7 @@ module RactorRailsShim
       @callable_class = nil
       @callable_const_class = nil
       @request_callable_class = nil
-      @ssl_loc = nil
-      @files_loc = nil
-      @cookie_loc = nil
-      @devise_scope_loc = nil
-      @mapper_loc = nil
+      @locs = nil
     end
 
     def self.funnel
@@ -132,25 +136,17 @@ module RactorRailsShim
       @request_callable_class || RactorRailsShim.singleton_class.const_get(:RequestCallable)
     end
 
-    def self.ssl_loc
-      @ssl_loc || RactorRailsShim::SSL_LOC
+    # The active Locs value object. Delegates the 5 individual LOC
+    # readers to the Locs attributes for backward compat.
+    def self.locs
+      @locs || Locs.default
     end
 
-    def self.files_loc
-      @files_loc || RactorRailsShim::FILES_LOC
-    end
-
-    def self.cookie_loc
-      @cookie_loc || RactorRailsShim::COOKIE_LOC
-    end
-
-    def self.devise_scope_loc
-      @devise_scope_loc || RactorRailsShim::DEVISE_SCOPE_LOC
-    end
-
-    def self.mapper_loc
-      @mapper_loc || RactorRailsShim::MAPPER_LOC
-    end
+    def self.ssl_loc; locs.ssl; end
+    def self.files_loc; locs.files; end
+    def self.cookie_loc; locs.cookie; end
+    def self.devise_scope_loc; locs.devise_scope; end
+    def self.mapper_loc; locs.mapper; end
 
     # Container dispatch table: maps container class to a walker lambda.
     # Replaces the is_a? chain in each_ivar_and_child (Issue #30, POODR §4a
@@ -335,23 +331,24 @@ module RactorRailsShim
       },
     }.freeze
 
-    # The ordered list of (tag, loc-reader) pairs used to resolve a
+    # The ordered list of (tag, locs-attr) pairs used to resolve a
     # source_location suffix to a tag. Kept in dispatch order (the first
     # matching suffix wins, mirroring the original elsif chain). The
     # `[nil, nil]` default in PROC_REPLACEMENTS is the fallback.
     LOC_TAGS = [
-      [:ssl,          :ssl_loc],
-      [:files,        :files_loc],
-      [:cookie,       :cookie_loc],
-      [:devise_scope, :devise_scope_loc],
-      [:mapper,       :mapper_loc],
+      [:ssl,          :ssl],
+      [:files,        :files],
+      [:cookie,       :cookie],
+      [:devise_scope, :devise_scope],
+      [:mapper,       :mapper],
     ].freeze
 
     # Resolve a source_location suffix to a LOC tag, or nil if no LOC
     # matches. Drives the PROC_REPLACEMENTS lookup.
     def self.loc_tag_for(src)
-      LOC_TAGS.each do |tag, reader|
-        return tag if src.end_with?(public_send(reader))
+      current_locs = locs
+      LOC_TAGS.each do |tag, attr|
+        return tag if src.end_with?(current_locs.public_send(attr))
       end
       nil
     end

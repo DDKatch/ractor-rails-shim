@@ -271,18 +271,19 @@ class ShareabilityTraversalSpec < Minitest::Spec
     RactorRailsShim::ShareabilityTraversal.reset_configuration
   end
 
-  it "configure injects the LOC-string collaborators" do
-    RactorRailsShim::ShareabilityTraversal.configure(
-      ssl_loc: "/x/ssl.rb", files_loc: "/x/files.rb", cookie_loc: "/x/cookie.rb",
-      devise_scope_loc: "/x/devise.rb", mapper_loc: "/x/mapper.rb"
-    )
-    assert_equal "/x/ssl.rb", RactorRailsShim::ShareabilityTraversal.ssl_loc
-    assert_equal "/x/files.rb", RactorRailsShim::ShareabilityTraversal.files_loc
-    assert_equal "/x/cookie.rb", RactorRailsShim::ShareabilityTraversal.cookie_loc
-    assert_equal "/x/devise.rb", RactorRailsShim::ShareabilityTraversal.devise_scope_loc
-    assert_equal "/x/mapper.rb", RactorRailsShim::ShareabilityTraversal.mapper_loc
+  it "configure injects the LOC-string collaborators via locs:" do
+    t = RactorRailsShim::ShareabilityTraversal
+    locs = t::Locs.new(ssl: "/x/ssl.rb", files: "/x/files.rb",
+                       cookie: "/x/cookie.rb", devise_scope: "/x/devise.rb",
+                       mapper: "/x/mapper.rb")
+    t.configure(locs: locs)
+    assert_equal "/x/ssl.rb", t.ssl_loc
+    assert_equal "/x/files.rb", t.files_loc
+    assert_equal "/x/cookie.rb", t.cookie_loc
+    assert_equal "/x/devise.rb", t.devise_scope_loc
+    assert_equal "/x/mapper.rb", t.mapper_loc
   ensure
-    RactorRailsShim::ShareabilityTraversal.reset_configuration
+    t.reset_configuration
   end
 
   it "replace_locks_and_concurrent_maps! funnels through an injected funnel" do
@@ -345,7 +346,10 @@ class ShareabilityTraversalSpec < Minitest::Spec
 
   it "reset_configuration restores the facade-lookup defaults" do
     sc = RactorRailsShim.singleton_class
-    RactorRailsShim::ShareabilityTraversal.configure(
+    t = RactorRailsShim::ShareabilityTraversal
+    locs = t::Locs.new(ssl: "a", files: "b", cookie: "c",
+                       devise_scope: "d", mapper: "e")
+    t.configure(
       funnel: ->(label, &blk) { blk&.call },
       find_files_server: ->(mw) { },
       devise_mapping_replacement: ->(p, pr) { },
@@ -353,29 +357,28 @@ class ShareabilityTraversalSpec < Minitest::Spec
       noop_lock_class: Class.new, noop_proc_class: Class.new,
       callable_class: Class.new, callable_const_class: Class.new,
       request_callable_class: Class.new,
-      ssl_loc: "a", files_loc: "b", cookie_loc: "c",
-      devise_scope_loc: "d", mapper_loc: "e"
+      locs: locs
     )
-    refute_equal RactorRailsShim::Funnel.method(:swallow), RactorRailsShim::ShareabilityTraversal.funnel
-    refute_equal RactorRailsShim.method(:_find_files_server), RactorRailsShim::ShareabilityTraversal.find_files_server
+    refute_equal RactorRailsShim::Funnel.method(:swallow), t.funnel
+    refute_equal RactorRailsShim.method(:_find_files_server), t.find_files_server
 
-    RactorRailsShim::ShareabilityTraversal.reset_configuration
-    assert_equal RactorRailsShim::Funnel.method(:swallow), RactorRailsShim::ShareabilityTraversal.funnel
-    assert_equal RactorRailsShim.method(:_find_files_server), RactorRailsShim::ShareabilityTraversal.find_files_server
-    assert_equal RactorRailsShim.method(:_devise_mapping_replacement), RactorRailsShim::ShareabilityTraversal.devise_mapping_replacement
-    assert_equal RactorRailsShim::ActionDispatchStrategy.method(:replacement_for), RactorRailsShim::ShareabilityTraversal.strategy_replacement_for
-    assert_equal sc.const_get(:NoOpLock), RactorRailsShim::ShareabilityTraversal.noop_lock_class
-    assert_equal sc.const_get(:NoOpProc), RactorRailsShim::ShareabilityTraversal.noop_proc_class
-    assert_equal sc.const_get(:Callable), RactorRailsShim::ShareabilityTraversal.callable_class
-    assert_equal sc.const_get(:CallableConst), RactorRailsShim::ShareabilityTraversal.callable_const_class
-    assert_equal sc.const_get(:RequestCallable), RactorRailsShim::ShareabilityTraversal.request_callable_class
-    assert_equal RactorRailsShim::SSL_LOC, RactorRailsShim::ShareabilityTraversal.ssl_loc
-    assert_equal RactorRailsShim::FILES_LOC, RactorRailsShim::ShareabilityTraversal.files_loc
-    assert_equal RactorRailsShim::COOKIE_LOC, RactorRailsShim::ShareabilityTraversal.cookie_loc
-    assert_equal RactorRailsShim::DEVISE_SCOPE_LOC, RactorRailsShim::ShareabilityTraversal.devise_scope_loc
-    assert_equal RactorRailsShim::MAPPER_LOC, RactorRailsShim::ShareabilityTraversal.mapper_loc
+    t.reset_configuration
+    assert_equal RactorRailsShim::Funnel.method(:swallow), t.funnel
+    assert_equal RactorRailsShim.method(:_find_files_server), t.find_files_server
+    assert_equal RactorRailsShim.method(:_devise_mapping_replacement), t.devise_mapping_replacement
+    assert_equal RactorRailsShim::ActionDispatchStrategy.method(:replacement_for), t.strategy_replacement_for
+    assert_equal sc.const_get(:NoOpLock), t.noop_lock_class
+    assert_equal sc.const_get(:NoOpProc), t.noop_proc_class
+    assert_equal sc.const_get(:Callable), t.callable_class
+    assert_equal sc.const_get(:CallableConst), t.callable_const_class
+    assert_equal sc.const_get(:RequestCallable), t.request_callable_class
+    assert_equal RactorRailsShim::SSL_LOC, t.ssl_loc
+    assert_equal RactorRailsShim::FILES_LOC, t.files_loc
+    assert_equal RactorRailsShim::COOKIE_LOC, t.cookie_loc
+    assert_equal RactorRailsShim::DEVISE_SCOPE_LOC, t.devise_scope_loc
+    assert_equal RactorRailsShim::MAPPER_LOC, t.mapper_loc
   ensure
-    RactorRailsShim::ShareabilityTraversal.reset_configuration
+    t.reset_configuration
   end
 
   # --- Issue #30: CONTAINER_WALKERS dispatch table ---
@@ -624,6 +627,83 @@ class ShareabilityTraversalSpec < Minitest::Spec
     unknown_proc = eval("lambda { }", TOPLEVEL_BINDING, "/some/unknown/file.rb", 1)
     t.replace_one_proc(unknown_proc, parent, :@whatever, nil)
     assert_kind_of noop_proc_class, parent.instance_variable_get(:@whatever)
+  ensure
+    t.reset_configuration
+  end
+
+  # --- Step 39.5: Locs value object ---
+  #
+  # The 5 LOC strings (ssl_loc, files_loc, cookie_loc, devise_scope_loc,
+  # mapper_loc) are grouped into a single Locs value object. configure
+  # takes a `locs:` kwarg instead of 5 string kwargs. The 5 individual
+  # readers remain as delegations to the Locs object for backward compat.
+
+  it "Locs is a Data/Struct-like value object with ssl, files, cookie, devise_scope, mapper" do
+    t = RactorRailsShim::ShareabilityTraversal
+    assert t.const_defined?(:Locs, false), "Locs should exist"
+    locs = t::Locs.new(ssl: "s", files: "f", cookie: "c", devise_scope: "d", mapper: "m")
+    assert_equal "s", locs.ssl
+    assert_equal "f", locs.files
+    assert_equal "c", locs.cookie
+    assert_equal "d", locs.devise_scope
+    assert_equal "m", locs.mapper
+  end
+
+  it "Locs.default returns the facade-lookup LOC strings" do
+    t = RactorRailsShim::ShareabilityTraversal
+    locs = t::Locs.default
+    assert_equal RactorRailsShim::SSL_LOC, locs.ssl
+    assert_equal RactorRailsShim::FILES_LOC, locs.files
+    assert_equal RactorRailsShim::COOKIE_LOC, locs.cookie
+    assert_equal RactorRailsShim::DEVISE_SCOPE_LOC, locs.devise_scope
+    assert_equal RactorRailsShim::MAPPER_LOC, locs.mapper
+  end
+
+  it "configure accepts a locs: kwarg (Locs value object)" do
+    t = RactorRailsShim::ShareabilityTraversal
+    locs = t::Locs.new(ssl: "/x/ssl.rb", files: "/x/files.rb",
+                       cookie: "/x/cookie.rb", devise_scope: "/x/ds.rb",
+                       mapper: "/x/mapper.rb")
+    t.configure(locs: locs)
+    assert_equal "/x/ssl.rb", t.ssl_loc
+    assert_equal "/x/files.rb", t.files_loc
+    assert_equal "/x/cookie.rb", t.cookie_loc
+    assert_equal "/x/ds.rb", t.devise_scope_loc
+    assert_equal "/x/mapper.rb", t.mapper_loc
+  ensure
+    t.reset_configuration
+  end
+
+  it "configure no longer accepts the 5 individual LOC kwargs" do
+    t = RactorRailsShim::ShareabilityTraversal
+    # The 5 individual kwargs are gone; only locs: is accepted.
+    # Passing ssl_loc: should raise ArgumentError (unknown kwarg).
+    assert_raises(ArgumentError) do
+      t.configure(ssl_loc: "/x/ssl.rb")
+    end
+  ensure
+    t.reset_configuration
+  end
+
+  it "reset_configuration restores the default Locs" do
+    t = RactorRailsShim::ShareabilityTraversal
+    t.configure(locs: t::Locs.new(ssl: "a", files: "b", cookie: "c",
+                                    devise_scope: "d", mapper: "e"))
+    refute_equal RactorRailsShim::SSL_LOC, t.ssl_loc
+    t.reset_configuration
+    assert_equal RactorRailsShim::SSL_LOC, t.ssl_loc
+    assert_equal RactorRailsShim::FILES_LOC, t.files_loc
+    assert_equal RactorRailsShim::COOKIE_LOC, t.cookie_loc
+    assert_equal RactorRailsShim::DEVISE_SCOPE_LOC, t.devise_scope_loc
+    assert_equal RactorRailsShim::MAPPER_LOC, t.mapper_loc
+  ensure
+    t.reset_configuration
+  end
+
+  it "locs reader returns the active Locs object" do
+    t = RactorRailsShim::ShareabilityTraversal
+    assert_kind_of t::Locs, t.locs
+    assert_equal RactorRailsShim::SSL_LOC, t.locs.ssl
   ensure
     t.reset_configuration
   end
