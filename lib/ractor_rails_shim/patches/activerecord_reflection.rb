@@ -63,6 +63,38 @@ module RactorRailsShim
   module ReflectionAssociationPatch
     prepend ReflectionMemoPatch
 
+    # check_validity! memoizes @validated by writing it on the (frozen, shared)
+    # reflection — which raises FrozenError in a worker Ractor. Reimplement it
+    # to store the validated flag in the per-worker cache instead. The body
+    # mirrors Rails' (minus the @validated write) and only reads via the other
+    # patched (cache-backed) reflection accessors, so it performs no ivar
+    # writes on the frozen object.
+    def check_validity!
+      cache = rrs_refl_cache
+      return if cache[[object_id, :validated]]
+
+      check_validity_of_inverse!
+
+      if !polymorphic? && (klass.composite_primary_key? || active_record.composite_primary_key?)
+        if (has_one? || collection?) && Array(active_record_primary_key).length != Array(foreign_key).length
+          raise ::ActiveRecord::Reflection::CompositePrimaryKeyMismatchError.new(self)
+        elsif belongs_to? && Array(association_primary_key).length != Array(foreign_key).length
+          raise ::ActiveRecord::Reflection::CompositePrimaryKeyMismatchError.new(self)
+        end
+      end
+
+      cache[[object_id, :validated]] = true
+    end
+
+    # inverse_name writes @inverse_name on the frozen, shared reflection in a
+    # worker Ractor (Rails only sets it lazily, so it is genuinely undefined on
+    # a frozen object -> FrozenError). Cache it per-worker instead. Defined here
+    # (not on AbstractReflection) because the original inverse_name lives on
+    # AssociationReflection and would shadow an AbstractReflection-level override.
+    def inverse_name
+      rrs_refl_cache[[object_id, :inverse_name]] ||= (options.fetch(:inverse_of) { automatic_inverse_of })
+    end
+
     def join_table
       rrs_refl_cache[[object_id, :join_table]] ||= -(options[:join_table]&.to_s || derive_join_table)
     end
