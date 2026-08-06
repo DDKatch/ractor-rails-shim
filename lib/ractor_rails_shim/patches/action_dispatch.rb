@@ -789,6 +789,115 @@ module RactorRailsShim
       warn "[ractor-rails-shim] _freeze_mime_negotiation!: #{e.class}: #{e.message}"
     end
 
+    # Patch ActionDispatch::Http::MimeNegotiation#formats and #negotiate_mime
+    # to be worker-Ractor safe. `Mime[:html]` reads from `Mime::EXTENSION_LOOKUP`,
+    # a mutable Hash that is NOT shareable (Ractor.make_shareable fails because
+    # Mime::Type objects hold unshareable state). A worker Ractor reading
+    # EXTENSION_LOOKUP raises Ractor::IsolationError, which propagates up as
+    # an UnknownFormat from Devise's respond_with. Fix: cache the commonly-used
+    # Mime types in a shareable IES slot at prepare time; the patched `formats`
+    # method uses the shareable lookup in workers instead of the raw constant.
+    def _install_mime_negotiation_worker_patch
+      return if @mime_neg_worker_patched
+      @mime_neg_worker_patched = true
+      _register_patch :mime_negotiation_worker, "8.1"
+      return unless defined?(::ActionDispatch::Http::MimeNegotiation)
+
+      # Capture shareable Mime type references at prepare time (main Ractor).
+      if Ractor.main?
+        begin
+          shareable = {}
+          [:html, :json, :xml, :js, :text, :csv, :pdf, :zip, :all].each do |sym|
+            mt = ::Mime[sym] rescue nil
+            next unless mt
+            ::Ractor.make_shareable(mt) rescue nil
+            shareable[sym] = mt
+          end
+          ::Ractor.make_shareable(shareable) rescue nil
+          _reassign_shareable_const(:SHAREABLE_MIME_TYPES, shareable)
+        rescue StandardError => e
+          # best-effort
+        end
+      end
+
+      mod = ::ActionDispatch::Http::MimeNegotiation
+      mod.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def formats
+          fetch_header("action_dispatch.request.formats") do |k|
+            v = if params_readable?
+              fmt = begin; ::Mime[parameters[:format]]; rescue; nil; end
+              if fmt
+                [fmt]
+              elsif Ractor.main?
+                [::Mime[:html]].compact
+              else
+                sm = RactorRailsShim::SHAREABLE_MIME_TYPES rescue nil
+                sm ? [sm[:html]].compact : []
+              end
+            elsif use_accept_header && valid_accept_header
+              accepts.dup
+            elsif extension_format = format_from_path_extension
+              [extension_format]
+            elsif xhr?
+              if Ractor.main?
+                [::Mime[:js]].compact
+              else
+                sm = RactorRailsShim::SHAREABLE_MIME_TYPES rescue nil
+                sm ? [sm[:js]].compact : []
+              end
+            else
+              if Ractor.main?
+                [::Mime[:html]].compact
+              else
+                sm = RactorRailsShim::SHAREABLE_MIME_TYPES rescue nil
+                sm ? [sm[:html]].compact : []
+              end
+            end
+
+            v.select! do |format|
+              format.symbol || format.ref == "*/*"
+            end
+
+            set_header k, v
+          end
+        end
+      RUBY
+
+      # Patch the Collector#negotiate_format to use the shareable Mime types
+      # when comparing against request.formats. The Collector is created inside
+      # respond_with and holds @responses keyed by Mime::Type objects. If those
+      # objects were created in a worker (via Mime[:html] on a non-shareable
+      # EXTENSION_LOOKUP), they may be different instances than the ones in
+      # request.formats. Use equal? comparison via the shareable snapshot to
+      # ensure identity.
+      if defined?(::ActionController::MimeResponds::Collector)
+        ::ActionController::MimeResponds::Collector.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+          def negotiate_format(request)
+            @format = request.negotiate_mime(@responses.keys)
+            # Worker fallback: if negotiation failed but the request accepts
+            # HTML and we have an HTML response, return it. This handles the
+            # case where Mime type identity comparison fails across Ractors
+            # due to different object instances.
+            if @format.nil? && @responses.keys.any?
+              sm = (RactorRailsShim::SHAREABLE_MIME_TYPES rescue nil)
+              if sm
+                req_fmts = request.formats rescue []
+                req_fmts.each do |rf|
+                  @responses.keys.each do |rk|
+                    if rf.respond_to?(:symbol) && rk.respond_to?(:symbol) && rf.symbol == rk.symbol
+                      @format = rk
+                      return @format
+                    end
+                  end
+                end
+              end
+            end
+            @format
+          end
+        RUBY
+      end
+    end
+
     # ActionDispatch::Http::URL reads the `tld_length` class variable
     # DIRECTLY (`@@tld_length`) in `normalize_host` and in the default-parameter
     # of `domain`/`subdomains`/`subdomain`. Class variables are not readable from

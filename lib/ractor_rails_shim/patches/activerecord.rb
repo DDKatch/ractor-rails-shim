@@ -422,6 +422,35 @@ module RactorRailsShim
         ]
         warm_calls.each { |c| begin; c.call; rescue StandardError => e; end }
 
+        # Warm reflection objects. Reflections are part of the model class
+        # graph and get deep-frozen by make_app_shareable!. Their lazy caches
+        # (@class_name, @klass, @inverse_name, @scope, etc.) memoize via ||=
+        # which writes to a frozen object from a worker -> FrozenError. Warm
+        # them here in main so the frozen copies hold the values.
+        begin
+          if klass.respond_to?(:reflect_on_all_associations, true)
+            klass.reflect_on_all_associations.each do |refl|
+              begin
+                refl.class_name rescue nil
+                refl.klass rescue nil
+                refl.inverse_name rescue nil
+                refl.inverse_of rescue nil
+                refl.active_record rescue nil
+                refl.plural_name rescue nil
+                refl.options rescue nil
+                refl.macro rescue nil
+                refl.scope rescue nil if refl.respond_to?(:scope)
+                refl.check_validity! rescue nil
+                refl.automatic_inverse_of rescue nil if refl.respond_to?(:automatic_inverse_of)
+              rescue StandardError
+                nil
+              end
+            end
+          end
+        rescue StandardError
+          nil
+        end
+
         # Make every class ivar shareable and write it back. The class is
         # still mutable here (in main), so the write is allowed.
         begin

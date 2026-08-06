@@ -72,6 +72,41 @@ module RactorRailsShim
 
       # Register so the shareable fallback builder knows about it.
       CLASS_ATTRIBUTES << ["Kaminari", :config, k_key, nil] if shareable_config
+
+      # Patch Kaminari's `page` class method to avoid the `extending` block
+      # (a Proc compiled in the main Ractor). Kaminari defines `page` via eval
+      # with `.extending { include Kaminari::ActiveRecordRelationMethods;
+      # include Kaminari::PageScopeMethods }` — a block that captures the main
+      # Ractor's binding. Calling it from a worker raises "defined with an
+      # un-shareable Proc in a different Ractor". Fix: redefine `page` to pass
+      # the modules as arguments to `extending` (shareable constants, no block).
+      # The delegate classes already include these modules from main's
+      # _share_model_classes!, so the extending is redundant in workers but
+      # harmless (it just re-adds already-included modules).
+      _install_kaminari_page_method_patch
+    end
+
+    def _install_kaminari_page_method_patch
+      return if @kaminari_page_patched
+      @kaminari_page_patched = true
+      _register_patch :kaminari_page_method, "8.1"
+      return unless defined?(::Kaminari)
+      return unless defined?(::ActiveRecord::Base)
+
+      page_method_name = (::Kaminari.config.page_method_name rescue :page).to_s
+      return if page_method_name.empty?
+
+      # Override on ActiveRecord::Base singleton class (Kaminari defines it
+      # here via eval in the included block of ActiveRecordModelExtension).
+      ::ActiveRecord::Base.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def #{page_method_name}(num = nil)
+          per_page = max_per_page && (default_per_page > max_per_page) ? max_per_page : default_per_page
+          limit(per_page).offset(per_page * ((num = num.to_i - 1) < 0 ? 0 : num)).extending(
+            ::Kaminari::ActiveRecordRelationMethods,
+            ::Kaminari::PageScopeMethods
+          )
+        end
+      RUBY
     end
   end
 end
