@@ -825,7 +825,7 @@ module RactorRailsShim
         def formats
           fetch_header("action_dispatch.request.formats") do |k|
             v = if params_readable?
-              fmt = begin; ::Mime[parameters[:format]]; rescue; nil; end
+              fmt = begin; ::Mime[parameters[:format]]; rescue StandardError; nil; end
               if fmt
                 [fmt]
               elsif Ractor.main?
