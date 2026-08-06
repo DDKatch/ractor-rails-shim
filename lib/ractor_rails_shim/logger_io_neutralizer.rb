@@ -83,32 +83,32 @@ module RactorRailsShim
         o = stack.pop
         next if o.equal?(nil) || seen[o.object_id]
         seen[o.object_id] = true
-        begin
-          o.instance_variables.each do |iv|
-            begin; v = o.instance_variable_get(iv); rescue StandardError; next; end
-            if iv == :@logger
-              # Replace the app-instance / config logger with the no-op
-              # (so the frozen app graph holds no live IO). Best-effort;
-              # funnel through `funnel` so a frozen-owner failure is
-              # traceable under debug=.
-              funnel.call("neutralize logger ivar") do
-                o.instance_variable_set(iv, noop_logger)
-              end
-            elsif v.is_a?(::IO) && (v == $stdout || v == $stderr || v == STDOUT || v == STDERR)
-              # Any stray IO reference → a shareable no-op sink, built
-              # by the injected `noop_log_dev_class` collaborator.
-              sink = noop_log_dev_class.new
-              sink.freeze
-              Ractor.make_shareable(sink)
-              funnel.call("neutralize logger IO ivar") do
-                o.instance_variable_set(iv, sink)
-              end
-            elsif v
-              stack << v
+        # Reuse ShareabilityTraversal.each_ivar for the ivar walk (Issue
+        # #39, POODR §4b) — the rescue scaffolding has one home there.
+        # The per-ivar branching (@logger -> BroadcastLogger, IO ->
+        # NoOpLogDev, else -> recurse) stays inline here; it's role-
+        # specific and each_ivar yields [iv, v] pairs cleanly.
+        ShareabilityTraversal.each_ivar(o) do |iv, v|
+          if iv == :@logger
+            # Replace the app-instance / config logger with the no-op
+            # (so the frozen app graph holds no live IO). Best-effort;
+            # funnel through `funnel` so a frozen-owner failure is
+            # traceable under debug=.
+            funnel.call("neutralize logger ivar") do
+              o.instance_variable_set(iv, noop_logger)
             end
+          elsif v.is_a?(::IO) && (v == $stdout || v == $stderr || v == STDOUT || v == STDERR)
+            # Any stray IO reference → a shareable no-op sink, built
+            # by the injected `noop_log_dev_class` collaborator.
+            sink = noop_log_dev_class.new
+            sink.freeze
+            Ractor.make_shareable(sink)
+            funnel.call("neutralize logger IO ivar") do
+              o.instance_variable_set(iv, sink)
+            end
+          elsif v
+            stack << v
           end
-        rescue StandardError
-          # BasicObject or frozen objects don't support instance_variables
         end
         # Use the shared CONTAINER_WALKERS dispatch table to push children
         # onto the stack (Issue #32 — reuse traversal from

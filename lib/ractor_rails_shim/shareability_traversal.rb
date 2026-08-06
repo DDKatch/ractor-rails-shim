@@ -176,17 +176,47 @@ module RactorRailsShim
       false
     end
 
+    # The container types with dedicated walkers in CONTAINER_WALKERS,
+    # plus String (which is Enumerable over chars but not a container of
+    # references we want to walk). Derived from CONTAINER_WALKERS.keys so
+    # a new container added to the dispatch table is automatically
+    # excluded here — the two lists can't drift (Issue #39, POODR §4a).
+    BASIC_TYPES = (CONTAINER_WALKERS.keys + [::String]).freeze
+
     # True if `o` is Enumerable but NOT one of the container types with a
     # dedicated branch in each_ivar_and_child. Used to gate the generic
     # Enumerable fallback so we don't double-walk Array/Hash/etc.
     def self.enumerable_but_not_basic?(o)
       return false unless o.is_a?(::Enumerable)
-      return false if o.is_a?(::Array) || o.is_a?(::Hash) || o.is_a?(::Set) || o.is_a?(::Struct)
-      return false if o.is_a?(::String) # String is Enumerable (chars) but not a container of refs we want
-      true
+      BASIC_TYPES.none? { |t| o.is_a?(t) }
     rescue NoMethodError
       # BasicObject without Kernel — not Enumerable.
       false
+    end
+
+    # Enumerate the instance variables of `o`, yielding `[ivar, value]`
+    # pairs. The instance_variable_get is guarded so an ivar that raises
+    # is skipped (not fatal). The whole instance_variables call is guarded
+    # so a BasicObject (or frozen object) that doesn't support it is a
+    # no-op. This is the ivar-only half of `each_ivar_and_child` — the
+    # half callers that don't need the container walk (e.g.
+    # LoggerIONeutralizer, which keeps its per-ivar branching inline)
+    # use this directly (Issue #39, POODR §4b Duck Typing).
+    def self.each_ivar(o)
+      return to_enum(:each_ivar, o) unless block_given?
+      begin
+        o.instance_variables.each do |iv|
+          v =
+            begin
+              o.instance_variable_get(iv)
+            rescue StandardError
+              next
+            end
+          yield iv, v
+        end
+      rescue StandardError
+        # BasicObject or frozen objects don't support instance_variables.
+      end
     end
 
     # Enumerate every child reference of `o` for the graph traversals:
@@ -195,16 +225,10 @@ module RactorRailsShim
     #   - Enumerable fallback for other Enumerable types
     #
     # Centralized so collect_procs and replace_locks_and_concurrent_maps!
-    # share the same container coverage.
+    # share the same container coverage. The ivar half delegates to
+    # `each_ivar` (Issue #39) so the rescue scaffolding has one home.
     def self.each_ivar_and_child(o)
-      begin
-        o.instance_variables.each do |iv|
-          begin; v = o.instance_variable_get(iv); rescue StandardError; next; end
-          yield v, iv
-        end
-      rescue StandardError => e
-        # BasicObject or frozen objects don't support instance_variables
-      end
+      each_ivar(o) { |iv, v| yield v, iv }
       walker = CONTAINER_WALKERS.find { |klass, _| o.is_a?(klass) }&.last
       if walker
         walker.call(o) { |c, iv| yield c, iv }
@@ -266,37 +290,78 @@ module RactorRailsShim
       end
     end
 
+    # Proc-replacement dispatch table (Issue #39, POODR §4c Duck Typing).
+    # Replaces the 6-way if/elsif on `(source_location_suffix, ivar)` in
+    # `replace_one_proc`. Each entry is keyed by `[tag, ivar]` where `tag`
+    # is a Symbol identifying the LOC string (resolved at dispatch time
+    # via `src.end_with?`, so injected LOCs work) and `ivar` is the ivar
+    # symbol or `nil` for an ivar-wildcard (matches any ivar). The `[nil,
+    # nil]` entry is the default for unknown Procs. Each value is a
+    # lambda `(traversal, proc_obj, parent, mw) -> replacement`. Adding a
+    # new proc-replacement rule is a one-line table entry instead of a
+    # new `elsif`.
+    PROC_REPLACEMENTS = {
+      [:ssl, :@exclude] => ->(t, _p, parent, _mw) {
+        t.callable_const_class.new(!parent.instance_variable_get(:@redirect))
+      },
+      [:files, :@app] => ->(t, proc_obj, parent, mw) {
+        # The lambda is `Rack::Files#initialize`'s `lambda { |env| get env }`,
+        # stored as `Rack::Head#@app`. Its `self` (binding receiver) is the
+        # `Rack::Files` instance that defines `get` — NOT the `Rack::Head`
+        # that holds it. Use the binding receiver as the callable target so
+        # the worker calls `Rack::Files#get(env)` (the original behavior).
+        # Fall back to the middleware-chain search if the receiver can't be
+        # resolved (e.g. frozen/unavailable binding).
+        receiver = proc_obj.binding.receiver rescue nil
+        files_server = receiver if receiver && receiver.respond_to?(:get)
+        files_server ||= t.find_files_server.call(mw)
+        files_server ||= parent
+        t.callable_class.new(files_server, :get)
+      },
+      [:cookie, nil] => ->(t, _p, _parent, _mw) {
+        t.request_callable_class.new(:cookies_same_site_protection)
+      },
+      [:devise_scope, nil] => ->(t, proc_obj, parent, _mw) {
+        t.devise_mapping_replacement.call(proc_obj, parent)
+      },
+      [:mapper, :@strategy] => ->(t, proc_obj, _parent, _mw) {
+        # Identify SERVE vs CALL by OBJECT IDENTITY against the actual
+        # ActionDispatch constants, NOT by source_location line number.
+        # See strategy_replacement_for for the full rationale.
+        t.strategy_replacement_for.call(proc_obj)
+      },
+      [nil, nil] => ->(t, _p, _parent, _mw) {
+        t.noop_proc_class.new
+      },
+    }.freeze
+
+    # The ordered list of (tag, loc-reader) pairs used to resolve a
+    # source_location suffix to a tag. Kept in dispatch order (the first
+    # matching suffix wins, mirroring the original elsif chain). The
+    # `[nil, nil]` default in PROC_REPLACEMENTS is the fallback.
+    LOC_TAGS = [
+      [:ssl,          :ssl_loc],
+      [:files,        :files_loc],
+      [:cookie,       :cookie_loc],
+      [:devise_scope, :devise_scope_loc],
+      [:mapper,       :mapper_loc],
+    ].freeze
+
+    # Resolve a source_location suffix to a LOC tag, or nil if no LOC
+    # matches. Drives the PROC_REPLACEMENTS lookup.
+    def self.loc_tag_for(src)
+      LOC_TAGS.each do |tag, reader|
+        return tag if src.end_with?(public_send(reader))
+      end
+      nil
+    end
+
     def self.replace_one_proc(proc_obj, parent, ivar, mw)
       src = proc_obj.source_location&.first || ""
-      replacement =
-        if src.end_with?(ssl_loc) && ivar == :@exclude
-          redirect = parent.instance_variable_get(:@redirect)
-          callable_const_class.new(!redirect)
-        elsif src.end_with?(files_loc) && ivar == :@app
-          # The lambda is `Rack::Files#initialize`'s `lambda { |env| get env }`,
-          # stored as `Rack::Head#@app`. Its `self` (binding receiver) is the
-          # `Rack::Files` instance that defines `get` — NOT the `Rack::Head`
-          # that holds it. Use the binding receiver as the callable target so
-          # the worker calls `Rack::Files#get(env)` (the original behavior).
-          # Fall back to the middleware-chain search if the receiver can't be
-          # resolved (e.g. frozen/unavailable binding).
-          receiver = proc_obj.binding.receiver rescue nil
-          files_server = receiver if receiver && receiver.respond_to?(:get)
-          files_server ||= find_files_server.call(mw)
-          files_server ||= parent
-          callable_class.new(files_server, :get)
-        elsif src.end_with?(cookie_loc)
-          request_callable_class.new(:cookies_same_site_protection)
-        elsif src.end_with?(devise_scope_loc)
-          devise_mapping_replacement.call(proc_obj, parent)
-        elsif src.end_with?(mapper_loc) && ivar == :@strategy
-          # Identify SERVE vs CALL by OBJECT IDENTITY against the actual
-          # ActionDispatch constants, NOT by source_location line number.
-          # See strategy_replacement_for for the full rationale.
-          strategy_replacement_for.call(proc_obj)
-        else
-          noop_proc_class.new
-        end
+      tag = loc_tag_for(src)
+      key = PROC_REPLACEMENTS.key?([tag, ivar]) ? [tag, ivar] : [tag, nil]
+      builder = PROC_REPLACEMENTS.fetch(key) { PROC_REPLACEMENTS[[nil, nil]] }
+      replacement = builder.call(self, proc_obj, parent, mw)
 
       if ivar == :__default_proc__
         # The parent Hash may already be frozen (e.g. by an earlier

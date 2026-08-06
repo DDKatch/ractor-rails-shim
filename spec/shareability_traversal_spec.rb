@@ -457,4 +457,174 @@ class ShareabilityTraversalSpec < Minitest::Spec
     assert_equal 1, dp_entries.size, "should yield exactly one default_proc entry"
     assert dp_entries.first.first.is_a?(Proc), "default_proc entry should be a Proc"
   end
+
+  # --- Issue #39: ShareabilityTraversal polymorphism ---
+  #
+  # Step 39.1: each_ivar — the ivar-only half of each_ivar_and_child, the
+  # half LoggerIONeutralizer needs (it walks only ivars, not container
+  # children, and currently duplicates the rescue-scaffolded ivar loop).
+  # Step 39.3: enumerable_but_not_basic? derived from CONTAINER_WALKERS
+  # keys + String, so a new container walker is automatically excluded.
+  # Step 39.4: PROC_REPLACEMENTS table drives replace_one_proc dispatch.
+
+  it "each_ivar yields [ivar, value] pairs for each instance variable" do
+    t = RactorRailsShim::ShareabilityTraversal
+    o = Object.new
+    o.instance_variable_set(:@a, 1)
+    o.instance_variable_set(:@b, :two)
+    pairs = []
+    t.each_ivar(o) { |iv, v| pairs << [iv, v] }
+    assert_includes pairs, [:@a, 1]
+    assert_includes pairs, [:@b, :two]
+  end
+
+  it "each_ivar yields nothing for an object with no ivars" do
+    t = RactorRailsShim::ShareabilityTraversal
+    pairs = []
+    t.each_ivar(Object.new) { |iv, v| pairs << [iv, v] }
+    assert_empty pairs
+  end
+
+  it "each_ivar skips ivars whose instance_variable_get raises" do
+    t = RactorRailsShim::ShareabilityTraversal
+    # A frozen object with a ivar that raises on get (simulate via a
+    # class overriding instance_variable_get).
+    kl = Class.new do
+      def initialize; @ok = 1; @bad = 2; end
+      def instance_variable_get(name)
+        raise StandardError if name == :@bad
+        super
+      end
+    end
+    o = kl.new
+    pairs = []
+    t.each_ivar(o) { |iv, v| pairs << [iv, v] }
+    assert_includes pairs, [:@ok, 1]
+    refute_includes pairs.map(&:first), :@bad
+  end
+
+  it "each_ivar returns an Enumerator when no block is given" do
+    t = RactorRailsShim::ShareabilityTraversal
+    o = Object.new
+    o.instance_variable_set(:@a, 1)
+    enum = t.each_ivar(o)
+    assert_kind_of Enumerator, enum
+    assert_includes enum.to_a, [:@a, 1]
+  end
+
+  it "each_ivar rescues when instance_variables itself raises (BasicObject)" do
+    t = RactorRailsShim::ShareabilityTraversal
+    basic = Class.new(BasicObject) do
+      def instance_variables; raise StandardError; end
+    end.new
+    pairs = []
+    t.each_ivar(basic) { |iv, v| pairs << [iv, v] }
+    assert_empty pairs
+  end
+
+  it "enumerable_but_not_basic? excludes every type in CONTAINER_WALKERS plus String" do
+    t = RactorRailsShim::ShareabilityTraversal
+    excluded = t::CONTAINER_WALKERS.keys + [String]
+    excluded.each do |klass|
+      instance = case klass
+                 when String then "x"
+                 when Struct then Struct.new(:a).new
+                 when Set then Set.new
+                 when Hash then {}
+                 when Array then []
+                 else klass.new
+                 end
+      refute t.enumerable_but_not_basic?(instance),
+             "#{klass} is in CONTAINER_WALKERS (or String) and must be excluded"
+    end
+  end
+
+  it "PROC_REPLACEMENTS is a frozen lookup table" do
+    t = RactorRailsShim::ShareabilityTraversal
+    assert t.const_defined?(:PROC_REPLACEMENTS, false), "PROC_REPLACEMENTS should exist"
+    table = t.const_get(:PROC_REPLACEMENTS)
+    assert table.frozen?, "PROC_REPLACEMENTS must be frozen"
+    assert_kind_of Hash, table
+  end
+
+  it "PROC_REPLACEMENTS dispatches [:ssl, :@exclude] to a callable" do
+    t = RactorRailsShim::ShareabilityTraversal
+    table = t::PROC_REPLACEMENTS
+    key = [:ssl, :@exclude]
+    assert table.key?(key), "PROC_REPLACEMENTS should key [:ssl, :@exclude]"
+    assert_respond_to table[key], :call
+  end
+
+  it "PROC_REPLACEMENTS dispatches [:files, :@app] to a callable" do
+    t = RactorRailsShim::ShareabilityTraversal
+    table = t::PROC_REPLACEMENTS
+    key = [:files, :@app]
+    assert table.key?(key), "PROC_REPLACEMENTS should key [:files, :@app]"
+    assert_respond_to table[key], :call
+  end
+
+  it "PROC_REPLACEMENTS dispatches :cookie for any ivar (nil wildcard)" do
+    t = RactorRailsShim::ShareabilityTraversal
+    table = t::PROC_REPLACEMENTS
+    key = [:cookie, nil]
+    assert table.key?(key), "PROC_REPLACEMENTS should key [:cookie, nil] (ivar wildcard)"
+    assert_respond_to table[key], :call
+  end
+
+  it "PROC_REPLACEMENTS dispatches :devise_scope for any ivar (nil wildcard)" do
+    t = RactorRailsShim::ShareabilityTraversal
+    table = t::PROC_REPLACEMENTS
+    key = [:devise_scope, nil]
+    assert table.key?(key), "PROC_REPLACEMENTS should key [:devise_scope, nil]"
+    assert_respond_to table[key], :call
+  end
+
+  it "PROC_REPLACEMENTS dispatches [:mapper, :@strategy] to a callable" do
+    t = RactorRailsShim::ShareabilityTraversal
+    table = t::PROC_REPLACEMENTS
+    key = [:mapper, :@strategy]
+    assert table.key?(key), "PROC_REPLACEMENTS should key [:mapper, :@strategy]"
+    assert_respond_to table[key], :call
+  end
+
+  it "PROC_REPLACEMENTS falls back to the default entry [nil, nil] for unknown procs" do
+    t = RactorRailsShim::ShareabilityTraversal
+    table = t::PROC_REPLACEMENTS
+    key = [nil, nil]
+    assert table.key?(key), "PROC_REPLACEMENTS should have a [nil, nil] default entry"
+    assert_respond_to table[key], :call
+  end
+
+  it "PROC_REPLACEMENTS drives replace_one_proc for the ssl branch" do
+    t = RactorRailsShim::ShareabilityTraversal
+    # A Proc whose source_location ends with ssl_loc and ivar :@exclude
+    # should get the CallableConst replacement, not NoOpProc.
+    callable_const_class = Class.new { def initialize(_arg); end }
+    t.configure(
+      callable_const_class: callable_const_class,
+      funnel: ->(label, &blk) { blk&.call rescue StandardError; }
+    )
+    parent = Object.new
+    parent.instance_variable_set(:@redirect, false)
+    ssl_proc = eval("lambda { }", TOPLEVEL_BINDING, t.ssl_loc, 1)
+    t.replace_one_proc(ssl_proc, parent, :@exclude, nil)
+    assert_kind_of callable_const_class, parent.instance_variable_get(:@exclude)
+  ensure
+    t.reset_configuration
+  end
+
+  it "PROC_REPLACEMENTS drives replace_one_proc for unknown src → NoOpProc default" do
+    t = RactorRailsShim::ShareabilityTraversal
+    noop_proc_class = Class.new
+    t.configure(
+      noop_proc_class: noop_proc_class,
+      funnel: ->(label, &blk) { blk&.call rescue StandardError; }
+    )
+    parent = Object.new
+    unknown_proc = eval("lambda { }", TOPLEVEL_BINDING, "/some/unknown/file.rb", 1)
+    t.replace_one_proc(unknown_proc, parent, :@whatever, nil)
+    assert_kind_of noop_proc_class, parent.instance_variable_get(:@whatever)
+  ensure
+    t.reset_configuration
+  end
 end
