@@ -49,18 +49,50 @@ module RactorRailsShim
           value
         end
 
-        # Thread mode serves requests in the main Ractor, where the eager-
-        # load class_attribute leak corrupts __callbacks, so captured
-        # symbolic filters are ALWAYS replayed (ignoring __callbacks).
-        def replay_callbacks_always?
-          false
-        end
-
         # Ractor mode: replay captured callbacks only when __callbacks is
         # empty (the worker-Ractor case — workers get the empty default).
         # In the main Ractor, __callbacks is live and replay is skipped.
-        def replay_callbacks_on_empty?
-          !::Ractor.main?
+        def replay_callbacks?(callbacks)
+          callbacks.nil? || callbacks.empty?
+        end
+
+        # Shared callback-replay logic used by both the "always" path
+        # (Thread mode) and the "on-empty" path (Ractor mode). Walks the
+        # SHAREABLE_DECLARED_CALLBACKS table and replays captured symbolic
+        # filters (before/after) that apply to the current action.
+        def replay_callbacks!(context, kind, &block)
+          table = ::RactorRailsShim::SHAREABLE_DECLARED_CALLBACKS
+          action = (context.action_name rescue nil)
+          action = action.to_sym if action
+          entries = []
+          k = context.class
+          while k && k <= ::ActionController::Base
+            rec = table[k.object_id]
+            entries = rec + entries if rec
+            k = k.superclass
+          end
+          unless entries.empty?
+            applies = lambda do |e|
+              next false unless (e[:kind] == :before || e[:kind] == :after)
+              in_only = e[:only].nil? || (action && e[:only].include?(action))
+              not_except = e[:except].nil? || !(action && e[:except].include?(action))
+              in_only && not_except
+            end
+            result = nil
+            halted = false
+            entries.each do |e|
+              next unless e[:kind] == :before && applies.call(e)
+              context.send(e[:filter]) if context.respond_to?(e[:filter], true)
+            end
+            result = block.call unless halted
+            entries.each do |e|
+              next unless e[:kind] == :after && applies.call(e)
+              context.send(e[:filter]) if context.respond_to?(e[:filter], true)
+            end
+            result
+          else
+            block.call
+          end
         end
       end
     end
@@ -108,15 +140,18 @@ module RactorRailsShim
 
         # Thread mode: the eager-load class_attribute leak corrupts
         # __callbacks, so ALWAYS replay the captured symbolic filters
-        # (ignoring __callbacks entirely).
-        def replay_callbacks_always?
-          true
+        # (ignoring __callbacks entirely). The "on-empty" gate is
+        # unreachable (the "always" path runs first); provided for
+        # contract parity.
+        def replay_callbacks?(callbacks)
+          false
         end
 
-        # Thread mode always replays, so the on-empty branch is unreachable
-        # (the always branch returns first). Provided for contract parity.
-        def replay_callbacks_on_empty?
-          true
+        # Thread mode always replays captured callbacks. Delegates to
+        # the shared replay_callbacks! implementation on the Ractor
+        # strategy (same logic, different trigger).
+        def replay_callbacks!(context, kind, &block)
+          RactorRailsShim::StorageStrategy::Ractor.replay_callbacks!(context, kind, &block)
         end
       end
     end

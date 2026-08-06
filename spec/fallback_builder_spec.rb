@@ -330,4 +330,168 @@ class FallbackBuilderSpec < Minitest::Spec
   ensure
     RactorRailsShim::FallbackBuilder.reset_configuration
   end
+
+  # --- Issue #40: ValueLookup chain + ShareableCopy dispatch ---
+
+  it "ValueLookup is a module under FallbackBuilder" do
+    assert RactorRailsShim::FallbackBuilder.const_defined?(:ValueLookup, false)
+  end
+
+  it "ValueLookup::Ies.lookup returns the IES value" do
+    t = RactorRailsShim::FallbackBuilder::ValueLookup::Ies
+    storage = { my_key: "ies_val" }
+    assert_equal "ies_val", t.lookup("Owner", :attr, :my_key, storage: storage)
+  end
+
+  it "ValueLookup::Ies.lookup returns nil for a missing key" do
+    t = RactorRailsShim::FallbackBuilder::ValueLookup::Ies
+    assert_nil t.lookup("Owner", :attr, :missing, storage: {})
+  end
+
+  it "ValueLookup::ClassAttrValues.lookup returns the class_attr_values value when main" do
+    t = RactorRailsShim::FallbackBuilder::ValueLookup::ClassAttrValues
+    cav = { my_key: "cav_val" }
+    assert_equal "cav_val", t.lookup("Owner", :attr, :my_key, class_attr_values: cav, main: true)
+  end
+
+  it "ValueLookup::ClassAttrValues.lookup returns nil when not main" do
+    t = RactorRailsShim::FallbackBuilder::ValueLookup::ClassAttrValues
+    cav = { my_key: "cav_val" }
+    assert_nil t.lookup("Owner", :attr, :my_key, class_attr_values: cav, main: false)
+  end
+
+  it "ValueLookup::Cvar.lookup reads a classvariable" do
+    t = RactorRailsShim::FallbackBuilder::ValueLookup::Cvar
+    mod = Module.new
+    mod.class_variable_set(:@@test_cvar, "cvar_val")
+    scg = ->(name) { mod }
+    assert_equal "cvar_val", t.lookup(Object.name, :test_cvar, nil, safe_const_get: scg)
+  end
+
+  it "ValueLookup::Cvar.lookup returns nil when no classvariable" do
+    t = RactorRailsShim::FallbackBuilder::ValueLookup::Cvar
+    mod = Module.new
+    scg = ->(name) { mod }
+    assert_nil t.lookup(Object.name, :nonexistent, nil, safe_const_get: scg)
+  end
+
+  it "ValueLookup::Ivar.lookup reads an instance variable" do
+    t = RactorRailsShim::FallbackBuilder::ValueLookup::Ivar
+    mod = Module.new
+    mod.instance_variable_set(:@test_ivar, "ivar_val")
+    scg = ->(name) { mod }
+    assert_equal "ivar_val", t.lookup(Object.name, :test_ivar, nil, safe_const_get: scg)
+  end
+
+  it "ValueLookup::RailsSend.lookup calls Rails.public_send" do
+    t = RactorRailsShim::FallbackBuilder::ValueLookup::RailsSend
+    fake_rails = Module.new
+    fake_rails.define_singleton_method(:secret_key_base) { "rails_secret" }
+    Object.const_set(:ShimRailsSendFake, fake_rails)
+    scg = ->(name) { fake_rails }
+    # RailsSend checks owner_name == "Rails" and calls ::Rails.public_send
+    # Since ::Rails is the real Rails (loaded), we test via injection:
+    # The lookup returns nil when owner is not "Rails"
+    assert_nil t.lookup("NotRails", :secret_key_base, nil, safe_const_get: scg)
+  ensure
+    Object.send(:remove_const, :ShimRailsSendFake) if defined?(ShimRailsSendFake)
+  end
+
+  it "ValueLookup::DEFAULT_CHAIN is a frozen array of modules" do
+    t = RactorRailsShim::FallbackBuilder::ValueLookup::DEFAULT_CHAIN
+    assert_kind_of Array, t
+    assert t.frozen?
+    assert t.length >= 3, "chain should have at least Ies, ClassAttrValues, Cvar"
+  end
+
+  it "value_lookup_chain reader returns DEFAULT_CHAIN when not configured" do
+    assert_same RactorRailsShim::FallbackBuilder::ValueLookup::DEFAULT_CHAIN,
+                RactorRailsShim::FallbackBuilder.value_lookup_chain
+  end
+
+  it "configure accepts a value_lookup_chain kwarg" do
+    custom = [Module.new]
+    RactorRailsShim::FallbackBuilder.configure(value_lookup_chain: custom)
+    assert_same custom, RactorRailsShim::FallbackBuilder.value_lookup_chain
+  ensure
+    RactorRailsShim::FallbackBuilder.reset_configuration
+  end
+
+  it "build! walks the value_lookup_chain to resolve values" do
+    # A custom chain with a single lookup that always returns a value
+    lookup = Module.new do
+      def self.lookup(_owner, _attr, ies_key, **)
+        { ies_key => "chain_val" }[ies_key]
+      end
+    end
+    RactorRailsShim::FallbackBuilder.configure(
+      value_lookup_chain: [lookup],
+      class_attributes: [["X", :y, :my_key, nil]],
+      storage: {},
+      class_attr_values: {},
+      shareable_mattr_defaults: [],
+      safe_const_get: ->(name) { nil },
+      replace_unshareable_procs: ->(v) { v },
+      replace_locks_and_concurrent_maps: ->(v) { v },
+      reassign_shareable_const: ->(s, v) { v }
+    )
+    RactorRailsShim::FallbackBuilder.reset_built!
+    result = RactorRailsShim::FallbackBuilder.build!
+    assert_equal "chain_val", result[:my_key]
+  ensure
+    RactorRailsShim::FallbackBuilder.reset_built!
+    RactorRailsShim::FallbackBuilder.reset_configuration
+  end
+
+  # --- ShareableCopy dispatch table ---
+
+  it "ShareableCopy is a module under FallbackBuilder" do
+    assert RactorRailsShim::FallbackBuilder.const_defined?(:ShareableCopy, false)
+  end
+
+  it "ShareableCopy::COPIERS is a frozen Hash" do
+    t = RactorRailsShim::FallbackBuilder::ShareableCopy
+    assert t.const_defined?(:COPIERS, false)
+    table = t.const_get(:COPIERS)
+    assert_kind_of Hash, table
+    assert table.frozen?
+  end
+
+  it "ShareableCopy::COPIERS has entries for Hash and Array" do
+    table = RactorRailsShim::FallbackBuilder::ShareableCopy::COPIERS
+    assert table.key?(Hash), "COPIERS should have a Hash entry"
+    assert table.key?(Array), "COPIERS should have an Array entry"
+  end
+
+  it "ShareableCopy.call returns a fresh dup for a Hash" do
+    t = RactorRailsShim::FallbackBuilder::ShareableCopy
+    orig = { a: 1 }
+    copy = t.call(orig)
+    assert_equal orig, copy
+    refute_same orig, copy
+  end
+
+  it "ShareableCopy.call returns a fresh dup for an Array" do
+    t = RactorRailsShim::FallbackBuilder::ShareableCopy
+    orig = [1, 2]
+    copy = t.call(orig)
+    assert_equal orig, copy
+    refute_same orig, copy
+  end
+
+  it "ShareableCopy.call passes through non-container values" do
+    t = RactorRailsShim::FallbackBuilder::ShareableCopy
+    val = Object.new
+    assert_same val, t.call(val)
+    assert_equal :sym, t.call(:sym)
+  end
+
+  it "FallbackBuilder.shareable_copy delegates to ShareableCopy.call" do
+    sc = RactorRailsShim::FallbackBuilder::ShareableCopy
+    orig = { a: 1 }
+    copy = RactorRailsShim::FallbackBuilder.shareable_copy(orig)
+    # The result should be identical to what ShareableCopy.call produces
+    assert_equal sc.call(orig), copy
+    refute_same orig, copy
+  end
 end

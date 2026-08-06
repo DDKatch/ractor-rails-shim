@@ -118,4 +118,41 @@ class StorageStrategySpec < Minitest::Spec
       RactorRailsShim::StorageStrategy::Ractor
     assert_equal expected, s
   end
+
+  # --- Issue #40: one-message interface ---
+
+  it "both strategies implement replay_callbacks?" do
+    [RactorRailsShim::StorageStrategy::Ractor,
+     RactorRailsShim::StorageStrategy::Thread].each do |strategy|
+      assert_respond_to strategy, :replay_callbacks?,
+                        "#{strategy} should respond to replay_callbacks?"
+    end
+  end
+
+  it "both strategies implement replay_callbacks!" do
+    [RactorRailsShim::StorageStrategy::Ractor,
+     RactorRailsShim::StorageStrategy::Thread].each do |strategy|
+      assert_respond_to strategy, :replay_callbacks!,
+                        "#{strategy} should respond to replay_callbacks!"
+    end
+  end
+
+  it "Thread strategy: replay_callbacks? returns false (always replays via replay_callbacks!)" do
+    # Thread mode always replays; the call site uses replay_callbacks! for
+    # the actual work. replay_callbacks? is the "on-empty" gate, which
+    # Thread mode never uses (always path runs first).
+    assert_equal false, RactorRailsShim::StorageStrategy::Thread.replay_callbacks?(nil)
+  end
+
+  it "Ractor strategy: replay_callbacks? returns false when callbacks present" do
+    refute RactorRailsShim::StorageStrategy::Ractor.replay_callbacks?([:some_callback])
+  end
+
+  it "Ractor strategy: replay_callbacks? returns true when callbacks nil" do
+    assert RactorRailsShim::StorageStrategy::Ractor.replay_callbacks?(nil)
+  end
+
+  it "Ractor strategy: replay_callbacks? returns true when callbacks empty" do
+    assert RactorRailsShim::StorageStrategy::Ractor.replay_callbacks?([])
+  end
 end

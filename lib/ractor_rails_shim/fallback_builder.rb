@@ -38,6 +38,7 @@ module RactorRailsShim
     @class_attr_values = nil
     @shareable_mattr_defaults = nil
     @storage = nil
+    @value_lookup_chain = nil
 
     # Inject the callable + registry collaborators. The callables:
     # `safe_const_get(path)` → value|nil; `replace_unshareable_procs(val)`
@@ -46,14 +47,16 @@ module RactorRailsShim
     # constant. The registries: `class_attributes` (CLASS_ATTRIBUTES
     # array), `class_attr_values` (CLASS_ATTR_VALUES store),
     # `shareable_mattr_defaults` (SHAREABLE_MATTR_DEFAULTS array),
-    # `storage` (IES storage, hash-like: storage[ies_key]). Passing
-    # `nil` for any (or calling `reset_configuration`) restores the
-    # facade-lookup default for that collaborator.
+    # `storage` (IES storage, hash-like: storage[ies_key]). The lookup
+    # chain: `value_lookup_chain` (Array of lookup modules, each
+    # responding to `.lookup(owner, attr_name, ies_key, **ctx) -> val|nil`).
+    # Passing `nil` for any (or calling `reset_configuration`) restores
+    # the facade-lookup default for that collaborator.
     def self.configure(safe_const_get: nil, replace_unshareable_procs: nil,
                        replace_locks_and_concurrent_maps: nil,
                        reassign_shareable_const: nil, class_attributes: nil,
                        class_attr_values: nil, shareable_mattr_defaults: nil,
-                       storage: nil)
+                       storage: nil, value_lookup_chain: nil)
       @safe_const_get = safe_const_get
       @replace_unshareable_procs = replace_unshareable_procs
       @replace_locks_and_concurrent_maps = replace_locks_and_concurrent_maps
@@ -62,6 +65,7 @@ module RactorRailsShim
       @class_attr_values = class_attr_values
       @shareable_mattr_defaults = shareable_mattr_defaults
       @storage = storage
+      @value_lookup_chain = value_lookup_chain
     end
 
     # Restore the default (facade-lookup) collaborators. Test seam.
@@ -74,6 +78,7 @@ module RactorRailsShim
       @class_attr_values = nil
       @shareable_mattr_defaults = nil
       @storage = nil
+      @value_lookup_chain = nil
     end
 
     def self.safe_const_get
@@ -108,6 +113,85 @@ module RactorRailsShim
       @storage || RactorRailsShim.storage
     end
 
+    def self.value_lookup_chain
+      @value_lookup_chain || ValueLookup::DEFAULT_CHAIN
+    end
+
+    # ValueLookup: Chain of Responsibility for resolving class_attribute /
+    # mattr_accessor values during fallback build (Issue #40, POODR §5b).
+    # Each link is a module responding to
+    # `.lookup(owner_name, attr_name, ies_key, **ctx) -> val|nil`. The
+    # chain is walked in order; the first non-nil value wins. The five
+    # sequential `if val.nil? && ...` branches in `build!` become a loop
+    # over the chain — adding a new lookup source is a one-line module
+    # instead of a new `elsif`.
+    module ValueLookup
+      # IES slot — the primary source for class_attribute values.
+      module Ies
+        def self.lookup(_owner_name, _attr_name, ies_key, storage:, **)
+          storage[ies_key]
+        end
+      end
+
+      # CLASS_ATTR_VALUES — the main-Ractor store for values whose IES slot
+      # was never written but whose definition-time DEFAULT was mutated
+      # during boot (e.g. AbstractController::Base's `config`).
+      module ClassAttrValues
+        def self.lookup(_owner_name, _attr_name, ies_key, class_attr_values:, main: ::Ractor.main?, **)
+          return nil unless main
+          class_attr_values[ies_key]
+        end
+      end
+
+      # @@class_variable — for mattr_accessor: the value may have been
+      # written to @@sym after define-time (e.g. by an initializer).
+      module Cvar
+        def self.lookup(owner_name, attr_name, _ies_key, safe_const_get:, **)
+          return nil unless owner_name && attr_name.is_a?(Symbol)
+          owner_mod = safe_const_get.call(owner_name)
+          return nil unless owner_mod && owner_mod.class_variable_defined?("@@#{attr_name}")
+          owner_mod.class_variable_get("@@#{attr_name}")
+        rescue StandardError
+          nil
+        end
+      end
+
+      # @instance_variable — for raw class ivars (PathRegistry, etc.):
+      # read @<attr_name> in main.
+      module Ivar
+        def self.lookup(owner_name, attr_name, _ies_key, safe_const_get:, **)
+          return nil unless owner_name && attr_name.is_a?(Symbol)
+          owner_mod = safe_const_get.call(owner_name)
+          return nil unless owner_mod && owner_mod.instance_variable_defined?("@#{attr_name}")
+          owner_mod.instance_variable_get("@#{attr_name}")
+        rescue StandardError
+          nil
+        end
+      end
+
+      # Rails module accessors — for owner_name == "Rails": the value may
+      # live in the @ivar set by Rails' own writer or lazy-init'd by
+      # Rails' own reader. Read via the actual accessor in main.
+      module RailsSend
+        def self.lookup(owner_name, attr_name, _ies_key, **)
+          return nil unless owner_name == "Rails" && defined?(::Rails)
+          ::Rails.public_send(attr_name) if ::Rails.respond_to?(attr_name, false)
+        rescue StandardError
+          nil
+        end
+      end
+
+      # The default lookup chain, walked in order by build!. Frozen at
+      # load time; the `configure` seam injects a custom chain for tests.
+      DEFAULT_CHAIN = [
+        Ies,
+        ClassAttrValues,
+        Cvar,
+        Ivar,
+        RailsSend,
+      ].freeze
+    end
+
     # Has build! run? Lives on FallbackBuilder (Issue #24 — own your
     # own state), NOT on the facade singleton.
     def self.built?
@@ -136,58 +220,26 @@ module RactorRailsShim
       @built = true
 
       fallback = {}
+      chain = value_lookup_chain
+      lookup_ctx = {
+        storage: storage,
+        class_attr_values: class_attr_values,
+        main: ::Ractor.main?,
+        safe_const_get: safe_const_get,
+      }
       class_attributes.each do |(owner_name, attr_name, ies_key, default_val)|
         # Skip the Rails logger — it's intrinsically unshareable (IO + Mutex +
         # mutable formatter) and workers build their own per-Ractor logger
         # via the patched reader. Trying to make it shareable would freeze the
         # IO, breaking logging in main too.
         next if owner_name == "Rails" && attr_name == :logger
-        val = storage[ies_key]
-        # For class_attribute values whose IES slot was never written but
-        # whose definition-time DEFAULT was mutated in place during boot
-        # (e.g. AbstractController::Base's `config`, whose default
-        # ActiveSupport::OrderedOptions is filled with the real nested config
-        # by railties), the live value lives in the main-Ractor
-        # CLASS_ATTR_VALUES store, NOT in IES. Read it there so workers get
-        # the real value instead of the empty definition-time default.
-        if val.nil? && Ractor.main?
-          val = class_attr_values[ies_key]
-        end
-        # For mattr_accessor: the value may have been written to @@sym after
-        # define-time (e.g. by an initializer). Read it from there if the IES
-        # slot is nil (the seed only set the default; the live value may
-        # differ).
-        if val.nil? && owner_name && attr_name.is_a?(Symbol)
-          begin
-            owner_mod = safe_const_get.call(owner_name)
-            if owner_mod && owner_mod.classvariable_defined?("@@#{attr_name}")
-              val = owner_mod.classvariable_get("@@#{attr_name}")
-            end
-          rescue StandardError => e
-            # ignore — best-effort read
-          end
-        end
-        # For raw class ivars (PathRegistry, etc.): read @<attr_name> in main.
-        if val.nil? && owner_name && attr_name.is_a?(Symbol)
-          begin
-            owner_mod = safe_const_get.call(owner_name)
-            if owner_mod && owner_mod.instance_variable_defined?("@#{attr_name}")
-              val = owner_mod.instance_variable_get("@#{attr_name}")
-            end
-          rescue StandardError => e
-            # ignore — best-effort read
-          end
-        end
-        # For the Rails module accessors (owner_name == "Rails"): the value
-        # may live in the @ivar (set by Rails' own writer via super, or
-        # lazy-init'd by Rails' own reader) rather than in IES. Read it via
-        # the actual accessor in main, which materializes the lazy-init value.
-        if val.nil? && owner_name == "Rails" && defined?(::Rails)
-          begin
-            val = ::Rails.public_send(attr_name) if ::Rails.respond_to?(attr_name, false)
-          rescue StandardError => e
-            # ignore — best-effort read
-          end
+
+        # Walk the ValueLookup chain to resolve the value. The first
+        # non-nil result wins; if all links return nil, val stays nil.
+        val = nil
+        chain.each do |link|
+          val = link.lookup(owner_name, attr_name, ies_key, **lookup_ctx)
+          break unless val.nil?
         end
 
         shareable_val = nil
@@ -255,11 +307,24 @@ module RactorRailsShim
 
     # Return a fresh copy of a mutable default container (Hash/Array) so the
     # fallback entry is independent. Frozen/shareable defaults pass through.
+    # Uses the ShareableCopy dispatch table (Issue #40, POODR §5b).
     def self.shareable_copy(val)
-      case val
-      when Hash then val.dup
-      when Array then val.dup
-      else val
+      ShareableCopy.call(val)
+    end
+
+    # Dispatch table for shareable copies of mutable default containers.
+    # Replaces the case/if type-switch in FallbackBuilder.shareable_copy and
+    # GlobalConstantFreezer.call. Adding a new shareable-copy type is a
+    # one-line table entry (Issue #40, POODR §5b).
+    module ShareableCopy
+      COPIERS = {
+        Hash  => ->(v) { v.dup },
+        Array => ->(v) { v.dup },
+      }.freeze
+
+      def self.call(val)
+        copier = COPIERS.find { |klass, _| val.is_a?(klass) }&.last
+        copier ? copier.call(val) : val
       end
     end
   end
