@@ -124,6 +124,18 @@ module RactorRailsShim
             owner.module_eval RactorRailsShim._class_attr_methods(name, key_str, missing_default),
                                 __FILE__, __LINE__ + 1
           end
+
+          # When owner IS a singleton class (e.g. called from class << self),
+          # class_attribute's class_eval does `class << self` which opens a
+          # nested singleton class. The public `def #{name}` ends up on
+          # owner.singleton_class, which calls `#{namespaced_name}` — but
+          # that method was only defined on `target` (= owner, the singleton
+          # class), not on the nested level. Define it on owner.singleton_class
+          # too so the nested `def #{name}` can resolve it.
+          if owner.singleton_class?
+            owner.singleton_class.module_eval RactorRailsShim._class_attr_methods(namespaced_name, key_str, missing_default),
+                                               __FILE__, __LINE__ + 1
+          end
         end
 
         # redefine_method is used by `redefine` internally and by other call
