@@ -390,11 +390,6 @@ module RactorRailsShim
     def _share_model_classes!
       return unless defined?(::ActiveRecord::Base)
 
-      # Accumulates each model's pending attribute modifications (keyed by
-      # object_id) during the warm loop, reassigned into the frozen
-      # SHAREABLE_PENDING_ATTR_MODS constant at the end of this method.
-      _pending_attr_mods_capture = {}
-
       # Suppress reload_schema_from_cache for the rest of the main Ractor's
       # lifecycle. During warming, abstract classes (ActiveRecord::Base,
       # ApplicationRecord) trigger reload_schema_from_cache which recursively
@@ -499,54 +494,62 @@ module RactorRailsShim
           # BasicObject / frozen owners
         end
 
-        # Capture this model's pending attribute modifications (custom
-        # attribute macros: user defaults / type decorators) so workers can
-        # seed them. Under kino, worker Ractors do NOT share main's class-ivar
-        # space, so reading `@pending_attribute_modifications` from a worker
-        # raises; we snapshot it here (main-readable) into a shareable
-        # constant keyed by object_id. Models whose modifications hold
-        # unshareable values (e.g. a Proc-backed decorator) are omitted,
-        # degrading to [] in workers.
+      end
+
+      # Build the per-model shareable snapshots (primary keys + pending
+      # attribute modifications) workers read instead of un-shareable class
+      # ivars. Delegated to _rebuild_activerecord_model_snapshots! so it can
+      # be called again post-eager-load (at make_app_shareable! time) once
+      # ActiveRecord::Base.descendants holds the app's models.
+      _rebuild_activerecord_model_snapshots!
+    end
+
+    # (Re)build the per-model shareable snapshots that workers read instead of
+    # un-shareable class ivars: AR_PRIMARY_KEYS_SHAREABLE (model name -> primary
+    # key) and SHAREABLE_PENDING_ATTR_MODS (model object_id -> attribute macro
+    # modifications). Separated from _share_model_classes! so it can be called
+    # again AFTER eager-load (at make_app_shareable! time), when
+    # ActiveRecord::Base.descendants actually contains the app's models. Called
+    # too early (e.g. during the initial install, before eager-load) it only
+    # captures ActiveRecord::Base — the post-boot call overwrites the constant
+    # with the complete map, which is what workers spawned after
+    # make_app_shareable! read.
+    def _rebuild_activerecord_model_snapshots!
+      return unless defined?(::ActiveRecord::Base)
+
+      classes = [::ActiveRecord::Base]
+      classes.concat(::ActiveRecord::Base.descendants) rescue nil
+
+      # pending attribute modifications (custom attribute macros)
+      capture = {}
+      classes.each do |klass|
+        n = klass.name
+        next unless n
         begin
           mods = klass.instance_variable_get(:@pending_attribute_modifications)
           if mods && mods.is_a?(Array) && !mods.empty?
             shareable = mods.dup
             Ractor.make_shareable(shareable)
-            _pending_attr_mods_capture[klass.object_id] = shareable
+            capture[klass.object_id] = shareable
           end
         rescue StandardError
           nil
         end
       end
+      capture.freeze
+      Ractor.make_shareable(capture)
+      RactorRailsShim._reassign_shareable_const(:SHAREABLE_PENDING_ATTR_MODS, capture)
 
-      # Build + reassign the shareable pending-attribute-modifications
-      # constant (frozen Hash keyed by model object_id). Done once after the
-      # loop so the constant holds every model's snapshot.
-      begin
-        capture = _pending_attr_mods_capture
-        capture.freeze
-        Ractor.make_shareable(capture)
-        RactorRailsShim._reassign_shareable_const(:SHAREABLE_PENDING_ATTR_MODS, capture)
-      rescue StandardError
-        nil
+      # primary keys
+      pk_map = {}
+      classes.each do |klass|
+        n = klass.name
+        next unless n
+        pk = klass.primary_key rescue next
+        pk_map[n] = pk if pk
       end
-
-      # Capture each model's primary_key into a shareable snapshot. Workers
-      # read this instead of the raw @primary_key class ivar (which starts as
-      # PRIMARY_KEY_NOT_SET, a BasicObject that can't be made shareable).
-      begin
-        pk_map = {}
-        classes.each do |klass|
-          n = klass.name
-          next unless n
-          pk = klass.primary_key rescue next
-          pk_map[n] = pk if pk
-        end
-        shareable = Ractor.make_shareable(pk_map)
-        _reassign_shareable_const(:AR_PRIMARY_KEYS_SHAREABLE, shareable)
-      rescue StandardError => e
-        # best-effort
-      end
+      shareable = Ractor.make_shareable(pk_map)
+      _reassign_shareable_const(:AR_PRIMARY_KEYS_SHAREABLE, shareable)
     end
     #  - Monitor/Mutex  -> NoOpLock (never contended post-boot)
     #  - Concurrent::Map -> frozen Hash
@@ -1846,7 +1849,22 @@ module RactorRailsShim
             RactorRailsShim.storage[key] = v
             v
           else
-            RactorRailsShim::AR_PRIMARY_KEYS_SHAREABLE[name]
+            snap = RactorRailsShim::AR_PRIMARY_KEYS_SHAREABLE[name]
+            return snap if snap
+            # Fallback: derive the primary key from the schema cache via the
+            # worker-safe table_name (compute_table_name). Reading the
+            # @primary_key / @table_name class ivars raises
+            # Ractor::IsolationError in workers, and the boot-time descendant
+            # snapshot can miss lazy-loaded models, so compute it on demand.
+            # `id` / `to_param` depend on primary_key, so a nil here breaks
+            # URL helpers and record inspection in workers.
+            begin
+              pk = connection_pool.schema_cache.primary_keys(table_name)
+              return pk if pk.is_a?(::String)
+            rescue StandardError
+              nil
+            end
+            nil
           end
         end
         def composite_primary_key?

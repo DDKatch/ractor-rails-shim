@@ -163,6 +163,13 @@ module RactorRailsShim
       precompute_lazy_ivars.call(app)
       precompute_propshaft.call(app)
       generate_ar_attribute_methods.call
+      # Rebuild the per-model shareable snapshots (primary keys +
+      # pending-attribute-modifications) AFTER eager-load, when
+      # ActiveRecord::Base.descendants actually contains the app's models.
+      # The initial install-time pass only captured ActiveRecord::Base, so
+      # without this, worker Ractors see a nil primary_key -> `id`/to_param
+      # return nil and URL helpers / record inspection break.
+      RactorRailsShim._rebuild_activerecord_model_snapshots! if Ractor.main?
       warm_attribute_method_patterns.call
       freeze_declared_callbacks.call
       freeze_shareable_class_ivars.call
