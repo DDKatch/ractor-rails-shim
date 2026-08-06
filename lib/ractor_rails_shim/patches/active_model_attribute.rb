@@ -65,6 +65,24 @@ module RactorRailsShim
         end
       end
 
+      # `pending_attribute_modifications` (activemodel/attribute_registration.rb)
+      # does `@pending_attribute_modifications ||= []` — a class-ivar write that
+      # raises `can not set instance variables of classes/modules by non-main
+      # Ractors` in kino's worker Ractors (which do not share main's class-ivar
+      # space, unlike Ractor.new workers). Route the cache through per-Ractor
+      # IES so each worker keeps its own (seeded from main at prepare time via
+      # _share_pending_attribute_mods!, falling back to [] for models with no
+      # custom attribute macros).
+      def pending_attribute_modifications
+        if ::Ractor.main?
+          @pending_attribute_modifications ||= []
+        else
+          key = :"rrs_pending_attr_mods_#{object_id}"
+          RactorRailsShim.storage[key] ||=
+            (::RactorRailsShim::SHAREABLE_PENDING_ATTR_MODS[object_id] || []).dup
+        end
+      end
+
       # `reset_default_attributes!` (called by `reload_schema_from_cache` via
       # the Attributes → Timestamp → ModelSchema super chain) writes
       # `@default_attributes = nil` and `@attribute_types = nil` class ivars.

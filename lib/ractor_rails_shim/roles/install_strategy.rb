@@ -28,6 +28,18 @@ module RactorRailsShim
         RactorRailsShim.install_execution_wrapper
         require "active_support/callbacks" rescue nil
         RactorRailsShim::CallbackCapture.install_callback_declaration_capture!
+        # Patch the `scope` macro BEFORE the app's models are eager-loaded, so
+        # `scope :recent, -> { ... }` compiles a worker-safe (string-eval'd)
+        # method instead of Rails' un-shareable define_method. The patch
+        # requires active_record itself, so it is safe to call this early —
+        # it applies immediately and is idempotent (no-op at prepare time).
+        RactorRailsShim.__send__(:_install_activerecord_scope_patch)
+        # Patch ActiveRecord reflections BEFORE eager-load: AR memoizes ivars
+        # (@foreign_key, @klass, @inverse_of, ...) on reflection objects, but
+        # those objects are frozen in the shared app graph, so the write raises
+        # FrozenError in workers on the first association read. Route the
+        # memoization through a per-worker cache instead.
+        RactorRailsShim.__send__(:_install_activerecord_reflection_patch)
         # Patch ActionView::Base.with_empty_template_cache EARLY (before
         # eager load) so production's DetailsKey.view_context_class uses the
         # block-free version. The framework's original defines

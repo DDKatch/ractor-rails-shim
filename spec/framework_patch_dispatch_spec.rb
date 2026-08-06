@@ -84,6 +84,8 @@ class FrameworkPatchDispatchSpec < Minitest::Spec
     _install_action_view_partial_path_patch
     _install_action_view_field_type_patch
     _install_action_view_safe_join_patch
+    _install_action_view_sanitize_patch
+    _install_loofah_patch
     _install_abstract_controller_patch
     _install_action_controller_controller_name_patch
     _install_flash_helpers_patch
@@ -126,6 +128,7 @@ class FrameworkPatchDispatchSpec < Minitest::Spec
     _install_activerecord_primary_key_patch
     _install_activerecord_query_constraints_patch
     _install_activerecord_relation_delegate_cache_patch
+    _install_activerecord_reflection_patch
     _install_active_model_attribute_method_patterns_patch
     _install_activerecord_model_classes_patch
     _install_active_model_naming_patch

@@ -390,6 +390,11 @@ module RactorRailsShim
     def _share_model_classes!
       return unless defined?(::ActiveRecord::Base)
 
+      # Accumulates each model's pending attribute modifications (keyed by
+      # object_id) during the warm loop, reassigned into the frozen
+      # SHAREABLE_PENDING_ATTR_MODS constant at the end of this method.
+      _pending_attr_mods_capture = {}
+
       # Suppress reload_schema_from_cache for the rest of the main Ractor's
       # lifecycle. During warming, abstract classes (ActiveRecord::Base,
       # ApplicationRecord) trigger reload_schema_from_cache which recursively
@@ -493,6 +498,37 @@ module RactorRailsShim
         rescue StandardError => e
           # BasicObject / frozen owners
         end
+
+        # Capture this model's pending attribute modifications (custom
+        # attribute macros: user defaults / type decorators) so workers can
+        # seed them. Under kino, worker Ractors do NOT share main's class-ivar
+        # space, so reading `@pending_attribute_modifications` from a worker
+        # raises; we snapshot it here (main-readable) into a shareable
+        # constant keyed by object_id. Models whose modifications hold
+        # unshareable values (e.g. a Proc-backed decorator) are omitted,
+        # degrading to [] in workers.
+        begin
+          mods = klass.instance_variable_get(:@pending_attribute_modifications)
+          if mods && mods.is_a?(Array) && !mods.empty?
+            shareable = mods.dup
+            Ractor.make_shareable(shareable)
+            _pending_attr_mods_capture[klass.object_id] = shareable
+          end
+        rescue StandardError
+          nil
+        end
+      end
+
+      # Build + reassign the shareable pending-attribute-modifications
+      # constant (frozen Hash keyed by model object_id). Done once after the
+      # loop so the constant holds every model's snapshot.
+      begin
+        capture = _pending_attr_mods_capture
+        capture.freeze
+        Ractor.make_shareable(capture)
+        RactorRailsShim._reassign_shareable_const(:SHAREABLE_PENDING_ATTR_MODS, capture)
+      rescue StandardError
+        nil
       end
 
       # Capture each model's primary_key into a shareable snapshot. Workers
@@ -598,6 +634,24 @@ module RactorRailsShim
       #    their own lazily-initialized copy.
       if defined?(::ActiveModel::Type)
         _patch_active_model_type_default_value!
+      end
+
+      # 5. ActiveRecord::Associations::AssociationScope::INSTANCE is an instance
+      #    singleton wrapping an unshareable identity lambda. Worker Ractors
+      #    read it on EVERY association scope build (AssociationScope.scope),
+      #    so it must be Ractor-shareable. Replace the constant with a
+      #    deep-frozen, shareable copy built in the main Ractor — the same
+      #    pattern as _freeze_journey_visitors! for Journey's *::INSTANCE.
+      if defined?(::ActiveRecord::Associations::AssociationScope) &&
+         ::ActiveRecord::Associations::AssociationScope.const_defined?(:INSTANCE)
+        inst = ::ActiveRecord::Associations::AssociationScope::INSTANCE
+        unless Ractor.shareable?(inst)
+          _swallow("make AssociationScope::INSTANCE shareable") do
+            ::ActiveRecord::Associations::AssociationScope.const_set(
+              :INSTANCE, Ractor.make_shareable(inst)
+            )
+          end
+        end
       end
     end
 
@@ -725,33 +779,41 @@ module RactorRailsShim
       return unless defined?(::ActiveRecord::ModelSchema::ClassMethods)
       mod = ::ActiveRecord::ModelSchema::ClassMethods
       mod.module_eval do
-        # `columns_hash` reads `@columns_hash`, loading the schema via
-        # `load_schema` only when `@columns_hash` is nil. `load_schema` itself
-        # short-circuits on `@schema_loaded?` — and in a worker Ractor the model
-        # can carry `@schema_loaded == true` (warmed in main, shareable) while
-        # `@columns_hash` is nil (never warmed, or reset by a sibling worker's
-        # `reset_column_information`). The original then returns nil, and
-        # ActiveRecordAttributesPatch#_default_attributes blows up with
-        # `undefined method 'transform_values' for nil`. In the worker, force a
-        # real load (ignoring the `@schema_loaded` short-circuit) when
-        # `@columns_hash` is missing; abstract classes keep the original path
-        # (they have no table, so `load_schema!` would raise).
+        # `columns_hash` reads `@columns_hash`. The original only loads via
+        # `load_schema` when `@columns_hash` is nil. In a worker Ractor, class
+        # instance variables are NOT shared with the main Ractor (reading
+        # `@columns_hash` set in main raises Ractor::IsolationError, or — under
+        # kino's worker Ractors, which do not share main's class-ivar space —
+        # returns the worker's own nil view). So `load_schema!` (patched to a
+        # no-op in workers) never populates it, and the model's schema is
+        # permanently nil in workers. Mirror the worker `table_name` patch
+        # (below): cache the loaded schema per-Ractor in IES
+        # (ActiveSupport::IsolatedExecutionState, readable from every worker
+        # Ractor) instead of the un-shareable class ivar. Main keeps the
+        # original class-ivar path (frozen into the shared graph).
         def columns_hash
-          if @columns_hash.nil?
-            if ::Ractor.main? || abstract_class?
-              load_schema
-            else
-              @load_schema_monitor.synchronize do
-                next if @columns_hash
-                load_schema!
-                @schema_loaded = true
+          if ::Ractor.main? || abstract_class?
+            load_schema if @columns_hash.nil?
+            @columns_hash
+          else
+            store = (RactorRailsShim.storage[:rrs_columns_hash] ||= {})
+            cached = store[self.object_id]
+            return cached if cached
+
+            cols = connection_pool.schema_cache.columns_hash(table_name)
+            if cols.nil? || cols.empty?
+              # Cache was cold (fresh worker pool). Force a load from the DB
+              # via the (lazily established) worker connection.
+              begin
+                cols = connection.columns(table_name).index_by(&:name)
               rescue StandardError
-                reload_schema_from_cache
-                raise
+                cols = nil
               end
             end
+            cols = cols.freeze if cols
+            store[self.object_id] = cols if cols
+            cols
           end
-          @columns_hash
         end
 
         def table_name
@@ -785,6 +847,32 @@ module RactorRailsShim
             super
           else
             table_name
+          end
+        end
+      end
+
+      # `attribute_names` is defined on `ActiveRecord::AttributeMethods::
+      # ClassMethods` (NOT ModelSchema), and that module sits earlier in the
+      # ancestor chain, so a ModelSchema-side patch would be shadowed. Its main
+      # path memoizes via `attribute_types` (an unshareable class ivar) and
+      # `table_exists?` (writes `@table_exists`), both of which raise from a
+      # worker Ractor. Patch it directly: main keeps the original via `super`;
+      # workers use `columns_hash.keys` (already routed through per-Ractor
+      # IES), a faithful substitute for the DB-backed attribute names.
+      if defined?(::ActiveRecord::AttributeMethods::ClassMethods)
+        am_mod = ::ActiveRecord::AttributeMethods::ClassMethods
+        am_mod.module_eval do
+          def attribute_names
+            if ::Ractor.main?
+              super
+            else
+              key = :"rrs_attribute_names_#{object_id}"
+              RactorRailsShim.storage[key] ||= if abstract_class?
+                []
+              else
+                columns_hash.keys
+              end.freeze
+            end
           end
         end
       end
@@ -2024,16 +2112,39 @@ module RactorRailsShim
       return if @ar_scope_patched
       @ar_scope_patched = true
       _register_patch :activerecord_scope, "8.1"
+      # The scope macro MUST be patched BEFORE the app's models are eager
+      # loaded, so `scope :recent, -> { ... }` defines a worker-safe method
+      # (string-eval'd body) instead of Rails' un-shareable define_method.
+      # Apply now if AR is already loaded, otherwise hook active_record's load
+      # (which fires during framework boot, before eager-load). Never force a
+      # `require "active_record"` here — that would double-load AR under
+      # `bundle exec` and re-define constants after the shim froze them.
+      if defined?(::ActiveRecord::Scoping::Named::ClassMethods)
+        _apply_activerecord_scope_patch
+      else
+        ActiveSupport.on_load(:active_record) do
+          RactorRailsShim.__send__(:_apply_activerecord_scope_patch)
+        end
+      end
+    end
+
+    def _apply_activerecord_scope_patch
       return unless defined?(::ActiveRecord::Scoping::Named::ClassMethods)
 
-      # Shareable Hash to hold scope source code: { "ModelName" => { scope_name => "body_source" } }
+      # Shareable (frozen) registry of scope source code:
+      # { "Model" => { :recent => [body_source, [params]] } }. It MUST be a
+      # frozen shareable object so worker Ractors can read it from the shared
+      # app graph. But scopes register their bodies during boot eager-load
+      # (after this patch installs, before the graph freezes), so each write
+      # rebuilds the frozen Hash atomically via const_set. Cost is negligible
+      # (scopes are defined only at boot).
       unless RactorRailsShim.const_defined?(:SCOPE_SOURCE_CODES)
         RactorRailsShim.const_set(:SCOPE_SOURCE_CODES, Ractor.make_shareable({}))
       end
 
       mod = ::ActiveRecord::Scoping::Named::ClassMethods
       mod.module_eval do
-        alias_method :_rrs_orig_scope, :scope
+        alias_method :_rrs_orig_scope, :scope unless method_defined?(:_rrs_orig_scope)
 
         def scope(name, body = nil, &block)
           unless body.respond_to?(:call)
@@ -2046,7 +2157,7 @@ module RactorRailsShim
               "a class method with the same name."
           end
 
-          if method_defined_within?(name, Relation)
+          if method_defined_within?(name, ::ActiveRecord::Relation)
             raise ArgumentError, "You tried to define a scope named \"#{name}\" " \
               "on the model \"#{self.name}\", but ActiveRecord::Relation already defined " \
               "an instance method with the same name."
@@ -2116,26 +2227,61 @@ module RactorRailsShim
             end
           end
 
-          # Store the body_source in the shareable constant (cross-Ractor).
+          # Store the body_source + parameter names in the shareable constant
+          # (cross-Ractor). Parameter names let workers bind the call's args
+          # (scopes like `by_title(q)`) without ever referencing the caller's
+          # main-Ractor locals.
           if body_source
-            RactorRailsShim::SCOPE_SOURCE_CODES[model_name_str] ||= {}
-            RactorRailsShim::SCOPE_SOURCE_CODES[model_name_str][scope_name_str.to_sym] = body_source
+            param_names = if body.respond_to?(:parameters)
+                            body.parameters.map { |p| p[1] }.compact
+                          else
+                            []
+                          end
+            cur = RactorRailsShim.const_defined?(:SCOPE_SOURCE_CODES) ? RactorRailsShim::SCOPE_SOURCE_CODES : {}
+            cur = cur.dup
+            cur[model_name_str] ||= {}
+            cur[model_name_str] = cur[model_name_str].dup
+            cur[model_name_str][scope_name_str.to_sym] = [body_source, param_names]
+            RactorRailsShim.const_set(:SCOPE_SOURCE_CODES, Ractor.make_shareable(cur))
           end
 
-          # Also store extension if present.
+          # Also store extension if present. Scope extensions are Modules, which
+          # are not shareable across Ractors, so keep them in per-Ractor storage
+          # (available in the Ractor that defined the scope; workers without the
+          # extension simply skip it — acceptable for the common no-extension case).
           if extension
-            ext_key = :"rrs_scope_ext_#{model_name_str}_#{scope_name_str}"
-            RactorRailsShim.storage[ext_key] = extension
+            Ractor.current[:"rrs_scope_ext_#{model_name_str}_#{scope_name_str}"] = extension
           end
 
           # Define via string eval (compiled def, not define_method block).
+          #
+          # CRITICAL: the scope body must be evaluated from a STRING, not a
+          # block. A literal block `{ order(...) }` written here is compiled in
+          # the main Ractor (where this method is defined) and calling it from a
+          # worker raises "defined with an un-shareable Proc in a different
+          # Ractor". `instance_eval(string)` compiles the string at CALL time, in
+          # the worker Ractor, so it is shareable. Scope args are bridged onto a
+          # transient ivar on the relation (`@_rrs_scope_args`) so the body can
+          # read them with `self` bound to the relation.
           if body_source
             singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
               def #{name}(*args)
-                src = (RactorRailsShim::SCOPE_SOURCE_CODES[self.name] || {})[:"#{scope_name_str}"]
+                store = RactorRailsShim::SCOPE_SOURCE_CODES[self.name]
+                info = store && store[:"#{scope_name_str}"]
                 ext_key = :"rrs_scope_ext_\#{self.name}_#{scope_name_str}"
-                ext = RactorRailsShim.storage[ext_key]
-                scope = all.instance_eval { #{body_source} }
+                ext = Ractor.current[ext_key]
+                return super(*args) unless info
+                body_source, param_names = info
+                bind = param_names.each_with_index.map { |n, i| "\#{n} = @_rrs_scope_args[\#{i}]" }.join("; ")
+                code = bind.empty? ? body_source : "\#{bind}; \#{body_source}"
+                # Capture `all` once: it is a method call that returns a fresh
+                # relation each time, so setting the args ivar on one instance
+                # and evaluating `code` on another would leave @_rrs_scope_args
+                # nil on the eval target (raising "undefined method '[]' for
+                # nil"). Use the same relation for both.
+                rel = all
+                rel.instance_variable_set(:@_rrs_scope_args, args)
+                scope = rel.instance_eval(code)
                 scope = scope.extending(ext) if ext
                 scope
               end

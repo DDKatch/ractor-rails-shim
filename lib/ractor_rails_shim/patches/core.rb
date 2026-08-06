@@ -35,6 +35,14 @@ module RactorRailsShim
   ABSTRACT_REGISTRY = Registry.abstract_registry
   VIEW_CONTEXT_REGISTRY = Registry.view_context_registry
   SHAREABLE_FALLBACK = Registry.shareable_fallback
+  # Per-model `pending_attribute_modifications` (custom attribute macros:
+  # user defaults, type decorators) captured in the main Ractor during
+  # prepare_for_ractors! and read by workers (whose class-ivar space is
+  # separate from main's under kino). Keyed by model object_id so a worker
+  # can find its model's pending modifications. Reassigned (frozen +
+  # shareable) at prepare time; models with unshareable modifications (e.g. a
+  # Proc-backed decorator) are simply omitted, degrading to [] in workers.
+  SHAREABLE_PENDING_ATTR_MODS = {}.freeze
 
   # Registry of patch names → tested Rails version segments. Owned by
   # VersionPolicy; the constant here is an alias so the historical
