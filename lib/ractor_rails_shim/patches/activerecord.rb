@@ -584,9 +584,21 @@ module RactorRailsShim
       return unless defined?(::ActiveModel::Type::Value)
       return unless ::ActiveModel::Type.respond_to?(:default_value)
 
-      # Warm the default in the main Ractor so IES can use it as a template.
+      # Warm the default in the main Ractor and build a shareable copy that
+      # workers can read. Workers MUST NOT call _rrs_orig_default_value because
+      # the original reads @default_value (a class ivar on ActiveModel::Type)
+      # which is not accessible from non-main Ractors. Capture + shareable-copy
+      # the template HERE (in main, at patch time) so the worker's patched
+      # method never touches the raw ivar.
       main_default = ::ActiveModel::Type.default_value rescue nil
       return unless main_default
+
+      # Build a shareable copy of the default_value now (in main) so workers
+      # can read it without touching the class ivar.
+      shareable_default = begin
+        copy = main_default.dup
+        Ractor.make_shareable(copy) rescue copy
+      end
 
       ::ActiveModel::Type.singleton_class.class_eval do
         alias_method :_rrs_orig_default_value, :default_value
@@ -594,18 +606,16 @@ module RactorRailsShim
           if Ractor.main?
             _rrs_orig_default_value
           else
-            store = (RactorRailsShim.storage[:rrs_am_type_default_value] ||= {})
-            store.fetch(object_id) do
-              # Deep-clone the main Ractor's default_value template. All ivars
-              # are nil/numeric/symbol — safe to copy.
-              template = _rrs_orig_default_value
-              copy = template.dup
-              Ractor.make_shareable(copy) rescue copy
-              store[object_id] = copy
-            end
+            RactorRailsShim.storage[:rrs_am_type_default_value] ||= (
+              RactorRailsShim::SHAREABLE_AM_TYPE_DEFAULT
+            )
           end
         end
       end
+
+      # Store the shareable default as a constant so workers can read it
+      # without touching @default_value on ActiveModel::Type.
+      _reassign_shareable_const(:SHAREABLE_AM_TYPE_DEFAULT, shareable_default)
     end
 
     # Make every unshareable class ivar on `owner` shareable (deep-freeze) and
@@ -1891,6 +1901,79 @@ module RactorRailsShim
             !((cb[:before_commit] || []).empty?)
         end
       RUBY
+    end
+
+    # Patch ActiveRecord::Scoping::Named::ClassMethods#scope to use string
+    # eval instead of define_method. Rails defines scope methods via
+    # `singleton_class.define_method(name) { |*args| scope = all._exec_scope(*args, &body) ... }`.
+    # The block captures the `body` Proc (a lambda like `-> { order(created_at: :desc) }`)
+    # from the main Ractor. Calling that block from a worker Ractor raises
+    # "defined with an un-shareable Proc in a different Ractor".
+    #
+    # Fix: Store each scope's body in a shareable Hash constant keyed by
+    # "ModelName#scope_name", and define the method via string eval that reads
+    # from the Hash. The body lambdas are made shareable (they only reference
+    # AR internals via method calls, no unshareable captures).
+    def _install_activerecord_scope_patch
+      return if @ar_scope_patched
+      @ar_scope_patched = true
+      _register_patch :activerecord_scope, "8.1"
+      return unless defined?(::ActiveRecord::Scoping::Named::ClassMethods)
+
+      # Shareable Hash to hold scope bodies: { "ModelName" => { scope_name => { body:, extension: } } }
+      unless RactorRailsShim.const_defined?(:SCOPE_BODIES)
+        RactorRailsShim.const_set(:SCOPE_BODIES, Ractor.make_shareable({}))
+      end
+
+      mod = ::ActiveRecord::Scoping::Named::ClassMethods
+      mod.module_eval do
+        alias_method :_rrs_orig_scope, :scope
+
+        def scope(name, body = nil, &block)
+          unless body.respond_to?(:call)
+            raise ArgumentError, "The scope body needs to be callable."
+          end
+
+          if dangerous_class_method?(name)
+            raise ArgumentError, "You tried to define a scope named \"#{name}\" " \
+              "on the model \"#{self.name}\", but Active Record already defined " \
+              "a class method with the same name."
+          end
+
+          if method_defined_within?(name, Relation)
+            raise ArgumentError, "You tried to define a scope named \"#{name}\" " \
+              "on the model \"#{self.name}\", but ActiveRecord::Relation already defined " \
+              "an instance method with the same name."
+          end
+
+          extension = Module.new(&block) if block
+
+          # Make body and extension shareable so workers can call them.
+          Ractor.make_shareable(body) rescue nil
+          Ractor.make_shareable(extension) rescue nil if extension
+
+          # Store in the shareable constant (cross-Ractor).
+          model_name_str = self.name.to_s
+          scope_name_sym = name.to_sym
+          RactorRailsShim::SCOPE_BODIES[model_name_str] ||= {}
+          RactorRailsShim::SCOPE_BODIES[model_name_str][scope_name_sym] = { body: body, extension: extension }
+
+          # Define via string eval (compiled def, not define_method block).
+          scope_name_str = name.to_s
+          singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+            def #{name}(*args)
+              entry = (RactorRailsShim::SCOPE_BODIES[self.name] || {})[:"#{scope_name_str}"]
+              body = entry[:body]
+              ext = entry[:extension]
+              scope = all._exec_scope(*args, &body)
+              scope = scope.extending(ext) if ext
+              scope
+            end
+          RUBY
+
+          generate_relation_method(name)
+        end
+      end
     end
   end
 end
