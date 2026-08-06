@@ -36,6 +36,7 @@ rescue LoadError
 end
 require_relative "storage"
 require_relative "storage_strategy"
+require_relative "ies_accessor"
 require_relative "fallback_ies"
 require_relative "version_check"
 require_relative "version_policy"
