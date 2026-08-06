@@ -22,8 +22,8 @@ require "active_support/isolated_execution_state"
 require_relative "../lib/ractor_rails_shim/roles/fallback_ies"
 require_relative "../lib/ractor_rails_shim/patches"
 
-SC = RactorRailsShim.singleton_class
-NoOpLock = SC.const_get(:NoOpLock)
+SC = RactorRailsShim.singleton_class unless defined?(SC)
+NoOpLock = SC.const_get(:NoOpLock) unless defined?(NoOpLock)
 
 class MakeValueShareableSpec < Minitest::Spec
   def self.test_order

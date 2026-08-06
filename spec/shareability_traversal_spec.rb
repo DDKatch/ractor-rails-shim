@@ -22,9 +22,9 @@ require "concurrent"
 require_relative "../lib/ractor_rails_shim/roles/fallback_ies"
 require_relative "../lib/ractor_rails_shim/patches"
 
-SC = RactorRailsShim.singleton_class
-NoOpLock = SC.const_get(:NoOpLock)
-NoOpProc = SC.const_get(:NoOpProc)
+SC = RactorRailsShim.singleton_class unless defined?(SC)
+NoOpLock = SC.const_get(:NoOpLock) unless defined?(NoOpLock)
+NoOpProc = SC.const_get(:NoOpProc) unless defined?(NoOpProc)
 
 class ShareabilityTraversalSpec < Minitest::Spec
   def self.test_order

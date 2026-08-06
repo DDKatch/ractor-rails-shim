@@ -21,13 +21,13 @@ require_relative "../lib/ractor_rails_shim/patches"
 
 # The callable/lock classes are defined on RactorRailsShim's singleton class
 # (via module_eval inside `class << self`). Fetch them by name.
-SC = RactorRailsShim.singleton_class
-NoOpProc      = SC.const_get(:NoOpProc)
-Callable      = SC.const_get(:Callable)
-CallableConst = SC.const_get(:CallableConst)
-RequestCallable = SC.const_get(:RequestCallable)
-NoOpLock      = SC.const_get(:NoOpLock)
-NoOpLogDev    = SC.const_get(:NoOpLogDev)
+SC = RactorRailsShim.singleton_class unless defined?(SC)
+NoOpProc      = SC.const_get(:NoOpProc) unless defined?(NoOpProc)
+Callable      = SC.const_get(:Callable) unless defined?(Callable)
+CallableConst = SC.const_get(:CallableConst) unless defined?(CallableConst)
+RequestCallable = SC.const_get(:RequestCallable) unless defined?(RequestCallable)
+NoOpLock      = SC.const_get(:NoOpLock) unless defined?(NoOpLock)
+NoOpLogDev    = SC.const_get(:NoOpLogDev) unless defined?(NoOpLogDev)
 
 class VersionSpec < Minitest::Spec
   def self.test_order

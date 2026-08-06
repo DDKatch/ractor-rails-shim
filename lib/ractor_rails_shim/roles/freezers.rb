@@ -202,6 +202,7 @@ module RactorRailsShim
             val
           end
           begin
+            mod.send(:remove_const, name) if mod.const_defined?(name, false)
             mod.const_set(name, shareable)
           rescue StandardError => e
             funnel.call("freeze global constant #{mod}::#{name}") { raise e }
@@ -252,6 +253,7 @@ module RactorRailsShim
           next if Ractor.shareable?(val)
           shareable = Ractor.make_shareable(val) rescue val
           begin
+            mod.send(:remove_const, name) if mod.const_defined?(name, false)
             mod.const_set(name, shareable)
           rescue StandardError
             nil

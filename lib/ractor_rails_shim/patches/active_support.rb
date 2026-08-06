@@ -528,6 +528,7 @@ module RactorRailsShim
           v = enc.const_get(name, false)
           unless Ractor.shareable?(v)
             begin
+              enc.send(:remove_const, name) if enc.const_defined?(name, false)
               enc.const_set(name, Ractor.make_shareable(v))
             rescue StandardError
               nil

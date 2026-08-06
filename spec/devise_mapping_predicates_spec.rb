@@ -56,8 +56,13 @@ class DeviseMappingPredicatesSpec < Minitest::Spec
     fake_devise = Module.new
     fake_devise.const_set(:FailureApp, Class.new)
     fake_devise.const_set(:NO_INPUT, [].freeze)
-    Object.const_set(:Devise, fake_devise) unless defined?(::Devise)
     had_devise = defined?(::Devise)
+    begin
+      Object.send(:remove_const, :Devise) if had_devise
+    rescue StandardError
+      nil
+    end
+    Object.const_set(:Devise, fake_devise)
 
     mapping = Object.new
     mapping.define_singleton_method(:name) { :users }
@@ -76,7 +81,11 @@ class DeviseMappingPredicatesSpec < Minitest::Spec
 
     Snapshot.new(mapping)
   ensure
-    Object.send(:remove_const, :Devise) unless had_devise
+    begin
+      Object.send(:remove_const, :Devise) if Object.const_defined?(:Devise)
+    rescue StandardError
+      nil
+    end
   end
 
   # --- explicit predicate methods exist on the class ---

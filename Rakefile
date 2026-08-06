@@ -11,6 +11,8 @@ Rake::TestTask.new(:spec) do |t|
   t.warning = false
 end
 
+task default: :spec
+
 # Integration spec: boots a real Rails app and dispatches GET /up in a worker
 # Ractor. Requires a test app (run `./script/make_test_app.sh` first) and must
 # run under the TEST APP's bundle (so Rails is loadable). The spec self-skips
@@ -24,8 +26,6 @@ Rake::TestTask.new(:integration) do |t|
   t.pattern = "spec/integration_spec.rb"
   t.warning = false
 end
-
-task default: :spec
 
 # Run the FULL suite: unit specs (shim bundle) + integration spec (test app
 # bundle, separate process). The two environment-gated specs
