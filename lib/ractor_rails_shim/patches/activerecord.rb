@@ -538,6 +538,45 @@ module RactorRailsShim
         ::ActiveRecord::Type.default_value rescue nil
         _freeze_class_ivars!(::ActiveRecord::Type)
       end
+
+      # 4. ActiveModel::Type — holds @default_value and @registry (contains
+      #    Procs). Can't freeze the class ivars (Registry has Procs). Route
+      #    default_value through IsolatedExecutionState so worker Ractors get
+      #    their own lazily-initialized copy.
+      if defined?(::ActiveModel::Type)
+        _patch_active_model_type_default_value!
+      end
+    end
+
+    def _patch_active_model_type_default_value!
+      return if @active_model_type_default_patched
+      @active_model_type_default_patched = true
+      _register_patch :active_model_type_default_value, "8.1"
+      return unless defined?(::ActiveModel::Type::Value)
+      return unless ::ActiveModel::Type.respond_to?(:default_value)
+
+      # Warm the default in the main Ractor so IES can use it as a template.
+      main_default = ::ActiveModel::Type.default_value rescue nil
+      return unless main_default
+
+      ::ActiveModel::Type.singleton_class.class_eval do
+        alias_method :_rrs_orig_default_value, :default_value
+        def default_value
+          if Ractor.main?
+            _rrs_orig_default_value
+          else
+            store = (RactorRailsShim.storage[:rrs_am_type_default_value] ||= {})
+            store.fetch(object_id) do
+              # Deep-clone the main Ractor's default_value template. All ivars
+              # are nil/numeric/symbol — safe to copy.
+              template = _rrs_orig_default_value
+              copy = template.dup
+              Ractor.make_shareable(copy) rescue copy
+              store[object_id] = copy
+            end
+          end
+        end
+      end
     end
 
     # Make every unshareable class ivar on `owner` shareable (deep-freeze) and
