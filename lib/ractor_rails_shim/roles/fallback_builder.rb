@@ -262,6 +262,21 @@ module RactorRailsShim
 
         fallback[ies_key] = shareable_val if shareable_val
       end
+
+      # The class_attributes loop above only seeds the declaring-module's
+      # value (keyed by its per-owner key). Per-subclass overrides written
+      # through the class_attribute writer land in CLASS_ATTR_VALUES under
+      # their OWN per-owner keys (e.g. Api::PostsController's
+      # `mimes_for_respond_to = {json: {}}`). Workers resolve values via an
+      # ancestor walk keyed by each class's per-owner key, so the frozen
+      # SHAREABLE_FALLBACK must contain those per-subclass entries too.
+      class_attr_values.each do |kkey, val|
+        next if kkey.to_s.include?("logger")
+        attr_name = kkey.to_s.sub(/\Aractor_rails_shim_class_attr_\d+_/, "").to_sym
+        shareable_val = try_make_shareable(val, nil, attr_name)
+        fallback[kkey] = shareable_val if shareable_val
+      end
+
       fallback.freeze
       Ractor.make_shareable(fallback)
 

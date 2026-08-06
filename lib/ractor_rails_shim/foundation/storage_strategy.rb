@@ -24,17 +24,57 @@
 
 module RactorRailsShim
   module StorageStrategy
-    # Ractor-mode strategy: direct IES lookup + SHAREABLE_FALLBACK. The
-    # `key` is a fixed Symbol literal (no per-ancestor interpolation); the
-    # writer always targets this owner's single `key`.
+    # Literal key for the per-receiver class_attribute storage-key cache,
+    # stored in ractor-local IES (IsolatedExecutionState) so each Ractor
+    # carries its own copy (no cross-ractor shareability concern — and class
+    # variables are illegal from non-main Ractors).
+    CA_KEY_CACHE_KEY = :"__ractor_rails_shim_ca_key_cache__"
+
+    # Per-receiver class_attribute storage-key cache. Maps
+    # `(attribute-symbol, receiver-object_id) -> storage-key-symbol` so the
+    # hot reader path does NOT re-build a `:"..."` interpolated key on every
+    # read (which allocated ~2 strings/symbols per read). The key is derived
+    # once per (attribute, class) and memoized in ractor-local IES. After the
+    # first (warm-up) read for a class, all subsequent reads hit the cache
+    # with zero allocation.
+    def self.ca_key(owner, attr_sym)
+      oid = (owner.is_a?(Module) ? owner : owner.class).object_id
+      cache = RactorRailsShim.storage[CA_KEY_CACHE_KEY]
+      unless cache
+        cache = {}
+        RactorRailsShim.storage[CA_KEY_CACHE_KEY] = cache
+      end
+      inner = cache[attr_sym]
+      unless inner
+        inner = {}
+        cache[attr_sym] = inner
+      end
+      kkey = inner[oid]
+      unless kkey
+        kkey = :"ractor_rails_shim_class_attr_#{oid}_#{attr_sym}"
+        inner[oid] = kkey
+      end
+      kkey
+    end
+
+    # Rector-mode strategy. Two reader/writer entry points:
+    #
+    #   * `lookup` / `store`        — EXACT-key 3-tier passthrough. Used by
+    #                                IESAccessor (and anything that hands over
+    #                                a fully-qualified storage key). No ancestor
+    #                                walk; the caller owns the key.
+    #   * `lookup_by_attr` / `store_by_attr` — per-receiver class_attribute
+    #                                semantics: derive a storage key from the
+    #                                receiver's class + the attribute name, then
+    #                                walk the ancestor chain so each class keeps
+    #                                its OWN class_attribute value (siblings no
+    #                                longer clobber each other). Backed by the
+    #                                Ractor backends (IES + SHAREABLE_FALLBACK
+    #                                + CLASS_ATTR_VALUES[main]).
     module Ractor
       class << self
-        # `missing_default` is a Ruby source string (inlined into the eval'd
-        # heredoc by the caller). The Ractor strategy does NOT consult it —
-        # its three tiers (IES → SHAREABLE_FALLBACK → CLASS_ATTR_VALUES[main])
-        # cover the lookup; the missing_default is accepted for contract
-        # parity with the Thread strategy but unused. This matches the former
-        # `_class_attr_ractor_methods` reader exactly.
+        # Exact-key 3-tier passthrough (IES → SHAREABLE_FALLBACK →
+        # CLASS_ATTR_VALUES[main]). Contract: `key` IS the storage key.
         def lookup(owner, key, missing_default)
           v = RactorRailsShim.storage[key]
           return v if RactorRailsShim.storage.key?(key)
@@ -46,6 +86,84 @@ module RactorRailsShim
         def store(owner, key, value)
           RactorRailsShim.storage[key] = value
           RactorRailsShim::Registry.class_attr_values[key] = value if ::Ractor.main?
+          value
+        end
+
+        # Per-receiver class_attribute lookup: derive the receiver's storage
+        # key (memoized via `StorageStrategy.ca_key`) and walk ancestors so
+        # subclasses inherit parent values while keeping their own overrides.
+        # `ancestors` (not `superclass`) is required so module-declared
+        # class_attributes (e.g. `AbstractController::Callbacks#__callbacks`)
+        # are reachable — `superclass` skips included modules.
+        #
+        # Per-ancestor tier order:
+        #   1. `storage` (IES)        — current execution context's override
+        #                               (workers set their own value here).
+        #   2. `shareable_fallback`   — frozen shareable table built at
+        #                               prepare_for_ractors! (worker reads).
+        #   3. `class_attr_values`    — the persistent seed registry (main
+        #                               only). IES is execution-context
+        #                               ISOLATED, so a seed written during
+        #                               boot is invisible in a later context;
+        #                               `class_attr_values` is a plain Hash
+        #                               that survives across contexts, so it
+        #                               MUST be consulted per-ancestor (not
+        #                               just for the final receiver) — otherwise
+        #                               inherited values (e.g. a parent's
+        #                               `__callbacks`) are missed.
+        def lookup_by_attr(owner, attr_sym, missing_default)
+          klass = owner.is_a?(Module) ? owner : owner.class
+          klass.ancestors.each do |anc|
+            kkey = RactorRailsShim::StorageStrategy.ca_key(anc, attr_sym)
+            v = RactorRailsShim.storage[kkey]
+            return v if RactorRailsShim.storage.key?(kkey)
+            fb = RactorRailsShim::Registry.shareable_fallback[kkey]
+            return fb unless fb.nil?
+            if ::Ractor.main?
+              cv = RactorRailsShim::Registry.class_attr_values[kkey]
+              return cv unless cv.nil?
+            end
+          end
+          missing_default
+        end
+
+        def store_by_attr(owner, attr_sym, value)
+          kkey = RactorRailsShim::StorageStrategy.ca_key(owner, attr_sym)
+          RactorRailsShim.storage[kkey] = value
+          RactorRailsShim::Registry.class_attr_values[kkey] = value if ::Ractor.main?
+          value
+        end
+
+        # Zero-allocation hot reader. `resolved_key` is a literal symbol baked
+        # into the generated reader method (see `_class_attr_methods`). The
+        # first read for a receiver resolves via `lookup_by_attr` (ancestor
+        # walk) and caches the result in ractor-local IES keyed by receiver
+        # object_id; every subsequent read is a literal-key Hash lookup +
+        # integer index — no Array/`ancestors` allocation.
+        def lookup_resolved(owner, attr_sym, missing_default, resolved_key)
+          klass = owner.is_a?(Module) ? owner : owner.class
+          oid = klass.object_id
+          cache = RactorRailsShim.storage[resolved_key]
+          return cache[oid] if cache && cache.key?(oid)
+          v = lookup_by_attr(owner, attr_sym, missing_default)
+          cache = RactorRailsShim.storage[resolved_key]
+          cache ||= (RactorRailsShim.storage[resolved_key] = {})
+          cache[oid] = v
+          v
+        end
+
+        # Zero-allocation hot writer. Writes the per-receiver slot (so the
+        # ancestor-walk `lookup_by_attr` stays correct) AND updates the resolved
+        # cache for this receiver so the next read is hot.
+        def store_resolved(owner, attr_sym, value, resolved_key)
+          kkey = RactorRailsShim::StorageStrategy.ca_key(owner, attr_sym)
+          RactorRailsShim.storage[kkey] = value
+          RactorRailsShim::Registry.class_attr_values[kkey] = value if ::Ractor.main?
+          klass = owner.is_a?(Module) ? owner : owner.class
+          oid = klass.object_id
+          cache = RactorRailsShim.storage[resolved_key]
+          cache ||= (RactorRailsShim.storage[resolved_key] = {})
+          cache[oid] = value
           value
         end
 
@@ -97,44 +215,67 @@ module RactorRailsShim
       end
     end
 
-    # Thread-mode strategy: ancestor-walk + CLASS_ATTR_VALUES. The key the
-    # caller passes is the FIXED namespaced key (`:"ractor_rails_shim_class_
-    # attr_<oid>_<name>"`); the Thread strategy reads via ancestor-walk using
-    # each ancestor's `object_id`, and writes keyed by the receiver's
-    # `object_id`. The `namespaced_name` suffix is extracted from the key so
-    # the ancestor walk can rebuild per-ancestor keys.
+    # Thread-mode strategy. Mirrors the Ractor module's two entry points:
+    #   * `lookup` / `store`        — exact-key passthrough on
+    #                                CLASS_ATTR_VALUES (the Thread backend),
+    #                                for IESAccessor.
+    #   * `lookup_by_attr` / `store_by_attr` — per-receiver class_attribute
+    #                                semantics (ancestor-walk on
+    #                                CLASS_ATTR_VALUES) so each class keeps its
+    #                                own value.
     module Thread
-      # Extract the `_<namespaced_name>` suffix from a key of the form
-      # `:"ractor_rails_shim_class_attr_<oid>_<namespaced_name>"`. The
-      # suffix is everything after the second-to-last underscore-group
-      # (the object_id is the last numeric group before the suffix).
-      def self._suffix_from_key(key)
-        # `key` is a Symbol of the form
-        # `:"ractor_rails_shim_class_attr_<oid>_<namespaced_name>"`. `to_s`
-        # has no leading colon. Strip the fixed prefix + numeric oid + the
-        # underscore after it, leaving the namespaced-name suffix.
-        key.to_s.sub(/\Aractor_rails_shim_class_attr_\d+_/, "")
-      end
-      private_class_method :_suffix_from_key
-
       class << self
-        # The missing_default is inlined into the eval'd heredoc by the caller
-        # as the actual VALUE (the heredoc interpolates the expression, so the
-        # strategy receives the evaluated object, not a source string). The
-        # ancestor walk rebuilds each ancestor's key from its object_id + the
-        # namespaced suffix.
+        # Exact-key passthrough on CLASS_ATTR_VALUES (the Thread backend).
         def lookup(owner, key, missing_default)
-          suffix = _suffix_from_key(key)
-          owner.ancestors.each do |anc|
-            k = :"ractor_rails_shim_class_attr_#{anc.object_id}_#{suffix}"
+          RactorRailsShim::Registry.class_attr_values[key]
+        end
+
+        def store(owner, key, value)
+          RactorRailsShim::Registry.class_attr_values[key] = value
+          value
+        end
+
+        # Per-receiver class_attribute lookup: derive the receiver's storage
+        # key (memoized via `StorageStrategy.ca_key`) and walk ancestors on
+        # CLASS_ATTR_VALUES.
+        def lookup_by_attr(owner, attr_sym, missing_default)
+          klass = owner.is_a?(Module) ? owner : owner.class
+          klass.ancestors.each do |anc|
+            k = RactorRailsShim::StorageStrategy.ca_key(anc, attr_sym)
             return RactorRailsShim::Registry.class_attr_values[k] if RactorRailsShim::Registry.class_attr_values.key?(k)
           end
           missing_default
         end
 
-        def store(owner, key, value)
-          suffix = _suffix_from_key(key)
-          RactorRailsShim::Registry.class_attr_values[:"ractor_rails_shim_class_attr_#{owner.object_id}_#{suffix}"] = value
+        def store_by_attr(owner, attr_sym, value)
+          klass = owner.is_a?(Module) ? owner : owner.class
+          RactorRailsShim::Registry.class_attr_values[RactorRailsShim::StorageStrategy.ca_key(klass, attr_sym)] = value
+          value
+        end
+
+        # Zero-allocation hot reader (see Ractor#lookup_resolved). Uses the
+        # Thread backend (CLASS_ATTR_VALUES) for the resolved cache.
+        def lookup_resolved(owner, attr_sym, missing_default, resolved_key)
+          klass = owner.is_a?(Module) ? owner : owner.class
+          oid = klass.object_id
+          cache = RactorRailsShim::Registry.class_attr_values[resolved_key]
+          return cache[oid] if cache && cache.key?(oid)
+          v = lookup_by_attr(owner, attr_sym, missing_default)
+          cache = RactorRailsShim::Registry.class_attr_values[resolved_key]
+          cache ||= (RactorRailsShim::Registry.class_attr_values[resolved_key] = {})
+          cache[oid] = v
+          v
+        end
+
+        # Zero-allocation hot writer (see Ractor#store_resolved).
+        def store_resolved(owner, attr_sym, value, resolved_key)
+          kkey = RactorRailsShim::StorageStrategy.ca_key(owner, attr_sym)
+          RactorRailsShim::Registry.class_attr_values[kkey] = value
+          klass = owner.is_a?(Module) ? owner : owner.class
+          oid = klass.object_id
+          cache = RactorRailsShim::Registry.class_attr_values[resolved_key]
+          cache ||= (RactorRailsShim::Registry.class_attr_values[resolved_key] = {})
+          cache[oid] = value
           value
         end
 
