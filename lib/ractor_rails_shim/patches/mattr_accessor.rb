@@ -131,11 +131,82 @@ module RactorRailsShim
           end
         end
 
+        # mattr_reader declares read-only class/module attributes that Rails
+        # generates as `def self.<sym>; @@<sym>; end`. The raw `@@<sym>` class
+        # variable is unreadable from a non-main Ractor, raising
+        # Ractor::IsolationError. Route the reader through IES (mirroring
+        # mattr_accessor) so workers fall back to SHAREABLE_FALLBACK (built from
+        # the main-ractor `@@<sym>` at prepare_for_ractors! time). There is no
+        # writer, so only the reader is redefined. ActiveRecord::Encryption uses
+        # `mattr_reader :config` for its encryption Config — without this patch
+        # every worker hits the class-variable IsolationError when loading a
+        # model's schema.
+        def mattr_reader(*syms, instance_reader: true, instance_accessor: true, default: nil, location: nil)
+          mod_name = name
+          sym_default = block_given? && default.nil? ? yield : default
+
+          super # defines the original `def self.<sym>; @@<sym>; end` readers
+                # and seeds @@<sym> with sym_default (via class_variable_set).
+
+          syms.each do |sym|
+            key = :"ractor_rails_shim_mattr_#{mod_name}_#{sym}"
+            key_str = key.inspect
+            cv = "@@#{sym}"
+            cv_str = cv.inspect
+
+            RactorRailsShim._register_for_fallback(mod_name, sym, key, sym_default)
+
+            singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+              def #{sym}
+                v = RactorRailsShim.storage[#{key_str}]
+                return v if RactorRailsShim.storage.key?(#{key_str})
+                if Ractor.main?
+                  if class_variable_defined?(#{cv_str})
+                    class_variable_get(#{cv_str})
+                  else
+                    nil
+                  end
+                else
+                  fb = RactorRailsShim::SHAREABLE_FALLBACK[#{key_str}]
+                  return fb unless fb.nil?
+                  RactorRailsShim::SHAREABLE_MATTR_DEFAULTS[#{key_str}]
+                end
+              end
+            RUBY
+
+            if instance_reader && instance_accessor
+              module_eval <<-RUBY, __FILE__, __LINE__ + 1
+                def #{sym}
+                  v = RactorRailsShim.storage[#{key_str}]
+                  return v if RactorRailsShim.storage.key?(#{key_str})
+                  if Ractor.main?
+                    self.class.class_variable_defined?(#{cv_str}) ? self.class.class_variable_get(#{cv_str}) : nil
+                  else
+                    RactorRailsShim::SHAREABLE_FALLBACK[#{key_str}]
+                  end
+                end
+              RUBY
+            end
+          end
+        end
+
         # cattr_accessor is an alias for mattr_accessor in Rails; route it too.
-        if method_defined?(:cattr_accessor, true)
-          alias_method :_unshimmed_cattr_accessor, :cattr_accessor
+        # Define the alias only when it isn't already present (Rails defines it
+        # as `alias_method :cattr_accessor, :mattr_accessor`, which already
+        # routes to the prepended mattr_accessor). Defining it ourselves when
+        # missing keeps cattr_accessor working in environments (e.g. a bare
+        # test suite) where Rails' core_ext hasn't defined it yet.
+        unless method_defined?(:cattr_accessor, true)
           def cattr_accessor(*args, **kwargs, &block)
             mattr_accessor(*args, **kwargs, &block)
+          end
+        end
+
+        # cattr_reader is an alias for mattr_reader in Rails; route it too.
+        # Same logic as cattr_accessor above.
+        unless method_defined?(:cattr_reader, true)
+          def cattr_reader(*args, **kwargs, &block)
+            mattr_reader(*args, **kwargs, &block)
           end
         end
       })
