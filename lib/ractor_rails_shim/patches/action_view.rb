@@ -578,5 +578,62 @@ module RactorRailsShim
       RUBY
     end
 
+    # ActionView::Helpers::SanitizeHelper::ClassMethods memoizes its sanitizer
+    # instances as class ivars on the (shared, frozen) module
+    # (@safe_list_sanitizer / @full_sanitizer / @link_sanitizer). A non-main
+    # worker Ractor cannot set an ivar on a class/module defined in the main
+    # Ractor, so `sanitize` / `simple_format` raise
+    # "can not set instance variables of classes/modules by non-main Ractors".
+    # Route the memoization through a per-worker cache (Ractor.current) and
+    # build the sanitizer lazily inside the worker — the value never has to
+    # cross the Ractor boundary, so no shareability gymnastics are needed.
+    def _install_action_view_sanitize_patch
+      return if @action_view_sanitize_patched
+      @action_view_sanitize_patched = true
+      _register_patch :action_view_sanitize, "8.1"
+      return unless defined?(::ActionView::Helpers::SanitizeHelper::ClassMethods)
+
+      mod = ::ActionView::Helpers::SanitizeHelper::ClassMethods
+      mod.module_eval do
+        def safe_list_sanitizer
+          Ractor.current[:__rrs_safe_list_sanitizer__] ||= sanitizer_vendor.safe_list_sanitizer.new
+        end
+        def full_sanitizer
+          Ractor.current[:__rrs_full_sanitizer__] ||= sanitizer_vendor.full_sanitizer.new
+        end
+        def link_sanitizer
+          Ractor.current[:__rrs_link_sanitizer__] ||= sanitizer_vendor.link_sanitizer.new
+        end
+      end
+    end
+
+    # Loofah (pulled in by rails-html-sanitizer for `sanitize` / `simple_format`)
+    # memoizes `@document_klass` on its shared DocumentFragment classes. A
+    # worker Ractor cannot set an ivar on a class defined in the main Ractor,
+    # so fragment parsing raises "can not set instance variables of
+    # classes/modules by non-main Ractors". Route the memoization through
+    # Ractor.current (keyed by the fragment class) instead.
+    def _install_loofah_patch
+      return if @loofah_patched
+      @loofah_patched = true
+      _register_patch :loofah_document_klass, "8.1"
+      return unless defined?(::Loofah::HtmlFragmentBehavior::ClassMethods)
+
+      mod = ::Loofah::HtmlFragmentBehavior::ClassMethods
+      mod.module_eval do
+        def document_klass
+          store = (Ractor.current[:__rrs_loofah_doc_klass__] ||= {})
+          store[self.object_id] ||=
+            if Loofah.html5_support? && self == Loofah::HTML5::DocumentFragment
+              Loofah::HTML5::Document
+            elsif self == Loofah::HTML4::DocumentFragment
+              Loofah::HTML4::Document
+            else
+              raise ArgumentError, "unexpected class: #{self}"
+            end
+        end
+      end
+    end
+
   end
 end

@@ -36,6 +36,8 @@ module RactorRailsShim
         # soon as ActionView is required, well before the app's eager_load.
         ActiveSupport.on_load(:action_view) do
           RactorRailsShim._install_with_empty_template_cache_patch
+          RactorRailsShim._install_action_view_sanitize_patch
+          RactorRailsShim._install_loofah_patch
         end
       end
     end
