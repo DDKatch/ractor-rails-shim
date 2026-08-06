@@ -390,6 +390,30 @@ module RactorRailsShim
     def _share_model_classes!
       return unless defined?(::ActiveRecord::Base)
 
+      # Suppress reload_schema_from_cache for the rest of the main Ractor's
+      # lifecycle. During warming, abstract classes (ActiveRecord::Base,
+      # ApplicationRecord) trigger reload_schema_from_cache which recursively
+      # resets @schema_loaded = false and @columns_hash = nil on all
+      # descendants, destroying schema data that workers need. After
+      # make_app_shareable! freezes the graph, no more reloads should happen
+      # in main anyway.
+      RactorRailsShim.instance_variable_set(:@_rrs_schema_warming, true)
+
+      # Force load_schema on all concrete models BEFORE freezing any
+      # reflections. load_schema! writes to reflection objects (e.g.
+      # CounterCache writes @counter_cache_column), so it must run before
+      # _share_model_classes! freezes them via Ractor.make_shareable.
+      classes = [::ActiveRecord::Base]
+      classes.concat(::ActiveRecord::Base.descendants) rescue nil
+      classes.each do |klass|
+        next if klass.respond_to?(:abstract_class?) && klass.abstract_class?
+        begin
+          klass.send(:load_schema) if klass.respond_to?(:load_schema, true)
+        rescue StandardError
+          nil
+        end
+      end
+
       classes = [::ActiveRecord::Base]
       classes.concat(::ActiveRecord::Base.descendants) rescue nil
       classes.each do |klass|
@@ -651,6 +675,30 @@ module RactorRailsShim
       _share_active_record_internals! if Ractor.main?
     end
 
+    # Patch ActiveRecord::AttributeMethods::ClassMethods#define_attribute_methods
+    # to no-op in worker Ractors. The method writes @attribute_methods_generated
+    # (a class ivar) and calls load_schema + super(attribute_names) which
+    # generate methods on the class. In a worker, all of these either write
+    # class ivars (IsolationError) or try to define methods on a frozen class
+    # (FrozenError). The attribute methods were already generated in main by
+    # generate_ar_attribute_methods!, so workers just need to skip this.
+    def _install_activerecord_define_attribute_methods_patch
+      return if @ar_define_attr_methods_patched
+      @ar_define_attr_methods_patched = true
+      _register_patch :activerecord_define_attribute_methods, "8.1"
+      return unless defined?(::ActiveRecord::AttributeMethods::ClassMethods)
+
+      ::ActiveRecord::AttributeMethods::ClassMethods.module_eval do
+        alias_method :_rrs_orig_define_attribute_methods, :define_attribute_methods
+        def define_attribute_methods
+          return true if Ractor.main?
+          # Worker: attribute methods were generated in main. Return true
+          # (the original returns true on success) without writing class ivars.
+          true
+        end
+      end
+    end
+
     # Patch ActiveRecord::ModelSchema::ClassMethods so worker Ractors do not
     # write the `@table_name` (and related) class ivars on the shared model
     # class. `table_name` memoizes via `reset_table_name unless
@@ -856,6 +904,24 @@ module RactorRailsShim
           cols
         end
 
+        # In a worker Ractor, load_schema and load_schema! must not write
+        # class ivars (@columns_hash, @schema_loaded, etc.). The schema was
+        # loaded in the main Ractor and the values are either frozen in the
+        # shared graph or routed through IES. Patch load_schema to no-op in
+        # workers (the schema is already loaded), and load_schema! to be a
+        # no-op (never called from a worker because load_schema short-circuits).
+        alias_method :_rrs_orig_load_schema, :load_schema
+        def load_schema
+          return unless Ractor.main?
+          _rrs_orig_load_schema
+        end
+
+        alias_method :_rrs_orig_load_schema_bang, :load_schema!
+        def load_schema!
+          return unless Ractor.main?
+          _rrs_orig_load_schema_bang
+        end
+
         # NOTE: `column_defaults` is intentionally NOT redefined here. It is
         # installed by the prepended `ActiveRecordModelSchemaPatch` (see
         # `active_record_model_schema.rb`), which is prepended onto
@@ -877,9 +943,18 @@ module RactorRailsShim
         # *readers* for these caches through IES, so in a worker we only need
         # to clear the IES slots — the next read rebuilds lazily. In main we
         # keep the original class-ivar-clearing behavior.
+        alias_method :_rrs_orig_reload_schema_from_cache, :reload_schema_from_cache
         def reload_schema_from_cache(recursive = true)
           if Ractor.main?
-            super
+            # During warming (prepare_for_ractors!/make_app_shareable!),
+            # reload_schema_from_cache on abstract parents recursively resets
+            # @schema_loaded = false and @columns_hash = nil on all descendants,
+            # destroying schema data that workers need. Use a module-level flag
+            # to suppress the recursive reset during the warming phase. The
+            # flag is set by _share_model_classes! and generate_ar_attribute_methods!.
+            unless RactorRailsShim.instance_variable_get(:@_rrs_schema_warming)
+              _rrs_orig_reload_schema_from_cache(recursive)
+            end
           else
             # Clear this Ractor's IES slots for the IES-routed schema caches.
             # Use `next` over an explicit list (not `IES.clear`) to avoid
@@ -1910,19 +1985,21 @@ module RactorRailsShim
     # from the main Ractor. Calling that block from a worker Ractor raises
     # "defined with an un-shareable Proc in a different Ractor".
     #
-    # Fix: Store each scope's body in a shareable Hash constant keyed by
-    # "ModelName#scope_name", and define the method via string eval that reads
-    # from the Hash. The body lambdas are made shareable (they only reference
-    # AR internals via method calls, no unshareable captures).
+    # The body lambda itself CANNOT be made shareable (Proc#self is always
+    # the enclosing scope, which is the main Ractor). Fix: use
+    # Proc#source_location to read the body's source code at prepare time
+    # (main Ractor), store it in a shareable constant, and define the scope
+    # method via string eval that eval's the stored source code. This avoids
+    # ever calling the original lambda from a worker.
     def _install_activerecord_scope_patch
       return if @ar_scope_patched
       @ar_scope_patched = true
       _register_patch :activerecord_scope, "8.1"
       return unless defined?(::ActiveRecord::Scoping::Named::ClassMethods)
 
-      # Shareable Hash to hold scope bodies: { "ModelName" => { scope_name => { body:, extension: } } }
-      unless RactorRailsShim.const_defined?(:SCOPE_BODIES)
-        RactorRailsShim.const_set(:SCOPE_BODIES, Ractor.make_shareable({}))
+      # Shareable Hash to hold scope source code: { "ModelName" => { scope_name => "body_source" } }
+      unless RactorRailsShim.const_defined?(:SCOPE_SOURCE_CODES)
+        RactorRailsShim.const_set(:SCOPE_SOURCE_CODES, Ractor.make_shareable({}))
       end
 
       mod = ::ActiveRecord::Scoping::Named::ClassMethods
@@ -1948,28 +2025,109 @@ module RactorRailsShim
 
           extension = Module.new(&block) if block
 
-          # Make body and extension shareable so workers can call them.
-          Ractor.make_shareable(body) rescue nil
-          Ractor.make_shareable(extension) rescue nil if extension
-
-          # Store in the shareable constant (cross-Ractor).
+          # Extract the body's source code from the lambda's source_location
+          # so workers can eval it without calling the original Proc.
           model_name_str = self.name.to_s
-          scope_name_sym = name.to_sym
-          RactorRailsShim::SCOPE_BODIES[model_name_str] ||= {}
-          RactorRailsShim::SCOPE_BODIES[model_name_str][scope_name_sym] = { body: body, extension: extension }
+          scope_name_str = name.to_s
+          body_source = nil
+          if body.respond_to?(:source_location)
+            file, line = body.source_location
+            if file && line
+              begin
+                source_lines = File.readlines(file)
+                raw_line = source_lines[line - 1]&.strip
+                if raw_line
+                  # Extract the body from patterns like:
+                  #   scope :name, -> { ... }
+                  #   scope(:name, -> { ... })
+                  #   scope :name, ->(arg) { ... }
+                  if raw_line =~ /->\s*(?:\([^)]*\))?\s*\{/
+                    # Find the matching closing brace
+                    full_source = raw_line
+                    depth = 0
+                    start_idx = raw_line.index("{")
+                    if start_idx
+                      (start_idx...raw_line.length).each do |i|
+                        case raw_line[i]
+                        when "{"
+                          depth += 1
+                        when "}"
+                          depth -= 1
+                          if depth == 0
+                            full_source = raw_line[start_idx + 1..i - 1].strip
+                            break
+                          end
+                        end
+                      end
+                    end
+                    # Also check multi-line if the brace wasn't closed
+                    if depth > 0
+                      ((line)..(line + 10)).each do |ln|
+                        next_line = source_lines[ln]&.strip
+                        next unless next_line
+                        full_source += " " + next_line
+                        next_line.each_char do |c|
+                          depth += 1 if c == "{"
+                          depth -= 1 if c == "}"
+                          if depth == 0
+                            # Trim the extra }
+                            full_source = full_source[0..-(next_line.length - next_line.rindex("}") + 2)]
+                            break
+                          end
+                        end
+                        break if depth <= 0
+                      end
+                    end
+                    body_source = full_source
+                  end
+                end
+              rescue StandardError
+                nil
+              end
+            end
+          end
+
+          # Store the body_source in the shareable constant (cross-Ractor).
+          if body_source
+            RactorRailsShim::SCOPE_SOURCE_CODES[model_name_str] ||= {}
+            RactorRailsShim::SCOPE_SOURCE_CODES[model_name_str][scope_name_str.to_sym] = body_source
+          end
+
+          # Also store extension if present.
+          if extension
+            ext_key = :"rrs_scope_ext_#{model_name_str}_#{scope_name_str}"
+            RactorRailsShim.storage[ext_key] = extension
+          end
 
           # Define via string eval (compiled def, not define_method block).
-          scope_name_str = name.to_s
-          singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
-            def #{name}(*args)
-              entry = (RactorRailsShim::SCOPE_BODIES[self.name] || {})[:"#{scope_name_str}"]
-              body = entry[:body]
-              ext = entry[:extension]
-              scope = all._exec_scope(*args, &body)
-              scope = scope.extending(ext) if ext
-              scope
+          if body_source
+            singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+              def #{name}(*args)
+                src = (RactorRailsShim::SCOPE_SOURCE_CODES[self.name] || {})[:"#{scope_name_str}"]
+                ext_key = :"rrs_scope_ext_\#{self.name}_#{scope_name_str}"
+                ext = RactorRailsShim.storage[ext_key]
+                scope = all.instance_eval { #{body_source} }
+                scope = scope.extending(ext) if ext
+                scope
+              end
+            RUBY
+          else
+            # Fallback: use the original define_method approach (works in main only).
+            if body.respond_to?(:to_proc)
+              singleton_class.define_method(name) do |*args|
+                scope = all._exec_scope(*args, &body)
+                scope = scope.extending(extension) if extension
+                scope
+              end
+            else
+              singleton_class.define_method(name) do |*args|
+                scope = body.call(*args) || all
+                scope = scope.extending(extension) if extension
+                scope
+              end
             end
-          RUBY
+            singleton_class.send(:ruby2_keywords, name)
+          end
 
           generate_relation_method(name)
         end

@@ -459,7 +459,30 @@ module RactorRailsShim
       return unless defined?(::ActiveRecord::Base)
       ARModelWalker.each_model do |klass|
         next unless klass.respond_to?(:define_attribute_methods)
+        # Force load_schema so @schema_loaded is set to true and @columns_hash
+        # is populated in main. Workers read these (frozen) values from the
+        # shared graph instead of trying to load the schema themselves.
+        begin
+          klass.send(:load_schema) if klass.respond_to?(:load_schema, true)
+        rescue StandardError
+          nil
+        end
         klass.define_attribute_methods
+      end
+      # Replace GeneratedAttributeMethods::LOCK (a Monitor) with a shareable
+      # NoOpLock. The Monitor is only used during define_attribute_methods
+      # (already completed above). Post-generation the lock is never contended,
+      # so a NoOpLock is safe. This must run BEFORE make_app_shareable! deep-
+      # freezes the graph — a Monitor constant can't be made shareable.
+      noop = noop_lock_class.new
+      Ractor.make_shareable(noop) rescue nil
+      begin
+        mod = ::ActiveRecord::AttributeMethods::GeneratedAttributeMethods
+        mod.send(:remove_const, :LOCK) if mod.const_defined?(:LOCK, false)
+        mod.const_set(:LOCK, noop)
+      rescue StandardError
+        # Best-effort: if the constant can't be replaced (frozen module, etc.),
+        # make_shareable! will handle the Monitor via its fallback path.
       end
     end
 
