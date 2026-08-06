@@ -32,6 +32,8 @@
 
 module RactorRailsShim
   module ShareabilityTraversal
+    extend RoleDefaults
+
     @funnel = nil
     @find_files_server = nil
     @devise_mapping_replacement = nil
@@ -101,7 +103,7 @@ module RactorRailsShim
     end
 
     def self.funnel
-      @funnel || RactorRailsShim::Funnel.method(:swallow)
+      @funnel || default_funnel
     end
 
     def self.find_files_server

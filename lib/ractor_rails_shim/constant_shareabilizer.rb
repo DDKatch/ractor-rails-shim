@@ -30,6 +30,8 @@
 
 module RactorRailsShim
   module ConstantShareabilizer
+    extend RoleDefaults
+
     @funnel = nil
     @register_patch = nil
     @introspectable = nil
@@ -75,7 +77,7 @@ module RactorRailsShim
     end
 
     def self.funnel
-      @funnel || RactorRailsShim::Funnel.method(:swallow)
+      @funnel || default_funnel
     end
 
     def self.register_patch

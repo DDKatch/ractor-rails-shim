@@ -29,6 +29,8 @@
 
 module RactorRailsShim
   module FallbackBuilder
+    extend RoleDefaults
+
     @built = false
     @safe_const_get = nil
     @replace_unshareable_procs = nil
@@ -82,7 +84,7 @@ module RactorRailsShim
     end
 
     def self.safe_const_get
-      @safe_const_get || RactorRailsShim::ConstantShareabilizer.method(:safe_const_get)
+      @safe_const_get || default_safe_const_get
     end
 
     def self.replace_unshareable_procs

@@ -42,6 +42,8 @@
 
 module RactorRailsShim
   module CallbackCapture
+    extend RoleDefaults
+
     @installed = false
     @funnel = nil
     @reassign_shareable_const = nil
@@ -82,13 +84,13 @@ module RactorRailsShim
     # The active funnel: the injected one if configured, else the
     # facade lookup (`RactorRailsShim::Funnel.method(:swallow)`).
     def self.funnel
-      @funnel || RactorRailsShim::Funnel.method(:swallow)
+      @funnel || default_funnel
     end
 
     # The active reassign callable: the injected one if configured, else
     # the facade lookup (`RactorRailsShim.method(:_reassign_shareable_const)`).
     def self.reassign_shareable_const
-      @reassign_shareable_const || RactorRailsShim.method(:_reassign_shareable_const)
+      @reassign_shareable_const || default_reassign_shareable_const
     end
 
     # The active register_patch callable: the injected one if configured,

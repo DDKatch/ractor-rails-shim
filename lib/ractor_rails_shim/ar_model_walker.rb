@@ -29,6 +29,8 @@
 # `RactorRailsShim` god module loaded (Issue #23, POODR §2 Dependencies).
 module RactorRailsShim
   module ARModelWalker
+    extend RoleDefaults
+
     @funnel = nil
 
     # Inject the `funnel` collaborator — a callable responding to
@@ -47,7 +49,7 @@ module RactorRailsShim
     # The active funnel: the injected one if configured, else the
     # facade lookup (`RactorRailsShim::Funnel.method(:swallow)`).
     def self.funnel
-      @funnel || RactorRailsShim::Funnel.method(:swallow)
+      @funnel || default_funnel
     end
 
     # Iterate every loaded ActiveRecord model — Base itself plus its

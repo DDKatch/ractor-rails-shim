@@ -24,6 +24,8 @@
 module RactorRailsShim
   module Freezers
     module CacheWarmer
+      extend RoleDefaults
+
       @funnel = nil
 
       def self.configure(funnel: nil)
@@ -35,7 +37,7 @@ module RactorRailsShim
       end
 
       def self.funnel
-        @funnel || RactorRailsShim::Funnel.method(:swallow)
+        @funnel || default_funnel
       end
 
       WARMER_METHODS = Ractor.make_shareable(%i[
@@ -68,6 +70,8 @@ module RactorRailsShim
     end
 
     module ClassIvarFreezer
+      extend RoleDefaults
+
       @funnel = nil
 
       def self.configure(funnel: nil)
@@ -79,7 +83,7 @@ module RactorRailsShim
       end
 
       def self.funnel
-        @funnel || RactorRailsShim::Funnel.method(:swallow)
+        @funnel || default_funnel
       end
 
       def self.call
@@ -98,6 +102,8 @@ module RactorRailsShim
     end
 
     module GlobalClassIvarFreezer
+      extend RoleDefaults
+
       @funnel = nil
       @safe_const_get = nil
 
@@ -112,11 +118,11 @@ module RactorRailsShim
       end
 
       def self.funnel
-        @funnel || RactorRailsShim::Funnel.method(:swallow)
+        @funnel || default_funnel
       end
 
       def self.safe_const_get
-        @safe_const_get || RactorRailsShim::ConstantShareabilizer.method(:safe_const_get)
+        @safe_const_get || default_safe_const_get
       end
 
       # Mutable target list — downstream apps can register their own global
@@ -144,6 +150,8 @@ module RactorRailsShim
     end
 
     module GlobalConstantFreezer
+      extend RoleDefaults
+
       @safe_const_get = nil
       @funnel = nil
 
@@ -158,11 +166,11 @@ module RactorRailsShim
       end
 
       def self.safe_const_get
-        @safe_const_get || RactorRailsShim::ConstantShareabilizer.method(:safe_const_get)
+        @safe_const_get || default_safe_const_get
       end
 
       def self.funnel
-        @funnel || RactorRailsShim::Funnel.method(:swallow)
+        @funnel || default_funnel
       end
 
       # Mutable target list — downstream apps can register their own
@@ -204,6 +212,8 @@ module RactorRailsShim
     end
 
     module MessagesConstantsFreezer
+      extend RoleDefaults
+
       @safe_const_get = nil
 
       def self.configure(safe_const_get: nil)
@@ -215,7 +225,7 @@ module RactorRailsShim
       end
 
       def self.safe_const_get
-        @safe_const_get || RactorRailsShim::ConstantShareabilizer.method(:safe_const_get)
+        @safe_const_get || default_safe_const_get
       end
 
       # Mutable target list — downstream apps can register their own
@@ -263,6 +273,8 @@ module RactorRailsShim
     # class). Extracted from _freeze_shareable_class_ivars! in
     # make_shareable.rb (Issue #27, POODR §6a Modules & Roles).
     module ShareableClassIvarFreezer
+      extend RoleDefaults
+
       @funnel = nil
       @safe_const_get = nil
 
@@ -277,11 +289,11 @@ module RactorRailsShim
       end
 
       def self.funnel
-        @funnel || RactorRailsShim::Funnel.method(:swallow)
+        @funnel || default_funnel
       end
 
       def self.safe_const_get
-        @safe_const_get || RactorRailsShim::ConstantShareabilizer.method(:safe_const_get)
+        @safe_const_get || default_safe_const_get
       end
 
       # Mutable registry of [class_name, method_name] pairs to pre-touch

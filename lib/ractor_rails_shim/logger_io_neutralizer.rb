@@ -30,6 +30,8 @@
 
 module RactorRailsShim
   module LoggerIONeutralizer
+    extend RoleDefaults
+
     @funnel = nil
     @noop_log_dev_class = nil
 
@@ -53,7 +55,7 @@ module RactorRailsShim
     # The active funnel: the injected one if configured, else the
     # facade lookup (`RactorRailsShim::Funnel.method(:swallow)`).
     def self.funnel
-      @funnel || RactorRailsShim::Funnel.method(:swallow)
+      @funnel || default_funnel
     end
 
     # The active NoOpLogDev class: the injected one if configured, else
