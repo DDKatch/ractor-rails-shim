@@ -725,6 +725,35 @@ module RactorRailsShim
       return unless defined?(::ActiveRecord::ModelSchema::ClassMethods)
       mod = ::ActiveRecord::ModelSchema::ClassMethods
       mod.module_eval do
+        # `columns_hash` reads `@columns_hash`, loading the schema via
+        # `load_schema` only when `@columns_hash` is nil. `load_schema` itself
+        # short-circuits on `@schema_loaded?` — and in a worker Ractor the model
+        # can carry `@schema_loaded == true` (warmed in main, shareable) while
+        # `@columns_hash` is nil (never warmed, or reset by a sibling worker's
+        # `reset_column_information`). The original then returns nil, and
+        # ActiveRecordAttributesPatch#_default_attributes blows up with
+        # `undefined method 'transform_values' for nil`. In the worker, force a
+        # real load (ignoring the `@schema_loaded` short-circuit) when
+        # `@columns_hash` is missing; abstract classes keep the original path
+        # (they have no table, so `load_schema!` would raise).
+        def columns_hash
+          if @columns_hash.nil?
+            if ::Ractor.main? || abstract_class?
+              load_schema
+            else
+              @load_schema_monitor.synchronize do
+                next if @columns_hash
+                load_schema!
+                @schema_loaded = true
+              rescue StandardError
+                reload_schema_from_cache
+                raise
+              end
+            end
+          end
+          @columns_hash
+        end
+
         def table_name
           if Ractor.main?
             reset_table_name unless defined?(@table_name)
