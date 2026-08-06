@@ -1142,6 +1142,44 @@ module RactorRailsShim
               super
             end
           end
+
+          # The three timestamp-attribute readers memoize their result on the
+          # (shared, frozen) model class via @timestamp_attributes_for_* class
+          # ivars. From a worker Ractor that write raises Ractor::IsolationError
+          # (this is exactly the failure hit on Comment#save ->
+          # _create_record -> all_timestamp_attributes_in_model). Route the
+          # memoization through a per-worker cache in workers; keep the original
+          # class-ivar behavior in main (where the value is frozen into the
+          # shared graph and the ivar can still be written before freeze).
+          def timestamp_attributes_for_create_in_model
+            if Ractor.main?
+              @timestamp_attributes_for_create_in_model ||=
+                (timestamp_attributes_for_create & column_names).freeze
+            else
+              (Ractor.current[:__rrs_ts_cache__] ||= {})[[object_id, :ts_create]] ||=
+                (timestamp_attributes_for_create & column_names).freeze
+            end
+          end
+
+          def timestamp_attributes_for_update_in_model
+            if Ractor.main?
+              @timestamp_attributes_for_update_in_model ||=
+                (timestamp_attributes_for_update & column_names).freeze
+            else
+              (Ractor.current[:__rrs_ts_cache__] ||= {})[[object_id, :ts_update]] ||=
+                (timestamp_attributes_for_update & column_names).freeze
+            end
+          end
+
+          def all_timestamp_attributes_in_model
+            if Ractor.main?
+              @all_timestamp_attributes_in_model ||=
+                (timestamp_attributes_for_create_in_model + timestamp_attributes_for_update_in_model).freeze
+            else
+              (Ractor.current[:__rrs_ts_cache__] ||= {})[[object_id, :ts_all]] ||=
+                (timestamp_attributes_for_create_in_model + timestamp_attributes_for_update_in_model).freeze
+            end
+          end
         RUBY
       end
     end
