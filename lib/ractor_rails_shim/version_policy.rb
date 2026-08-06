@@ -117,6 +117,31 @@ module RactorRailsShim
         end
         { applied: applied, skipped: skipped }
       end
+
+      # Check Ruby and Rails version support. Warns/raises/silences
+      # according to the configured policy. Moved from the facade
+      # (patches/core.rb) per POODR: this is a version-policy
+      # responsibility, not a composition-root responsibility.
+      def check_version_support
+        unless RactorRailsShim::Version.supported_ruby?
+          msg = "ractor-rails-shim: Ruby #{RUBY_VERSION} — shim requires " \
+                "Ruby >= #{RactorRailsShim::Version::SUPPORTED_RUBY} (frozen-iseq " \
+                "call-cache fix #22075 and cross-ractor env-string fix both " \
+                "shipped in 4.0.6). Proceeding anyway."
+          mismatch(msg)
+        end
+        if RactorRailsShim::Version.rails &&
+           !RactorRailsShim::Version.supported_rails?
+          rv = defined?(::Rails::VERSION::STRING) ? ::Rails::VERSION::STRING : "unknown"
+          msg = "ractor-rails-shim: Rails #{rv} — shim developed against " \
+                "Rails #{RactorRailsShim::Version::TESTED_RAILS.join(", ")}. " \
+                "Class layouts (class_attribute, callbacks, PathRegistry, etc.) " \
+                "may differ; patches may miss blockers. Proceeding anyway. " \
+                "Set RactorRailsShim.version_policy = :strict to make this " \
+                "fatal; :off to silence."
+          mismatch(msg)
+        end
+      end
     end
   end
 end

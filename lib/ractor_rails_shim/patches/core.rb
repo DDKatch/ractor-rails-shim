@@ -254,24 +254,7 @@ module RactorRailsShim
     # (Gem::Version-based), not a string-prefix compare, so pre-release and
     # patch versions sort correctly.
     def _check_version_support
-      unless RactorRailsShim::Version.supported_ruby?
-        msg = "ractor-rails-shim: Ruby #{RUBY_VERSION} — shim requires " \
-              "Ruby >= #{SUPPORTED_RUBY} (frozen-iseq call-cache fix #22075 " \
-              "and cross-ractor env-string fix both shipped in 4.0.6). " \
-              "Proceeding anyway."
-        _version_mismatch(msg)
-      end
-      if RactorRailsShim::Version.rails &&
-         !RactorRailsShim::Version.supported_rails?
-        rv = ::Rails::VERSION::STRING
-        msg = "ractor-rails-shim: Rails #{rv} — shim developed against " \
-              "Rails #{RactorRailsShim::Version::TESTED_RAILS.join(", ")}. " \
-              "Class layouts (class_attribute, callbacks, PathRegistry, etc.) " \
-              "may differ; patches may miss blockers. Proceeding anyway. " \
-              "Set RactorRailsShim.version_policy = :strict to make this " \
-              "fatal; :off to silence."
-        _version_mismatch(msg)
-      end
+      RactorRailsShim::VersionPolicy.check_version_support
     end
 
     # Apply the configured policy to a mismatch message.

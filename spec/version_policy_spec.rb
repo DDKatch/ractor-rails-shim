@@ -128,4 +128,76 @@ class VersionPolicySpec < Minitest::Spec
     assert_equal RactorRailsShim::VersionPolicy::UnsupportedVersionError,
                  RactorRailsShim::UnsupportedVersionError
   end
+
+  # --- check_version_support (Issue #46) ---
+
+  it "VersionPolicy.check_version_support warns when Ruby is unsupported" do
+    RactorRailsShim::VersionPolicy.policy = :warn
+    original = RactorRailsShim::Version.method(:supported_ruby?)
+    RactorRailsShim::Version.define_singleton_method(:supported_ruby?) { false }
+    out, err = capture_io { RactorRailsShim::VersionPolicy.check_version_support }
+    assert_match(/Ruby/, out + err)
+  ensure
+    RactorRailsShim::Version.define_singleton_method(:supported_ruby?, original)
+    RactorRailsShim::VersionPolicy.policy = :warn
+  end
+
+  it "VersionPolicy.check_version_support warns when Rails is unsupported" do
+    RactorRailsShim::VersionPolicy.policy = :warn
+    original_ruby = RactorRailsShim::Version.method(:supported_ruby?)
+    original_rails = RactorRailsShim::Version.method(:supported_rails?)
+    original_rails_version = RactorRailsShim::Version.method(:rails)
+    RactorRailsShim::Version.define_singleton_method(:supported_ruby?) { true }
+    RactorRailsShim::Version.define_singleton_method(:supported_rails?) { false }
+    # Stub rails to return a non-nil version so the check actually runs.
+    RactorRailsShim::Version.define_singleton_method(:rails) { Gem::Version.new("99.0") }
+    out, err = capture_io { RactorRailsShim::VersionPolicy.check_version_support }
+    assert_match(/Rails/, out + err)
+  ensure
+    RactorRailsShim::Version.define_singleton_method(:supported_ruby?, original_ruby)
+    RactorRailsShim::Version.define_singleton_method(:supported_rails?, original_rails)
+    RactorRailsShim::Version.define_singleton_method(:rails, original_rails_version)
+    RactorRailsShim::VersionPolicy.policy = :warn
+  end
+
+  it "VersionPolicy.check_version_support is silent when both versions are supported" do
+    RactorRailsShim::VersionPolicy.policy = :warn
+    original_ruby = RactorRailsShim::Version.method(:supported_ruby?)
+    original_rails = RactorRailsShim::Version.method(:supported_rails?)
+    RactorRailsShim::Version.define_singleton_method(:supported_ruby?) { true }
+    RactorRailsShim::Version.define_singleton_method(:supported_rails?) { true }
+    out, err = capture_io { RactorRailsShim::VersionPolicy.check_version_support }
+    assert_empty out
+    assert_empty err
+  ensure
+    RactorRailsShim::Version.define_singleton_method(:supported_ruby?, original_ruby)
+    RactorRailsShim::Version.define_singleton_method(:supported_rails?, original_rails)
+    RactorRailsShim::VersionPolicy.policy = :warn
+  end
+
+  it "VersionPolicy.check_version_support raises under :strict policy" do
+    RactorRailsShim::VersionPolicy.policy = :strict
+    RactorRailsShim::Version.define_singleton_method(:supported_ruby?) { false }
+    assert_raises(RactorRailsShim::VersionPolicy::UnsupportedVersionError) do
+      RactorRailsShim::VersionPolicy.check_version_support
+    end
+  ensure
+    RactorRailsShim::Version.define_singleton_method(:supported_ruby?) { true }
+    RactorRailsShim::VersionPolicy.policy = :warn
+  end
+
+  it "RactorRailsShim._check_version_support delegates to VersionPolicy.check_version_support" do
+    RactorRailsShim::VersionPolicy.policy = :off
+    # With :off policy and both versions supported, should be silent.
+    original_ruby = RactorRailsShim::Version.method(:supported_ruby?)
+    original_rails = RactorRailsShim::Version.method(:supported_rails?)
+    RactorRailsShim::Version.define_singleton_method(:supported_ruby?) { true }
+    RactorRailsShim::Version.define_singleton_method(:supported_rails?) { true }
+    out, _ = capture_io { RactorRailsShim._check_version_support }
+    assert_empty out
+  ensure
+    RactorRailsShim::Version.define_singleton_method(:supported_ruby?, original_ruby)
+    RactorRailsShim::Version.define_singleton_method(:supported_rails?, original_rails)
+    RactorRailsShim::VersionPolicy.policy = :warn
+  end
 end
