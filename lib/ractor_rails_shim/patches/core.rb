@@ -108,12 +108,7 @@ module RactorRailsShim
     # `Registry.*` see the new value. The facade const_set is kept for
     # the string-eval'd code that reads `RactorRailsShim::SHAREABLE_*`.
     def _reassign_shareable_const(name, value)
-      verbose, $VERBOSE = $VERBOSE, nil
-      begin
-        const_set(name, value)
-      ensure
-        $VERBOSE = verbose
-      end
+      ConstReassign.call(self, name, value)
       case name
       when :SHAREABLE_FALLBACK then Registry.reassign_shareable_fallback(value)
       when :SHAREABLE_MATTR_DEFAULTS then Registry.reassign_shareable_mattr_defaults(value)
