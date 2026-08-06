@@ -922,6 +922,26 @@ module RactorRailsShim
             store.fetch(object_id) { store[object_id] = ::ActiveRecord::TypeCaster::Map.new(self) }
           end
         end
+
+        # inspection_filter memoizes @inspection_filter as a class ivar on the
+        # (shared, frozen) model class. From a worker Ractor that write raises
+        # Ractor::IsolationError ("can not set instance variables of
+        # classes/modules by non-main Ractors") — e.g. whenever a model is
+        # inspected during a request (backtraces, journey route-formatter
+        # Hash#inspect, debug output). Route the memoization through
+        # IsolatedExecutionState keyed by the model class instead, preserving
+        # the original superclass-delegation semantics.
+        def inspection_filter
+          store = (RactorRailsShim.storage[:rrs_inspection_filters] ||= {})
+          return store[self] if store.key?(self)
+          result = if @filter_attributes.nil?
+            superclass.inspection_filter
+          else
+            mask = ::ActiveRecord::Core.const_get(:InspectionMask).new(ActiveSupport::ParameterFilter::FILTERED)
+            ActiveSupport::ParameterFilter.new(@filter_attributes, mask: mask)
+          end
+          store[self] = result
+        end
       end
     end
 
