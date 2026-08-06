@@ -648,13 +648,16 @@ module RactorRailsShim
       if defined?(::ActiveRecord::Associations::AssociationScope) &&
          ::ActiveRecord::Associations::AssociationScope.const_defined?(:INSTANCE)
         inst = ::ActiveRecord::Associations::AssociationScope::INSTANCE
-        unless Ractor.shareable?(inst)
-          _swallow("make AssociationScope::INSTANCE shareable") do
-            ::ActiveRecord::Associations::AssociationScope.const_set(
-              :INSTANCE, Ractor.make_shareable(inst)
-            )
+          unless Ractor.shareable?(inst)
+            _swallow("make AssociationScope::INSTANCE shareable") do
+              # Reassigning a constant that already exists warns ("already
+              # initialized constant"); drop the old binding first.
+              ::ActiveRecord::Associations::AssociationScope.send(:remove_const, :INSTANCE) if ::ActiveRecord::Associations::AssociationScope.const_defined?(:INSTANCE, false)
+              ::ActiveRecord::Associations::AssociationScope.const_set(
+                :INSTANCE, Ractor.make_shareable(inst)
+              )
+            end
           end
-        end
       end
     end
 
@@ -2318,6 +2321,10 @@ module RactorRailsShim
             cur[model_name_str] ||= {}
             cur[model_name_str] = cur[model_name_str].dup
             cur[model_name_str][scope_name_str.to_sym] = [body_source, param_names]
+            # Reassigning a constant that already exists warns ("already
+            # initialized constant"); drop the old binding first so each scope
+            # registration stays silent.
+            RactorRailsShim.send(:remove_const, :SCOPE_SOURCE_CODES) if RactorRailsShim.const_defined?(:SCOPE_SOURCE_CODES, false)
             RactorRailsShim.const_set(:SCOPE_SOURCE_CODES, Ractor.make_shareable(cur))
           end
 

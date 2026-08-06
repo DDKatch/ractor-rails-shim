@@ -51,6 +51,10 @@ module RactorRailsShim
       rs.class_eval <<-RUBY, __FILE__, __LINE__ + 1
         def define_url_helper(mod, name, helper, url_strategy)
           const_name = :"RRS_HELPER_\#{name}"
+          # Reassigning a constant that already exists warns ("already
+          # initialized constant"); drop the old binding first so re-draws of
+          # the same route stay silent.
+          mod.send(:remove_const, const_name) if mod.const_defined?(const_name, false)
           mod.const_set(const_name, helper)
           strategy = url_strategy.equal?(PATH) ? :PATH : :UNKNOWN
           body = "def " + name.to_s + "(*args)\\n" \
@@ -72,7 +76,12 @@ module RactorRailsShim
             helper = ::ActionDispatch::Routing::RouteSet::CustomUrlHelper.new(name, defaults, &block)
             path_name = :"\#{name}_path"
             url_name  = :"\#{name}_url"
+            # Reassigning a constant that already exists warns ("already
+            # initialized constant"); drop the old binding first so re-draws of
+            # the same helper stay silent.
+            @path_helpers_module.send(:remove_const, :"RRS_HELPER_\#{path_name}") if @path_helpers_module.const_defined?(:"RRS_HELPER_\#{path_name}", false)
             @path_helpers_module.const_set(:"RRS_HELPER_\#{path_name}", helper)
+            @url_helpers_module.send(:remove_const, :"RRS_HELPER_\#{url_name}") if @url_helpers_module.const_defined?(:"RRS_HELPER_\#{url_name}", false)
             @url_helpers_module.const_set(:"RRS_HELPER_\#{url_name}", helper)
             pbody = "def " + path_name.to_s + "(*args)\\n  const_get(:\\\"RRS_HELPER_" + path_name.to_s + "\\\").call(self, args, true)\\nend"
             ubody = "def " + url_name.to_s + "(*args)\\n  const_get(:\\\"RRS_HELPER_" + url_name.to_s + "\\\").call(self, args, false)\\nend"
