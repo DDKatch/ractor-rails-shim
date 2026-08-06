@@ -863,16 +863,44 @@ module RactorRailsShim
   # are collaborators reached through the facade; Issue #23 will inject
   # them as constructor arguments.
   module ActionDispatchStrategy
+    @noop_proc_class = nil
+    @strategy_serve_class = nil
+    @strategy_call_class = nil
+
+    def self.configure(noop_proc_class: nil, strategy_serve_class: nil, strategy_call_class: nil)
+      @noop_proc_class = noop_proc_class
+      @strategy_serve_class = strategy_serve_class
+      @strategy_call_class = strategy_call_class
+    end
+
+    def self.reset_configuration
+      @noop_proc_class = nil
+      @strategy_serve_class = nil
+      @strategy_call_class = nil
+    end
+
+    def self.noop_proc_class
+      @noop_proc_class || RactorRailsShim.singleton_class.const_get(:NoOpProc)
+    end
+
+    def self.strategy_serve_class
+      @strategy_serve_class || RactorRailsShim.singleton_class.const_get(:StrategyServe)
+    end
+
+    def self.strategy_call_class
+      @strategy_call_class || RactorRailsShim.singleton_class.const_get(:StrategyCall)
+    end
+
     # Return the shareable replacement for the given strategy Proc.
-    #   SERVE -> StrategyServe, CALL -> StrategyCall, unknown -> NoOpProc.
+    #   SERVE -> strategy_serve_class, CALL -> strategy_call_class,
+    #   unknown -> noop_proc_class.
     def self.replacement_for(proc_obj)
       constraints = defined?(::ActionDispatch::Routing::Mapper::Constraints) ?
         ::ActionDispatch::Routing::Mapper::Constraints : nil
-      noop = RactorRailsShim.singleton_class.const_get(:NoOpProc)
-      return noop.new unless constraints
-      return RactorRailsShim.singleton_class.const_get(:StrategyServe).new if proc_obj.equal?(constraints::SERVE)
-      return RactorRailsShim.singleton_class.const_get(:StrategyCall).new if proc_obj.equal?(constraints::CALL)
-      noop.new
+      return noop_proc_class.new unless constraints
+      return strategy_serve_class.new if proc_obj.equal?(constraints::SERVE)
+      return strategy_call_class.new if proc_obj.equal?(constraints::CALL)
+      noop_proc_class.new
     end
   end
 end

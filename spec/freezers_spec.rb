@@ -842,3 +842,84 @@ class FreezersSpec < Minitest::Spec
     t::PRE_TOUCH.replace(original) if original
   end
 end
+
+# --- Issue #42: injection gaps ---
+
+class ActionDispatchStrategySpec < Minitest::Spec
+  it "ActionDispatchStrategy responds to configure" do
+    assert_respond_to RactorRailsShim::ActionDispatchStrategy, :configure
+  end
+
+  it "ActionDispatchStrategy responds to reset_configuration" do
+    assert_respond_to RactorRailsShim::ActionDispatchStrategy, :reset_configuration
+  end
+
+  it "configure accepts noop_proc_class, strategy_serve_class, strategy_call_class" do
+    noop = Class.new
+    serve = Class.new
+    call = Class.new
+    RactorRailsShim::ActionDispatchStrategy.configure(
+      noop_proc_class: noop, strategy_serve_class: serve, strategy_call_class: call
+    )
+    assert_equal noop, RactorRailsShim::ActionDispatchStrategy.noop_proc_class
+    assert_equal serve, RactorRailsShim::ActionDispatchStrategy.strategy_serve_class
+    assert_equal call, RactorRailsShim::ActionDispatchStrategy.strategy_call_class
+  ensure
+    RactorRailsShim::ActionDispatchStrategy.reset_configuration
+  end
+
+  it "reset_configuration restores facade-lookup defaults" do
+    noop = Class.new
+    RactorRailsShim::ActionDispatchStrategy.configure(noop_proc_class: noop)
+    refute_equal RactorRailsShim.singleton_class.const_get(:NoOpProc),
+                 RactorRailsShim::ActionDispatchStrategy.noop_proc_class
+    RactorRailsShim::ActionDispatchStrategy.reset_configuration
+    assert_equal RactorRailsShim.singleton_class.const_get(:NoOpProc),
+                 RactorRailsShim::ActionDispatchStrategy.noop_proc_class
+  ensure
+    RactorRailsShim::ActionDispatchStrategy.reset_configuration
+  end
+
+  it "replacement_for returns noop for unknown proc" do
+    noop_class = Class.new
+    RactorRailsShim::ActionDispatchStrategy.configure(noop_proc_class: noop_class)
+    result = RactorRailsShim::ActionDispatchStrategy.replacement_for(Object.new)
+    assert_kind_of noop_class, result
+  ensure
+    RactorRailsShim::ActionDispatchStrategy.reset_configuration
+  end
+end
+
+class WorkerAppFactorySpec < Minitest::Spec
+  it "WorkerAppFactory responds to configure" do
+    assert_respond_to RactorRailsShim::WorkerAppFactory, :configure
+  end
+
+  it "WorkerAppFactory responds to reset_configuration" do
+    assert_respond_to RactorRailsShim::WorkerAppFactory, :reset_configuration
+  end
+
+  it "configure accepts autoloaders, const_get, worker_app_class" do
+    fakeautoloaders = Object.new
+    fakeconst_get = ->(name) { nil }
+    fake_wa_class = Class.new
+    RactorRailsShim::WorkerAppFactory.configure(
+      autoloaders: fakeautoloaders, const_get: fakeconst_get,
+      worker_app_class: fake_wa_class
+    )
+    assert_equal fakeautoloaders, RactorRailsShim::WorkerAppFactory.autoloaders
+    assert_equal fakeconst_get, RactorRailsShim::WorkerAppFactory.const_get_callable
+    assert_equal fake_wa_class, RactorRailsShim::WorkerAppFactory.worker_app_class
+  ensure
+    RactorRailsShim::WorkerAppFactory.reset_configuration
+  end
+
+  it "reset_configuration restores facade-lookup defaults" do
+    RactorRailsShim::WorkerAppFactory.configure(autoloaders: Object.new)
+    RactorRailsShim::WorkerAppFactory.reset_configuration
+    # After reset, defaults are facade lookups
+    assert_nil RactorRailsShim::WorkerAppFactory.autoloaders
+  ensure
+    RactorRailsShim::WorkerAppFactory.reset_configuration
+  end
+end

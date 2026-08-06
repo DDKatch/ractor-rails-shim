@@ -21,6 +21,34 @@ require_relative "worker_app"
 
 module RactorRailsShim
   module WorkerAppFactory
+    @autoloaders = nil
+    @const_get_callable = nil
+    @worker_app_class = nil
+
+    def self.configure(autoloaders: nil, const_get: nil, worker_app_class: nil)
+      @autoloaders = autoloaders
+      @const_get_callable = const_get
+      @worker_app_class = worker_app_class
+    end
+
+    def self.reset_configuration
+      @autoloaders = nil
+      @const_get_callable = nil
+      @worker_app_class = nil
+    end
+
+    def self.autoloaders
+      @autoloaders
+    end
+
+    def self.const_get_callable
+      @const_get_callable
+    end
+
+    def self.worker_app_class
+      @worker_app_class || WorkerApp
+    end
+
     # Capture a frozen name -> object map for every constant the
     # application's Zeitwerk loaders manage. Runs in the MAIN Ractor, after
     # eager load, where all app constants are defined. The map travels to
@@ -40,22 +68,22 @@ module RactorRailsShim
     # IsolationError off the main Ractor).
     def self.capture_constants!
       map = {}
-      unless defined?(::Rails) && Rails.respond_to?(:autoloaders)
-        return map.freeze
+      al = autoloaders
+      cget = const_get_callable || Object.method(:const_get)
+      if al.nil?
+        # Backward compat: fall back to Rails.autoloaders when no explicit
+        # autoloaders injected (seam not yet called).
+        if defined?(::Rails) && Rails.respond_to?(:autoloaders)
+          al = Rails.autoloaders
+        else
+          return map.freeze
+        end
       end
-      autoloaders = Rails.autoloaders
-      # Guard against non-Zeitwerk configurations: Rails.autoloaders may be
-      # present (the method exists) but not expose `main`/`once` (e.g.
-      # classic loader mode, or `config.autoloaders = false` returning a
-      # null object). `main`/`once` may also individually be nil when only
-      # one loader is configured. Filter to the loaders that actually
-      # expose `all_expected_cpaths` (the Zeitwerk introspection API the
-      # capture relies on).
       loaders =
-        if autoloaders.respond_to?(:main) && autoloaders.respond_to?(:once)
-          [autoloaders.main, autoloaders.once]
-        elsif autoloaders.respond_to?(:each)
-          autoloaders.to_a
+        if al.respond_to?(:main) && al.respond_to?(:once)
+          [al.main, al.once]
+        elsif al.respond_to?(:each)
+          al.to_a
         else
           []
         end
@@ -63,7 +91,7 @@ module RactorRailsShim
         next unless loader && loader.respond_to?(:all_expected_cpaths)
         begin
           loader.all_expected_cpaths.values.each do |cpath|
-            obj = Object.const_get(cpath) rescue next
+            obj = cget.call(cpath) rescue next
             begin
               Ractor.make_shareable(obj) unless Ractor.shareable?(obj)
             rescue StandardError
@@ -88,10 +116,8 @@ module RactorRailsShim
     # without the caller having to know the shareability contract.
     def self.build(frozen_app)
       bindings = capture_constants!
-      wa = WorkerApp.new(frozen_app, bindings)
+      wa = worker_app_class.new(frozen_app, bindings)
       wa.freeze
-      # Ractor.make_shareable returns the shareable object, so this is the
-      # factory's return value.
       Ractor.make_shareable(wa)
     end
   end

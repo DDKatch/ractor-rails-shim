@@ -29,6 +29,12 @@
 # _install_all_framework_patches) that delegate, so
 # framework_patch_dispatch_spec, version_spec, and the integration spec
 # keep passing unchanged.
+#
+# NOTE: Installer is the composition root (POODR §8a). It resolves
+# collaborators (RunMode, InstallStrategy, etc.) by global name on
+# purpose. A configure seam is deliberately absent — moving the wiring
+# up one level would add ceremony with no benefit, since the composition
+# root is the one place that IS allowed to reach by name.
 
 module RactorRailsShim
   module Installer
