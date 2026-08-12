@@ -16,6 +16,15 @@ module RactorRailsShim
     "ActionController::Parameters::PERMITTED_SCALAR_TYPES",
   ])
 
+  # Captured at prepare_for_ractors! time: the main Ractor's resolved
+  # ActionController forgery-protection flag. Replayed in worker Ractors (see
+  # _install_action_controller_forgery_patch) because `allow_forgery_protection`
+  # delegates to `config.allow_forgery_protection`, and a worker's shared
+  # `config` resolves to an EMPTY OrderedOptions -> the flag is lost, so no CSRF
+  # token is ever emitted in workers (forms render without an authenticity
+  # token, and POST/CSRF validation can't be exercised). A boolean is shareable.
+  SHAREABLE_ALLOW_FORGERY = false
+
   class << self
     # Patch ActionController::ParameterEncoding::ClassMethods#action_encoding_template
     # to not read @_parameter_encodings (a raw class ivar) from a worker
@@ -40,6 +49,43 @@ module RactorRailsShim
           end
         end
       RUBY
+    end
+
+    # Replay ActionController's forgery-protection flag in worker Ractors.
+    # `allow_forgery_protection` delegates to `config.allow_forgery_protection`;
+    # in a worker the shared `config` is an empty ActiveSupport::OrderedOptions,
+    # so forms never render a CSRF token (breaking token issuance/validation in
+    # workers). Capture the resolved flag from the main Ractor at prepare time
+    # (after any boot-time override) and force it in workers so token
+    # issuance/validation work off the frozen, shared graph.
+    def _install_action_controller_forgery_patch
+      return if @action_controller_forgery_patched
+      @action_controller_forgery_patched = true
+      _register_patch :action_controller_forgery, "8.1"
+      return unless defined?(::ActionController::RequestForgeryProtection)
+      return unless defined?(::ActionController::Base)
+
+      # Capture the resolved flag. ActionController::Base.allow_forgery_protection
+      # is a class method that reads config; in the main Ractor config carries
+      # the boot-time override. Booleans are shareable.
+      _reassign_shareable_const(
+        :SHAREABLE_ALLOW_FORGERY,
+        !!::ActionController::Base.allow_forgery_protection
+      )
+
+      mod = ::ActionController::Base
+      # Override the instance-method delegation (used by protect_against_forgery?).
+      mod.module_eval do
+        def allow_forgery_protection
+          ::Ractor.main? ? super : ::RactorRailsShim::SHAREABLE_ALLOW_FORGERY
+        end
+      end
+      # Override the class-method delegation (singleton delegate to :config).
+      mod.singleton_class.module_eval do
+        def allow_forgery_protection
+          ::Ractor.main? ? super : ::RactorRailsShim::SHAREABLE_ALLOW_FORGERY
+        end
+      end
     end
 
     # Patch AbstractController::Base.controller_path to not write/read the
