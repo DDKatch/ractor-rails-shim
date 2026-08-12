@@ -351,6 +351,35 @@ module RactorRailsShim
         end)
       end
 
+      # `ParamsWrapper#_wrapper_options` is a class_attribute whose default
+      # value (`ActionController::ParamsWrapper::Options.from_hash(format: [])`)
+      # holds a `Mutex.new` and back-references the controller/model klass, so
+      # it cannot be deep-frozen into the shared graph — its value is nil in a
+      # worker Ractor (see the `#__class_attr__wrapper_options` boot warning).
+      # `ParamsWrapper#_wrapper_formats` then calls `_wrapper_options.format`
+      # and raises NoMethodError: private method `format' called for nil on
+      # every wrapped request (e.g. POST /posts/:id/comments). Fall back to the
+      # class_attribute's own declared default — wrapping disabled — whenever
+      # the real value is unreadable in the worker. The default is built lazily
+      # inside the method (never captured in a closure) so the prepended module
+      # stays Ractor-shareable — the Options object (which owns a Mutex) only
+      # ever lives in the worker that calls it.
+      def _install_controller_params_wrapper_patch
+        return if @controller_params_wrapper_patched
+        @controller_params_wrapper_patched = true
+        _register_patch :controller_params_wrapper, "8.1"
+        return unless defined?(::ActionController::Base) &&
+                      defined?(::ActionController::ParamsWrapper)
+        ::ActionController::Base.prepend(Module.new do
+          def _wrapper_options
+            super ||
+              ::ActionController::ParamsWrapper::Options.from_hash(format: [])
+          rescue NoMethodError, ActiveSupport::DelegationError
+            ::ActionController::ParamsWrapper::Options.from_hash(format: [])
+          end
+        end)
+      end
+
       # Patch the flash-type helper methods (`notice`, `alert`, ...) defined by
       # `ActionController::Metal::Flash#add_flash_types` via
       # `define_method(type) { request.flash[type] }`. That block is compiled
