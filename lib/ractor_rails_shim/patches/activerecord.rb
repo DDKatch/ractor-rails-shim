@@ -58,6 +58,7 @@ module RactorRailsShim
     "ActiveRecord::AttributeMethods::PrimaryKey::ClassMethods::ID_ATTRIBUTE_METHODS",
     "ActiveRecord::Callbacks::CALLBACKS",
     "ActiveRecord::ConnectionAdapters::ColumnDefinition::OPTION_NAMES",
+    "ActiveRecord::ConnectionAdapters::PostgreSQL::DatabaseStatements::IDLE_TRANSACTION_STATUSES",
     "ActiveRecord::ConnectionAdapters::SQLite3Adapter::DEFAULT_PRAGMAS",
     "ActiveRecord::ConnectionAdapters::SQLite3Adapter::NATIVE_DATABASE_TYPES",
     "ActiveRecord::ConnectionHandling::DEFAULT_ENV",
@@ -657,7 +658,7 @@ module RactorRailsShim
                 :INSTANCE, Ractor.make_shareable(inst)
               )
             end
-          end
+        end
       end
     end
 
