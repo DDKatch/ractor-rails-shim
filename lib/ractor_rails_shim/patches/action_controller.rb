@@ -304,6 +304,53 @@ module RactorRailsShim
         end)
       end
 
+      # `logger` is delegated to `config` (a class_attribute) which loses its
+      # value when make_app_shareable! deep-freezes the shared graph, so a
+      # worker reads a nil/empty `config` and `logger` raises DelegationError
+      # ("logger delegated to config, but config is nil"). `default_render`
+      # (ImplicitRender) calls `logger` for its debug log, so a no-template
+      # request (e.g. GET /) raises in workers. Fall back to the CLASS-level
+      # `ActionController::Base.config.logger` — which IS correct in workers
+      # (it reads the frozen shareable class config) — and finally to
+      # `Rails.logger`. The real delegated logger still wins whenever it is
+      # readable (main, or workers whose config propagated).
+      def _install_controller_logger_patch
+        return if @controller_logger_patched
+        @controller_logger_patched = true
+        _register_patch :controller_logger, "8.1"
+        return unless defined?(::ActionController::Base)
+        ::ActionController::Base.prepend(Module.new do
+          def logger
+            super
+          rescue ActiveSupport::DelegationError
+            ::ActionController::Base.config.logger || ::Rails.logger
+          end
+
+          # `config` is a class_attribute whose value cannot be deep-frozen, so
+          # workers read nil (or a frozen empty default) instead of the real
+          # action_controller config. Several code paths then call
+          # `config.inheritable_copy` / `config.logger` and blow up
+          # (NoMethodError / DelegationError) — including
+          # ActionView::Helpers::ControllerHelper#assign_controller during
+          # template rendering. Fall back to the CLASS-level
+          # `ActionController::Base.config`, which IS correct in workers (it
+          # reads the frozen shareable class config).
+          def config
+            cfg = super
+            cfg || ::ActionController::Base.config
+          rescue NoMethodError, ActiveSupport::DelegationError
+            ::ActionController::Base.config
+          end
+        end)
+        ::ActionController::Base.singleton_class.prepend(Module.new do
+          def logger
+            super
+          rescue ActiveSupport::DelegationError
+            ::ActionController::Base.config.logger || ::Rails.logger
+          end
+        end)
+      end
+
       # Patch the flash-type helper methods (`notice`, `alert`, ...) defined by
       # `ActionController::Metal::Flash#add_flash_types` via
       # `define_method(type) { request.flash[type] }`. That block is compiled

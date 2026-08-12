@@ -76,6 +76,30 @@ class FallbackBuilderSpec < Minitest::Spec
     assert_nil RactorRailsShim::FallbackBuilder.try_make_shareable(val, "Foo", :default_connection_handler)
   end
 
+  it "try_make_shareable returns nil for the ar default_connection_handler key (known unshareable)" do
+    val = Object.new
+    assert_nil RactorRailsShim::FallbackBuilder.try_make_shareable(val, nil, :__ractor_rails_shim_ar_default_connection_handler__)
+  end
+
+  it "try_make_shareable returns nil for queue_adapter (known unshareable)" do
+    val = Object.new
+    assert_nil RactorRailsShim::FallbackBuilder.try_make_shareable(val, "ActiveJob::Base", :__class_attr__queue_adapter)
+  end
+
+  # reflections holds a Hash of Reflection objects that is genuinely
+  # shareable as-is (its Procs are self-contained). try_make_shareable must
+  # NOT fall back to nil — workers need the real reflections Hash or
+  # associations break (`_reflect_on_association` -> `nil[]`). A plain
+  # deep-freeze succeeds, so it should return the (now shareable) value with
+  # no warning.
+  it "try_make_shareable shares reflections when the value is shareable" do
+    out = capture_stderr do
+      result = RactorRailsShim::FallbackBuilder.try_make_shareable({ a: 1 }, nil, :__class_attr__reflections)
+      assert Ractor.shareable?(result), "reflections value should be made shareable"
+    end
+    refute_includes out, "ractor-rails-shim", "reflections should not warn when shareable"
+  end
+
   # --- try_make_shareable: happy path ---
 
   it "try_make_shareable makes a plain mutable value shareable" do
@@ -220,14 +244,17 @@ class FallbackBuilderSpec < Minitest::Spec
     assert_respond_to RactorRailsShim::FallbackBuilder, :storage
   end
 
-  it "try_make_shareable routes val through the injected traversal helpers" do
+  it "try_make_shareable routes val through the injected traversal helpers on the fallback path" do
     procs_called = []
     locks_called = []
     RactorRailsShim::FallbackBuilder.configure(
       replace_unshareable_procs: ->(v) { procs_called << v; v },
       replace_locks_and_concurrent_maps: ->(v) { locks_called << v; v }
     )
-    val = ["a"]
+    # A self-capturing Proc can't be plain-shareable, so try_make_shareable
+    # falls through to the replacement traversal (which the injectables
+    # implement as a no-op here -> still unshareable -> nil).
+    val = ->(*) { :x }
     RactorRailsShim::FallbackBuilder.try_make_shareable(val, "Foo", :list)
     assert_includes procs_called, val, "replace_unshareable_procs should have been called with val"
     assert_includes locks_called, val, "replace_locks_and_concurrent_maps should have been called with val"

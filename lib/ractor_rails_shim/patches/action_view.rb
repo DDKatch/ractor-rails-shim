@@ -406,15 +406,42 @@ module RactorRailsShim
       vpc_key_str = vpc_key.inspect
       fsr_key_str = fsr_key.inspect
       pr.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        # View paths are keyed by CLASS NAME (not the class object). In
+        # ractor mode the worker Ractors rebind the app's constants into their
+        # own namespace, so a worker's controller class is a DIFFERENT object
+        # than the one used as the key in the main Ractor — keying by the
+        # (stable) class name makes the shareable fallback resolve correctly
+        # across that rebinding. A nil class (end of the ancestor walk)
+        # terminates the recursion instead of calling #superclass on nil.
         def get_view_paths(klass)
+          return [] if klass.nil?
+          name = klass.respond_to?(:name) ? klass.name : nil
           h = RactorRailsShim.storage[#{vpc_key_str}]
           h = (Ractor.main? ? (instance_variable_defined?(:@view_paths_by_class) ? instance_variable_get(:@view_paths_by_class) : {}) : RactorRailsShim::SHAREABLE_FALLBACK[#{vpc_key_str}]) if h.nil?
-          h[klass] || get_view_paths(klass.superclass)
+          return h[name] if name && h.key?(name)
+          get_view_paths(klass.superclass)
         end
 
         def set_view_paths(klass, paths)
-          h = RactorRailsShim.storage[#{vpc_key_str}] ||= (Ractor.main? ? (instance_variable_defined?(:@view_paths_by_class) ? instance_variable_get(:@view_paths_by_class) : {}) : {})
-          h[klass] = paths
+          name = klass.respond_to?(:name) ? klass.name : nil
+          return unless name
+          h = RactorRailsShim.storage[#{vpc_key_str}]
+          if h.nil?
+            # Adopt any class-ivar entries Rails populated with Class-object keys
+            # before this patch installed, re-keying them by (stable) class NAME
+            # so the shareable fallback resolves across worker rebinding (a
+            # worker's controller class is a different object than main's).
+            h = {}
+            if Ractor.main? && instance_variable_defined?(:@view_paths_by_class)
+              old = instance_variable_get(:@view_paths_by_class)
+              old.each do |k, v|
+                nk = k.respond_to?(:name) ? k.name : k
+                h[nk] = v if nk
+              end
+            end
+            RactorRailsShim.storage[#{vpc_key_str}] = h
+          end
+          h[name] = paths
           instance_variable_set(:@view_paths_by_class, h) if Ractor.main?
         end
 
@@ -423,7 +450,36 @@ module RactorRailsShim
           h = (Ractor.main? ? (instance_variable_defined?(:@file_system_resolvers) ? instance_variable_get(:@file_system_resolvers) : {}) : RactorRailsShim::SHAREABLE_FALLBACK[#{fsr_key_str}]) if h.nil?
           h.values
         end
+
+        # all_resolvers reads @view_paths_by_class directly (an unshareable
+        # class ivar), which raises Ractor::IsolationError in a worker Ractor
+        # and is hit while building an exception backtrace (masking the real
+        # error). Route it through IES + the shareable fallback like the
+        # other PathRegistry accessors.
+        def all_resolvers
+          h = RactorRailsShim.storage[#{vpc_key_str}]
+          h = (Ractor.main? ? (instance_variable_defined?(:@view_paths_by_class) ? instance_variable_get(:@view_paths_by_class) : {}) : RactorRailsShim::SHAREABLE_FALLBACK[#{vpc_key_str}]) if h.nil?
+          resolvers = [all_file_system_resolvers]
+          resolvers.concat h.values.map(&:to_a)
+          resolvers.flatten.uniq
+        end
       RUBY
+      if Ractor.main?
+        # Rails populates @view_paths_by_class with Class-object keys (via the
+        # original set_view_paths, which runs before this patch installs). Re-key
+        # by (stable) class NAME so the shareable fallback resolves across worker
+        # constant rebinding (a worker's controller class is a different object
+        # than main's). @file_system_resolvers is already keyed by path string.
+        if pr.instance_variable_defined?(:@view_paths_by_class)
+          old = pr.instance_variable_get(:@view_paths_by_class)
+          rekeyed = {}
+          old.each do |k, v|
+            nk = k.respond_to?(:name) ? k.name : k
+            rekeyed[nk] = v if nk
+          end
+          pr.instance_variable_set(:@view_paths_by_class, rekeyed)
+        end
+      end
       # Register so the fallback builder captures + shares these.
       CLASS_ATTRIBUTES << ["ActionView::PathRegistry", :view_paths_by_class, vpc_key, {}]
       CLASS_ATTRIBUTES << ["ActionView::PathRegistry", :file_system_resolvers, fsr_key, {}]
@@ -443,6 +499,51 @@ module RactorRailsShim
       @action_view_resolver_patched = true
       _register_patch :action_view_resolver, "8.1"
       return unless defined?(::ActionView::FileSystemResolver)
+      # @unbound_templates is a Concurrent::Map (resolver.rb). Ractor.make_shareable!
+      # cannot freeze a Concurrent::Map ("undefined method 'freeze' for an
+      # instance of Concurrent::Map"), so the entire view_paths PathSet fails to
+      # become shareable and workers fall back to an EMPTY view-path Hash -> every
+      # request renders "No template found". The per-virtual-path lookup cache is
+      # already routed through IsolatedExecutionState by the _find_all patch
+      # below, so @unbound_templates is never read at request time. Replace it
+      # with a plain (freezable) Hash so make_shareable! can deep-freeze each
+      # resolver and the PathSet becomes shareable across Ractors.
+      ::ActionView::FileSystemResolver.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def initialize(path)
+          raise ArgumentError, "path already is a Resolver class" if path.is_a?(::ActionView::Resolver)
+          @unbound_templates = {}
+          @path_parser = ::ActionView::Resolver::PathParser.new
+          @path = ::File.expand_path(path)
+          super()
+        end
+      RUBY
+      if Ractor.main?
+        # The resolvers already created during boot live in the PathRegistry's
+        # @view_paths_by_class / @file_system_resolvers class ivars (keyed by
+        # class name). They were built with the original initialize, so their
+        # @unbound_templates is a Concurrent::Map. Convert every such resolver
+        # to a plain (freezable) Hash so make_app_shareable! can deep-freeze the
+        # PathSet and workers get a non-empty view-path fallback.
+        resolvers = []
+        if ::ActionView::PathRegistry.instance_variable_defined?(:@view_paths_by_class)
+          ::ActionView::PathRegistry.instance_variable_get(:@view_paths_by_class).each_value do |ps|
+            resolvers.concat(ps.to_a) if ps.respond_to?(:to_a)
+          end
+        end
+        if ::ActionView::PathRegistry.instance_variable_defined?(:@file_system_resolvers)
+          ::ActionView::PathRegistry.instance_variable_get(:@file_system_resolvers).each_value do |v|
+            resolvers.concat(v.to_a) if v.respond_to?(:to_a)
+          end
+        end
+        converted = 0
+        resolvers.uniq.each do |r|
+          if r.instance_variable_defined?(:@unbound_templates) &&
+             r.instance_variable_get(:@unbound_templates).is_a?(::Concurrent::Map)
+            r.instance_variable_set(:@unbound_templates, {})
+            converted += 1
+          end
+        end
+      end
       # Eager-load nested constants referenced below (workers can't autoload).
       if Ractor.main?
         ::ActionView::TemplateDetails rescue nil

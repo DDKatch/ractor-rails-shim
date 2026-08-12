@@ -306,19 +306,38 @@ module RactorRailsShim
       attr_sym = attr_name.to_s
       return nil if attr_sym.end_with?("__callbacks") ||
                     attr_sym.end_with?("__validators") ||
-                    attr_sym.end_with?("default_connection_handler")
+                    attr_sym.end_with?("default_connection_handler") ||
+                    attr_sym.include?("default_connection_handler") ||
+                    attr_sym.end_with?("__class_attr__queue_adapter")
 
+      # Try a plain deep-freeze FIRST. Several class attributes (notably
+      # ActiveRecord's `_reflections`, a Hash of Reflection objects) ARE
+      # genuinely shareable as-is — their Procs are self-contained — but the
+      # proc/lock-replacement traversal that runs first in the old order
+      # mutates the value in a way that then defeats Ractor.make_shareable,
+      # so the attribute fell back to nil in workers and broke associations
+      # (`_reflect_on_association` -> `nil[]`). A plain make_shareable
+      # succeeds for these. Only fall back to the (slower) replacement
+      # traversal when the plain attempt raises — that path is still required
+      # for values whose Procs capture unshareable state (it swaps them for
+      # shareable callables). Either order produces a correct shareable
+      # value; plain-first just avoids the spurious failure.
       begin
-        replace_unshareable_procs.call(val)
-        replace_locks_and_concurrent_maps.call(val)
         Ractor.make_shareable(val)
         val
       rescue StandardError => e
-        unless default
-          warn "ractor-rails-shim: could not make attribute " \
-               "#{owner_name}##{attr_name} shareable (#{e.class}: #{e.message[0,80]}); workers will fall back to default or nil"
+        begin
+          replace_unshareable_procs.call(val)
+          replace_locks_and_concurrent_maps.call(val)
+          Ractor.make_shareable(val)
+          val
+        rescue StandardError => e2
+          unless default
+            warn "ractor-rails-shim: could not make attribute " \
+                 "#{owner_name}##{attr_name} shareable (#{e2.class}: #{e2.message[0,80]}); workers will fall back to default or nil"
+          end
+          nil
         end
-        nil
       end
     end
 

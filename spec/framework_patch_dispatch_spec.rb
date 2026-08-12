@@ -90,6 +90,7 @@ class FrameworkPatchDispatchSpec < Minitest::Spec
     _install_action_controller_controller_name_patch
     _install_flash_helpers_patch
     _install_csrf_reset_patch
+    _install_controller_logger_patch
     _install_active_support_error_reporter_patch
     _install_lookup_context_patch
     _install_i18n_patch
