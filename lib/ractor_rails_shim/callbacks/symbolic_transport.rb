@@ -100,20 +100,21 @@ module RactorRailsShim
 
       private
 
-      # Walk the context's class hierarchy (ancestors, instance class first),
-      # collecting every entry whose chain_kind + phase match, then yield them
-      # in ancestor-first order (superclass before subclass, mirroring Rails'
-      # accumulation order). `only`/`except` gate each entry against the
-      # context's `action_name` when present.
+      # Walk the context's class hierarchy, collecting every entry whose
+      # chain_kind + phase match, then yield them in Rails' accumulation order:
+      # superclass filters BEFORE subclass filters, declaration order preserved
+      # within each class. `only`/`except` gate each entry against the context's
+      # `action_name` when present.
       def each_applicable_filter(context, kind, phase)
         action = action_name_of(context)
         ancestors = ancestors_of(context)
-        # ancestors is instance-class-first; build ancestor-first by reversing
-        # after collecting per-class, or collect superclass-first directly.
+        # ancestors is instance-class-first; we want superclass-first so
+        # superclass filters run before subclass filters (Rails order), but
+        # declaration order is preserved within each class (no reversal).
         collected = []
         table = source
         return unless table # no captured table yet → nothing to replay
-        ancestors.each do |klass|
+        ancestors.reverse_each do |klass|
           entries = table[class_id_of(klass)]
           next unless entries
           entries.each do |entry|
@@ -123,10 +124,7 @@ module RactorRailsShim
             collected << entry
           end
         end
-        # ancestors as returned by Class#ancestors is instance-class-first; we
-        # want the superclass filters to run BEFORE the subclass filters (Rails
-        # order), so reverse the per-class accumulation.
-        collected.reverse_each { |e| yield e }
+        collected.each { |e| yield e }
       end
 
       def action_name_of(context)
