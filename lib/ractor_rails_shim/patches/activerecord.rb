@@ -2444,5 +2444,150 @@ module RactorRailsShim
         end
       end
     end
+
+    # Patch ActiveRecord::AutosaveAssociation to redefine the
+    # `autosave_associated_records_for_<assoc>` and
+    # `validate_associated_records_for_<assoc>` methods via string eval (compiled
+    # `def`, no captured binding) instead of Rails' `define_method(&block)`.
+    #
+    # The original block captures a binding from the main Ractor (where
+    # `add_autosave_association_callbacks` runs during eager load), so calling
+    # the method from a worker Ractor raises "defined with an un-shareable Proc
+    # in a different Ractor". The reflection object itself IS shareable
+    # (frozen as part of the shared app graph), so we store it in a frozen
+    # shareable registry and emit a string-eval'd `def` that looks it up at call
+    # time. The cyclic-guard logic from `define_non_cyclic_method` is inlined
+    # into the string body.
+    #
+    # MUST install BEFORE models are eager-loaded, because
+    # `add_autosave_association_callbacks` fires during `belongs_to`/`has_many`/
+    # `has_one` evaluation at boot. We alias the original method, call it (which
+    # registers the callback AND creates the unshareable method), then
+    # immediately overwrite the method with a string-eval'd version.
+    def _install_activerecord_autosave_patch
+      return if @ar_autosave_patched
+      @ar_autosave_patched = true
+      _register_patch :activerecord_autosave, "8.1"
+
+      # Frozen shareable registry: { [model_name, method_name] => reflection }.
+      # Rebuilt atomically (like SCOPE_SOURCE_CODES) as each association is
+      # declared during boot.
+      unless RactorRailsShim.const_defined?(:SHAREABLE_AUTOSAVE_REFLECTIONS, false)
+        RactorRailsShim.const_set(:SHAREABLE_AUTOSAVE_REFLECTIONS, Ractor.make_shareable({}))
+      end
+
+      _apply_activerecord_autosave_patch
+    end
+
+    def _apply_activerecord_autosave_patch
+      return unless defined?(::ActiveRecord::AutosaveAssociation::ClassMethods)
+
+      mod = ::ActiveRecord::AutosaveAssociation::ClassMethods
+
+      # --- save callbacks ---
+      mod.alias_method(:_rrs_orig_add_autosave_association_callbacks,
+                       :add_autosave_association_callbacks) unless
+        mod.method_defined?(:_rrs_orig_add_autosave_association_callbacks)
+
+      mod.module_eval do
+        def add_autosave_association_callbacks(reflection)
+          # Call the original: registers the callback (after_create/save/etc.)
+          # and creates the unshareable define_method method.
+          _rrs_orig_add_autosave_association_callbacks(reflection)
+
+          # Immediately redefine the method via string eval (no captured
+          # binding). The reflection is stored in the shareable registry.
+          save_method = :"autosave_associated_records_for_#{reflection.name}"
+          key = [self.name.to_s, save_method.to_s]
+
+          _rrs_store_autosave_reflection(key, reflection)
+
+          if reflection.collection?
+            body_call = "save_collection_association(_rrs_autosave_reflection(#{key.inspect}))"
+          elsif reflection.has_one?
+            body_call = "save_has_one_association(_rrs_autosave_reflection(#{key.inspect}))"
+          else
+            body_call = "throw(:abort) if save_belongs_to_association(_rrs_autosave_reflection(#{key.inspect})) == false"
+          end
+
+          class_eval <<-RUBY, __FILE__, __LINE__ + 1
+            def #{save_method}
+              @_already_called ||= {}
+              return true if @_already_called[#{save_method.inspect}]
+              result = true
+              begin
+                @_already_called[#{save_method.inspect}] = true
+                #{body_call}
+              ensure
+                @_already_called[#{save_method.inspect}] = false
+              end
+              result
+            end
+          RUBY
+        end
+      end
+
+      # --- validation callbacks ---
+      mod.alias_method(:_rrs_orig_define_autosave_validation_callbacks,
+                       :define_autosave_validation_callbacks) unless
+        mod.method_defined?(:_rrs_orig_define_autosave_validation_callbacks)
+
+      mod.module_eval do
+        def define_autosave_validation_callbacks(reflection)
+          # Call the original: registers the validate callback + creates the
+          # unshareable define_method method.
+          _rrs_orig_define_autosave_validation_callbacks(reflection)
+
+          validation_method = :"validate_associated_records_for_#{reflection.name}"
+          # Only redefine if the original actually created the method.
+          return unless method_defined?(validation_method, false)
+
+          key = [self.name.to_s, validation_method.to_s]
+          _rrs_store_autosave_reflection(key, reflection)
+
+          if reflection.collection?
+            val_method = :validate_collection_association
+          elsif reflection.has_one?
+            val_method = :validate_has_one_association
+          else
+            val_method = :validate_belongs_to_association
+          end
+
+          class_eval <<-RUBY, __FILE__, __LINE__ + 1
+            def #{validation_method}
+              @_already_called ||= {}
+              return true if @_already_called[#{validation_method.inspect}]
+              result = true
+              begin
+                @_already_called[#{validation_method.inspect}] = true
+                send(#{val_method.inspect}, _rrs_autosave_reflection(#{key.inspect}))
+              ensure
+                @_already_called[#{validation_method.inspect}] = false
+              end
+              result
+            end
+          RUBY
+        end
+      end
+
+      # --- helper methods for registry access ---
+      mod.module_eval do
+        # Store a reflection in the shareable registry. Called at boot time
+        # (main Ractor) during association declaration.
+        def _rrs_store_autosave_reflection(key, reflection)
+          cur = RactorRailsShim::SHAREABLE_AUTOSAVE_REFLECTIONS.dup
+          cur[key] = reflection
+          RactorRailsShim.send(:remove_const, :SHAREABLE_AUTOSAVE_REFLECTIONS) if
+            RactorRailsShim.const_defined?(:SHAREABLE_AUTOSAVE_REFLECTIONS, false)
+          RactorRailsShim.const_set(:SHAREABLE_AUTOSAVE_REFLECTIONS, Ractor.make_shareable(cur))
+        end
+
+        # Look up a reflection from the shareable registry. Called at runtime
+        # (worker Ractor) inside the string-eval'd method body.
+        def _rrs_autosave_reflection(key)
+          RactorRailsShim::SHAREABLE_AUTOSAVE_REFLECTIONS[key]
+        end
+      end
+    end
   end
 end

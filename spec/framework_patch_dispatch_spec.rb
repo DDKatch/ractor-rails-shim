@@ -148,6 +148,7 @@ class FrameworkPatchDispatchSpec < Minitest::Spec
     _install_activerecord_query_logs_patch
     _install_activerecord_define_attribute_methods_patch
     _install_activerecord_scope_patch
+    _install_activerecord_autosave_patch
     _install_kaminari_config_patch
     _install_kaminari_page_method_patch
     _install_mime_negotiation_worker_patch
