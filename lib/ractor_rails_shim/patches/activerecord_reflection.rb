@@ -50,6 +50,27 @@ module RactorRailsShim
 
       rrs_refl_cache[[object_id, :inverse_of]] ||= klass._reflect_on_association inverse_name
     end
+
+    # inverse_which_updates_counter_cache lazily memoizes
+    # @inverse_which_updates_counter_cache / @inverse_which_updates_counter_cache_defined
+    # on the (frozen, shared) reflection — which raises FrozenError in a worker
+    # Ractor when a `dependent:` cascade touches a counter_cache (e.g. deleting a
+    # parent whose child `belongs_to` it with `counter_cache: true`). Route the
+    # memoization through the per-worker cache instead, mirroring the other
+    # cache-backed reflection accessors above.
+    def inverse_which_updates_counter_cache
+      cache = rrs_refl_cache
+      key = [object_id, :inverse_which_updates_counter_cache]
+      return cache[key] if cache.key?(key)
+      cache[key] =
+        if counter_cache_column
+          inverse_candidates = inverse_of ? [inverse_of] : klass.reflect_on_all_associations(:belongs_to)
+          inverse_candidates.find do |inverse|
+            inverse.counter_cache_column == counter_cache_column && (inverse.polymorphic? || inverse.klass == active_record)
+          end
+        end
+    end
+    alias inverse_updates_counter_cache? inverse_which_updates_counter_cache
   end
 
   module ReflectionMacroPatch

@@ -55,11 +55,15 @@ module RactorRailsShim
         def run_callbacks_with_nil_safe(kind, type = nil)
           kind = kind.to_sym
           strategy = RactorRailsShim.storage_strategy
-          if kind == :process_action && defined?(::RactorRailsShim::SHAREABLE_DECLARED_CALLBACKS)
+          declared = defined?(::RactorRailsShim::SHAREABLE_DECLARED_CALLBACKS)
+          dependent = defined?(::RactorRailsShim::SHAREABLE_DEPENDENT_ASSOCIATIONS)
+          if (kind == :process_action && declared) || (kind == :destroy && dependent)
             # Thread (Puma/Falcon) mode: replay_callbacks! always replays
             # (replay_callbacks? returns false → block runs).
             # Ractor mode: replays only when __callbacks is empty
             # (replay_callbacks? returns true → skipped when callbacks present).
+            # For :destroy the replay re-drives `dependent:` association
+            # cascades that the unshareable lambda filter would have run.
             callbacks = __callbacks[kind] if __callbacks
             return strategy.replay_callbacks!(self, kind) { (yield if block_given?) } if strategy.replay_callbacks?(callbacks)
           end

@@ -179,6 +179,9 @@ module RactorRailsShim
         # SHAREABLE_DECLARED_CALLBACKS table and replays captured symbolic
         # filters (before/after) that apply to the current action.
         def replay_callbacks!(context, kind, &block)
+          if kind == :destroy
+            return replay_destroy_dependents!(context) { (yield if block_given?) }
+          end
           table = ::RactorRailsShim::SHAREABLE_DECLARED_CALLBACKS
           action = (context.action_name rescue nil)
           action = action.to_sym if action
@@ -211,6 +214,30 @@ module RactorRailsShim
           else
             block.call
           end
+        end
+
+        # Re-drive `dependent:` association cascades for a record being
+        # destroyed inside a worker Ractor. The Rails `dependent:` option
+        # registers a LAMBDA `before_destroy` filter that workers can't hold
+        # (un-shareable Proc), so the shared, frozen model has an EMPTY
+        # `:destroy` callback chain. Instead we recorded the dependency table at
+        # prepare time (SHAREABLE_DEPENDENT_ASSOCIATIONS) and invoke the exact
+        # method the original lambda called: `record.association(name)
+        # .handle_dependency`. That dispatches on `:dependent`'s type the same
+        # as Rails would (:destroy deletes children, :delete deletes rows,
+        # :nullify sets FK null, :restrict_* raises if children remain). Called
+        # BEFORE the record itself is deleted, matching the before_destroy order.
+        def replay_destroy_dependents!(record, &block)
+          table = ::RactorRailsShim::SHAREABLE_DEPENDENT_ASSOCIATIONS
+          if table && record.is_a?(::ActiveRecord::Base)
+            if (entries = table[record.class.name])
+              entries.each do |e|
+                assoc = record.association(e[:name])
+                assoc.handle_dependency if assoc.respond_to?(:handle_dependency)
+              end
+            end
+          end
+          block.call
         end
       end
     end

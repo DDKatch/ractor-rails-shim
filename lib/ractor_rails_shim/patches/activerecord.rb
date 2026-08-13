@@ -114,6 +114,19 @@ module RactorRailsShim
   # made shareable). Populated by _share_model_classes! in the main ractor.
   AR_PRIMARY_KEYS_SHAREABLE = Ractor.make_shareable({})
 
+  # Shareable table of `dependent:` associations, captured at prepare time so
+  # worker Ractors can replay them. The Rails `dependent: <type>` option
+  # registers a LAMBDA `before_destroy` filter
+  # (`->(o) { o.association(reflection.name).handle_dependency }`). A lambda is
+  # an unshareable Proc, so the model's `__callbacks` chain can't be made
+  # Ractor-shareable and workers get an EMPTY destroy chain — meaning dependent
+  # children are never deleted/cascade in workers (FK-violation 500). We instead
+  # capture (model_name => [{name:, type:, macro:}]) and, in a worker's empty
+  # `:destroy` chain, call `record.association(name).handle_dependency` directly
+  # (the exact method the original lambda invoked). Entries are Hashes of
+  # Symbols/booleans -> natively shareable.
+  SHAREABLE_DEPENDENT_ASSOCIATIONS = nil
+
   # Shareable callable that replaces Arel::Visitors::PostgreSQL::BIND_BLOCK
   # (a Proc `proc { |i| "$#{i}" }`). Callable cross-Ractor.
   PgBindBlock = Ractor.make_shareable(Object.new.tap do |o|
@@ -502,7 +515,46 @@ module RactorRailsShim
       # ivars. Delegated to _rebuild_activerecord_model_snapshots! so it can
       # be called again post-eager-load (at make_app_shareable! time) once
       # ActiveRecord::Base.descendants holds the app's models.
+      _capture_dependent_associations!
       _rebuild_activerecord_model_snapshots!
+    end
+
+    # Capture every AR model's `dependent:` associations into the shareable
+    # SHAREABLE_DEPENDENT_ASSOCIATIONS table so worker Ractors can replay them
+    # (see StorageStrategy::Ractor#replay_callbacks! / the :destroy branch of
+    # the nil-safe run_callbacks patch). The `dependent:` lambda filter is an
+    # unshareable Proc, so it can't live in the frozen, shared __callbacks
+    # chain; instead we record (model_name => [{name:, type:, macro:}]) and
+    # re-drive `record.association(name).handle_dependency` in workers. Runs in
+    # the main Ractor after eager-load (reflections + descendants are ready).
+    def _capture_dependent_associations!
+      return unless defined?(::ActiveRecord::Base)
+      table = {}
+      classes = [::ActiveRecord::Base]
+      classes.concat(::ActiveRecord::Base.descendants) rescue nil
+      classes.each do |klass|
+        name = klass.name
+        next unless name
+        next if klass.respond_to?(:abstract_class?) && klass.abstract_class?
+        begin
+          next unless klass.respond_to?(:reflect_on_all_associations, true)
+          klass.reflect_on_all_associations.each do |refl|
+            dep = refl.options[:dependent]
+            next unless dep
+            (table[name] ||= []) << {
+              name: refl.name.to_sym,
+              type: dep.to_sym,
+              macro: refl.macro,
+            }
+          end
+        rescue StandardError
+          nil
+        end
+      end
+      _reassign_shareable_const(
+        :SHAREABLE_DEPENDENT_ASSOCIATIONS,
+        Ractor.make_shareable(table)
+      )
     end
 
     # (Re)build the per-model shareable snapshots that workers read instead of
