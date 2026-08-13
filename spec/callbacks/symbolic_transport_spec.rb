@@ -206,6 +206,42 @@ class SymbolicTransportSpec < Minitest::Spec
     assert_equal [:parent_hook, :child_hook], ctx.invoked
   end
 
+  it "preserves declaration order for multiple filters on the SAME class" do
+    # Regression guard: CommentsController declares before_action :set_post
+    # then :set_comment then :authenticate_user!. The old code reversed the
+    # entire collected array (not just the ancestor order), so :set_comment
+    # ran BEFORE :set_post → NoMethodError: undefined method 'comments' for
+    # nil. Filters on the same class MUST run in declaration order.
+    source = {
+      10 => [
+        { chain_kind: :process_action, phase: :before, filter: :set_post, only: nil, except: nil },
+        { chain_kind: :process_action, phase: :before, filter: :set_comment, only: nil, except: nil },
+        { chain_kind: :process_action, phase: :before, filter: :authenticate_user!, only: nil, except: nil }
+      ]
+    }
+    ctx = build_context([10], source)
+    t = RactorRailsShim::Callbacks::SymbolicTransport.new(source: source)
+    t.before(ctx, :process_action)
+    assert_equal [:set_post, :set_comment, :authenticate_user!], ctx.invoked
+  end
+
+  it "runs superclass filters before same-class filters (mixed hierarchy)" do
+    # Parent(20) declares :parent_hook; Child(10) declares :child_a then
+    # :child_b. Rails order: parent_hook, child_a, child_b.
+    # The old reverse_each bug would yield: child_b, child_a, parent_hook.
+    source = {
+      20 => [{ chain_kind: :save, phase: :before, filter: :parent_hook, only: nil, except: nil }],
+      10 => [
+        { chain_kind: :save, phase: :before, filter: :child_a, only: nil, except: nil },
+        { chain_kind: :save, phase: :before, filter: :child_b, only: nil, except: nil }
+      ]
+    }
+    ctx = build_context([10, 20], source)
+    t = RactorRailsShim::Callbacks::SymbolicTransport.new(source: source)
+    t.before(ctx, :save)
+    assert_equal [:parent_hook, :child_a, :child_b], ctx.invoked
+  end
+
   it "does not run filters declared for a different chain kind" do
     source = {
       10 => [{ chain_kind: :save, phase: :before, filter: :save_hook, only: nil, except: nil }],
