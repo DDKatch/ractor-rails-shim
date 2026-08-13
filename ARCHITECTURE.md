@@ -205,8 +205,10 @@ Dev-only testing had masked this entirely; the bug was real in production.
   filters by `chain_kind` + `phase`, honors `only`/`except` against
   `action_name`, and `send`s the filter (guard `respond_to?(filter, true)` so a
   stale capture never `NoMethodError`s). It is **configured with the set of kinds
-  it owns** (`kinds:`, default `[:process_action]` — controllers). Model
-  lifecycle kinds (`:save`/`:create`/…) are a documented follow-up (see below).
+  it owns** (`kinds:`, default `[:process_action, :save, :create, :update,
+  :destroy, :validation, :commit, :rollback]`). Framework filters defined via
+  `define_method(&block)` with an un-shareable Proc (e.g. AR's autosave
+  callbacks) are rescued and skipped so app `def` callbacks still run (see below).
 
   **Transport B — lambda filters that reduce to a declarative spec
   (`DependentAssociationTransport`).** Used for `dependent:` association
@@ -236,14 +238,28 @@ Dev-only testing had masked this entirely; the bug was real in production.
      (`activerecord_reflection.rb`). Any AR method that lazily memoizes an ivar on
      a frozen reflection must be overridden to cache in `Ractor.current` — add the
      new lazy-mutating method to that patch list.
-  2. **Model lifecycle symbolic callbacks are a follow-up, NOT on by default.**
-     Many framework/model methods are defined via `define_method(&block)` with an
-     un-shareable Proc, so `send`-ing them in a worker raises *"defined with an
-     un-shareable Proc in a different Ractor"*. `SymbolicTransport` therefore owns
-     only `:process_action` by default. Turning on model `:save`/`:create`/…
-     needs either a resilient per-filter rescue or upstream `define_method`
-     changes — tracked as the next transport. The architecture already supports
-     it: `SymbolicTransport.new(source:, kinds: [:save, :create, …])`.
+   2. **Model lifecycle symbolic callbacks — string-eval redefine + per-filter
+      rescue.** Many framework/model methods are defined via
+      `define_method(&block)` with an un-shareable Proc. The most common case —
+      ActiveRecord's autosave association callbacks
+      (`autosave_associated_records_for_*`, `validate_associated_records_for_*`)
+      — is **proactively redefined** via `_install_activerecord_autosave_patch`:
+      the original `add_autosave_association_callbacks` runs (registering the
+      callback + creating the unshareable method), then the method is
+      immediately overwritten with a string-eval'd `def` (no captured binding)
+      that looks up the frozen reflection from a shareable registry
+      (`SHAREABLE_AUTOSAVE_REFLECTIONS`). The cyclic-guard logic from
+      `define_non_cyclic_method` is inlined into the string body. This means
+      autosave callbacks **actually run** in workers, not just get skipped.
+
+      As a **defensive safety net** for any *other* unshareable
+      `define_method(&block)` filters not yet proactively patched,
+      `SymbolicTransport` also rescues the specific `RuntimeError` per-filter
+      (matching the substring `"un-shareable Proc"`), **skips** the unshareable
+      filter, and **continues the chain** so app-defined `def` callbacks still
+      run. Non-unshareable errors propagate as normal. This lets
+      `SymbolicTransport` own `:save`/`:create`/`:update`/`:destroy`/`:validation`/
+      `:commit`/`:rollback` by default alongside `:process_action`.
 
   **The general recipe for ANY callback kind.** When an application callback only
   exists as a Proc in an un-shareable `__callbacks` chain and must run in workers:
@@ -258,15 +274,18 @@ Dev-only testing had masked this entirely; the bug was real in production.
      file changes — the Registry dispatches by `applies_to?`.
   3. **Watch for frozen-graph mutations** inside the replayed code (caveats above).
 
-  **Validation (TDD).** `spec/callbacks/` unit-tests the Registry + both transports
-  in pure Ruby (no Rails) with fake contexts — pinning the orchestration order
-  (before → yield → after), multi-transport-per-kind, ancestor walking,
-  `only`/`except`, the `respond_to?` guard, and the dependent cascade. The
-  ractor integration test (`ractor-rails-shim-test-app/test/integration/ractor_server_test.rb`)
-  proves the controller `authenticate_user!` replay (302 redirect) and the
-  `dependent: :destroy` cascade (Post + two `counter_cache` Comments deleted
-  through a real worker Ractor with the test DB FKs carrying **no** `on_delete`
-  action) both fire via the Registry in `:ractor` mode.
+   **Validation (TDD).** `spec/callbacks/` unit-tests the Registry + both transports
+   in pure Ruby (no Rails) with fake contexts — pinning the orchestration order
+   (before → yield → after), multi-transport-per-kind, ancestor walking,
+   `only`/`except`, the `respond_to?` guard, the unshareable-Proc skip-and-continue
+   behavior, and the dependent cascade. The ractor integration test
+   (`ractor-rails-shim-test-app/test/integration/ractor_server_test.rb`) proves:
+   the controller `authenticate_user!` replay (302 redirect), the
+   `dependent: :destroy` cascade (Post + two `counter_cache` Comments deleted
+   through a real worker Ractor with the test DB FKs carrying **no** `on_delete`
+   action), and the model lifecycle callback path (POST /posts → 302 with
+   `before_save :normalize_title` titleizing the title in the DB) — all fire via
+   the Registry in `:ractor` mode.
 
   ## 6. Reload semantics & limitation
 
