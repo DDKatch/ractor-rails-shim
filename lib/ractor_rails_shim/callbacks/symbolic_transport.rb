@@ -31,24 +31,25 @@ require "set"
 module RactorRailsShim
   module Callbacks
     class SymbolicTransport
-      # The callback chain kinds this transport owns by default. Controllers use
-      # `:process_action`; replaying that kind is safe (controller action methods
-      # are plain `def`s). Model lifecycle kinds (:save/:create/:update/…) are
-      # intentionally NOT replayed by default: many framework/model methods are
-      # defined via `define_method(&block)` with an un-shareable Proc, so invoking
-      # them in a worker raises "defined with an un-shareable Proc in a different
-      # Ractor". That is a separate frozen-graph limitation tracked as a
-      # follow-up transport (see ARCHITECTURE.md §5c). The set is injectable so
-      # the generic logic is unit-tested across all kinds.
-      DEFAULT_KINDS = [:process_action].freeze
+      # The callback chain kinds this transport owns by default. Controllers
+      # use `:process_action`; models use :save/:create/:update/:destroy and
+      # their sub-kinds (:validation, :commit, :rollback). Filter methods defined
+      # via `define_method(&block)` with an un-shareable Proc (e.g. AR's autosave
+      # association callbacks) are rescued and skipped so app `def` callbacks
+      # still run.
+      DEFAULT_KINDS = [
+        :process_action,
+        :save, :create, :update, :destroy,
+        :validation, :commit, :rollback
+      ].freeze
 
       # source: a Hash { class_object_id => [entry, …] } as described above, OR a
       # callable returning that Hash, OR a Symbol naming the shareable constant
       # to resolve via const_get (so a worker reads the frozen constant after
       # prepare, not a stale snapshot).
       # kinds: the set of chain kinds this transport owns (default
-      # DEFAULT_KINDS). Inject a broader set to replay model lifecycle callbacks
-      # once the un-shareable-Proc limitation is resolved.
+      # DEFAULT_KINDS, which includes model lifecycle kinds). Unshareable-Proc
+      # filters are rescued and skipped automatically.
       def initialize(source:, kinds: DEFAULT_KINDS)
         @source = source
         @kinds = kinds.is_a?(::Set) ? kinds : ::Set.new(kinds.to_a)
@@ -73,9 +74,18 @@ module RactorRailsShim
       # Run the matching :before filters for `kind`, ancestor-first, respecting
       # only/except. `respond_to?` guards each send so a stale capture never
       # raises NoMethodError (matches the original controller replay behavior).
+      #
+      # A filter defined via `define_method(&block)` with an un-shareable Proc
+      # raises "defined with an un-shareable Proc in a different Ractor" when
+      # `send`-ed in a worker. ActiveRecord generates such methods for autosave
+      # associations (e.g. `autosave_associated_records_for_*`). We SKIP those
+      # filters and continue the chain so app-defined `def` callbacks still run.
       def before(context, kind)
         each_applicable_filter(context, kind, :before) do |entry|
           context.send(entry[:filter]) if context.respond_to?(entry[:filter], true)
+        rescue RuntimeError => e
+          raise e unless unshareable_proc_error?(e)
+          # Skip the unshareable-Proc filter; the chain continues.
         end
       end
 
@@ -83,6 +93,8 @@ module RactorRailsShim
       def after(context, kind)
         each_applicable_filter(context, kind, :after) do |entry|
           context.send(entry[:filter]) if context.respond_to?(entry[:filter], true)
+        rescue RuntimeError => e
+          raise e unless unshareable_proc_error?(e)
         end
       end
 
@@ -132,6 +144,14 @@ module RactorRailsShim
 
       def class_id_of(klass)
         klass.object_id
+      end
+
+      # Whether an exception is the "un-shareable Proc in a different Ractor"
+      # RuntimeError raised by `send`-ing a `define_method(&block)` method
+      # cross-Ractor. We match on a substring so the check survives minor
+      # wording changes in the Ruby error message.
+      def unshareable_proc_error?(error)
+        error.message.include?("un-shareable Proc")
       end
 
       # only: nil (always), [:a, :b] (only those actions); except: nil (never

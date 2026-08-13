@@ -110,11 +110,14 @@ class SymbolicTransportSpec < Minitest::Spec
     refute t.applies_to?(:some_other_kind)
   end
 
-  it "defaults to owning only :process_action (model lifecycle kinds are a follow-up)" do
+  it "defaults to owning process_action + model lifecycle kinds" do
     t = RactorRailsShim::Callbacks::SymbolicTransport.new(source: {})
     assert t.applies_to?(:process_action)
-    refute t.applies_to?(:save)
-    refute t.applies_to?(:destroy)
+    assert t.applies_to?(:save)
+    assert t.applies_to?(:create)
+    assert t.applies_to?(:destroy)
+    assert t.applies_to?(:commit)
+    refute t.applies_to?(:some_other_kind)
   end
 
   it "invokes before filters for the matching kind, walking ancestors" do
@@ -213,5 +216,67 @@ class SymbolicTransportSpec < Minitest::Spec
     t.before(ctx, :save)
     assert_includes ctx.invoked, :save_hook
     refute_includes ctx.invoked, :destroy_hook
+  end
+
+  # A context whose `send` raises "un-shareable Proc" for certain filters,
+  # simulating an ActiveRecord-generated `define_method(&block)` method that
+  # cannot be called cross-Ractor. The transport must SKIP the failing filter
+  # and CONTINUE the chain so app-defined `def` callbacks still run.
+  class UnshareableProcContext < FakeContext
+    attr_reader :invoked, :unshareable_filters
+
+    def initialize(klass, unshareable_filters)
+      super(klass)
+      @unshareable_filters = Set.new(unshareable_filters)
+    end
+
+    def send(name, *args, &block)
+      if @unshareable_filters.include?(name)
+        raise RuntimeError, "defined with an un-shareable Proc in a different Ractor"
+      end
+      super
+    end
+
+    def __send__(name, *args, &block)
+      send(name, *args, &block)
+    end
+
+    def respond_to_missing?(name, include_private = false)
+      true
+    end
+  end
+
+  it "skips unshareable-Proc filters and continues the chain" do
+    source = {
+      10 => [
+        { chain_kind: :save, phase: :before, filter: :autosave_associated_records_for_category, only: nil, except: nil },
+        { chain_kind: :save, phase: :before, filter: :normalize_title, only: nil, except: nil }
+      ]
+    }
+    klass = build_klass_chain([10])
+    ctx = UnshareableProcContext.new(klass, [:autosave_associated_records_for_category])
+    t = RactorRailsShim::Callbacks::SymbolicTransport.new(source: source, kinds: [:save])
+    t.before(ctx, :save)
+    # The unshareable filter was skipped (never recorded as invoked)
+    refute_includes ctx.invoked, :autosave_associated_records_for_category
+    # The plain-def filter ran after the skipped one
+    assert_includes ctx.invoked, :normalize_title
+  end
+
+  it "re-raises non-unshareable errors from filter dispatch" do
+    source = {
+      10 => [{ chain_kind: :save, phase: :before, filter: :boom, only: nil, except: nil }]
+    }
+    klass = build_klass_chain([10])
+
+    ctx = Class.new(FakeContext) do
+      def send(name, *args, &block)
+        raise NoMethodError, "totally different error"
+      end
+      alias __send__ send
+    end.new(klass)
+
+    t = RactorRailsShim::Callbacks::SymbolicTransport.new(source: source, kinds: [:save])
+    assert_raises(NoMethodError) { t.before(ctx, :save) }
   end
 end
