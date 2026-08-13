@@ -48,6 +48,9 @@ require_relative "roles/lifecycle"
 require_relative "roles/fallback_ies"
 require_relative "roles/check"
 
+# --- Callback transport layer (Registry + transports) ---
+require_relative "callbacks"
+
 # --- Patch files — patches/ (depend on role objects + foundation) ---
 require_relative "patches/core"
 require_relative "patches/callables"

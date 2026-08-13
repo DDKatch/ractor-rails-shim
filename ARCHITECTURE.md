@@ -157,7 +157,7 @@ Dev-only testing had masked this entirely; the bug was real in production.
   capture only what each class *declared*, the leaked foreign filters never run,
   and `respond_to?(filter, true)` guards each `send`.
 
-  ## 5c. Transporting model `dependent:` / lambda callbacks — capture-and-replay for every callback kind
+  ## 5c. Transporting any callback — a Registry of pluggable transports (POODR)
 
   **Why `__callbacks` itself can never cross the Ractor boundary.** Every Rails
   callback is stored in the `class_attribute :__callbacks` hash (one chain per
@@ -175,29 +175,46 @@ Dev-only testing had masked this entirely; the bug was real in production.
   to **capture a shareable description of the callback and replay its effect in
   the worker**.
 
-  **Two flavors of callback filters → two transport strategies.**
+  **Architecture: a `Callbacks::Registry` of duck-typed `Transport` objects.**
+  The replay path is Open/Closed: adding support for a new callback *kind* means
+  registering a new transport, not editing a `case kind` branch. The Registry
+  (`lib/ractor_rails_shim/callbacks/registry.rb`) owns the single `yield` (the
+  real callback-chain body) and asks each transport that `applies_to?(kind)` to
+  run its `before(context, kind)` work, then yields once, then runs each
+  transport's `after(context, kind)` work. Two transports can legitimately share
+  a kind (e.g. on `:destroy` both the dependent cascade AND a symbolic
+  `before_destroy` run). The Registry is built **per Ractor** and cached in
+  `Ractor.current` (NOT a class ivar — class/module ivars set in main raise
+  IsolationError in workers); transports resolve their data from the frozen
+  shareable **constants** via `const_get`, which IS readable cross-Ractor.
+
+  Two flavors of callback filters → two built-in transports:
 
   | Filter shape | Example | Shareability | Transport |
   |---|---|---|---|
-  | **Symbolic** (a method name) | `before_action :set_post` | the name is a Symbol → shareable | `SHAREABLE_DECLARED_CALLBACKS` (capture at declaration, replay per class) |
-  | **Lambda / Proc** that encodes a *declarative* behavior | `dependent: :destroy` → `before_destroy(->(o){ o.association(refl.name).handle_dependency })` | the Proc is un-shareable, but its *intent* reduces to shareable data | `SHAREABLE_DEPENDENT_ASSOCIATIONS` (capture the spec, replay by re-driving the underlying method) |
+  | **Symbolic** (a method name) | `before_action :set_post` | the name is a Symbol → shareable | `Callbacks::SymbolicTransport` (capture at declaration, replay per class) |
+  | **Lambda / Proc** that encodes a *declarative* behavior | `dependent: :destroy` → `before_destroy(->(o){ o.association(refl.name).handle_dependency })` | the Proc is un-shareable, but its *intent* reduces to shareable data | `Callbacks::DependentAssociationTransport` (capture the spec, replay by re-driving the underlying method) |
 
-  **Strategy A — symbolic filters (`SHAREABLE_DECLARED_CALLBACKS`).** Used for
-  controller `before_action`/`after_action`. `_install_callback_declaration_capture!`
+  **Transport A — symbolic filters (`SymbolicTransport`).**
+  `_install_callback_declaration_capture!` (in `roles/callback_capture.rb`)
   aliases `ActiveSupport::Callbacks.set_callback` and, during eager load, records
-  per *declaring* class the symbolic `process_action` filters it declares (kind,
-  filter, `only`/`except`). Frozen into the constant at `make_app_shareable!`; the
-  worker `run_callbacks` replays them per class, walking ancestors.
+  per *declaring* class every SYMBOLIC filter it declares for ANY chain kind,
+  storing `{chain_kind:, phase:, filter:, only:, except:}` (all natively
+  shareable) into `SHAREABLE_DECLARED_CALLBACKS` at `make_app_shareable!`. The
+  transport walks `context.class.ancestors`, looks up entries by `object_id`,
+  filters by `chain_kind` + `phase`, honors `only`/`except` against
+  `action_name`, and `send`s the filter (guard `respond_to?(filter, true)` so a
+  stale capture never `NoMethodError`s). It is **configured with the set of kinds
+  it owns** (`kinds:`, default `[:process_action]` — controllers). Model
+  lifecycle kinds (`:save`/`:create`/…) are a documented follow-up (see below).
 
-  **Strategy B — lambda filters that reduce to a declarative spec
-  (`SHAREABLE_DEPENDENT_ASSOCIATIONS`).** Used for `dependent:` association
+  **Transport B — lambda filters that reduce to a declarative spec
+  (`DependentAssociationTransport`).** Used for `dependent:` association
   cascades. The `dependent: <type>` option registers a **lambda** `before_destroy`
-  filter, so it cannot ride Strategy A. Instead we capture, at prepare time
+  filter, so it cannot ride Transport A. Instead we capture, at prepare time
   (`_capture_dependent_associations!` in `activerecord.rb`), every model's
   `dependent:` associations as a shareable table
-  `model_name => [{name:, type:, macro:}]` (all Symbols/booleans → natively
-  shareable). In a worker, the empty `:destroy` chain triggers
-  `replay_destroy_dependents!` (`storage_strategy.rb`), which for each entry calls
+  `model_name => [{name:, type:, macro:}]`. In a worker, the transport calls
   `record.association(name).handle_dependency` — the **exact method the original
   lambda invoked**. `handle_dependency` dispatches on `type` (`:destroy` →
   children `.destroy`, `:delete` → `.delete_all`, `:nullify` → `update_all(fk =>
@@ -205,41 +222,51 @@ Dev-only testing had masked this entirely; the bug was real in production.
   Children deleted via `:destroy` recurse through the same empty-chain replay, so
   nested cascades work.
 
+  **Trigger.** The nil-safe `run_callbacks` patch (`active_support.rb`) asks the
+  Registry: if any transport `applies_to?(kind)` and the gate is open (Ractor
+  mode: `__callbacks[kind]` empty — the worker case; Thread mode: gate closed so
+  the real chain runs), it calls `Registry#replay(self, kind) { yield }`.
+  `storage_strategy.rb#replay_callbacks!` delegates to the same Registry. There
+  are no `if kind ==` branches in the hot path.
+
+  **Frozen-graph caveats inside replayed code.**
+  1. `counter_cache`: `dependent: :destroy` touches `inverse_which_updates_counter_cache`,
+     which *writes an ivar on the frozen, shared reflection*. That FrozenErrored
+     in a worker until it was routed through the existing **per-worker memo cache**
+     (`activerecord_reflection.rb`). Any AR method that lazily memoizes an ivar on
+     a frozen reflection must be overridden to cache in `Ractor.current` — add the
+     new lazy-mutating method to that patch list.
+  2. **Model lifecycle symbolic callbacks are a follow-up, NOT on by default.**
+     Many framework/model methods are defined via `define_method(&block)` with an
+     un-shareable Proc, so `send`-ing them in a worker raises *"defined with an
+     un-shareable Proc in a different Ractor"*. `SymbolicTransport` therefore owns
+     only `:process_action` by default. Turning on model `:save`/`:create`/…
+     needs either a resilient per-filter rescue or upstream `define_method`
+     changes — tracked as the next transport. The architecture already supports
+     it: `SymbolicTransport.new(source:, kinds: [:save, :create, …])`.
+
   **The general recipe for ANY callback kind.** When an application callback only
   exists as a Proc in an un-shareable `__callbacks` chain and must run in workers:
 
-  1. **Identify the filter shape.** If it names a method → Strategy A (capture the
-     symbol at declaration). If it is a lambda/Proc → can its *effect* be described
-     by shareable data (Symbols, class names, config values)? Most framework
-     callbacks *can* (e.g. `dependent:` → `{name, type, macro}`; a `before_save`
-     that just normalizes a field → the field + normalization rule; an
-     `after_create` notification → the event + target). Capture that spec at
-     prepare time into a `SHAREABLE_*` constant.
-  2. **Re-drive, don't re-execute the Proc.** In the worker, on the empty chain,
-     call the *underlying framework method* the lambda would have called (for
-     `dependent:` it is `association(name).handle_dependency`; for an `after_*`
-     notification it is the notifier; etc.). This reuses framework logic and stays
-     correct across versions.
-  3. **Trigger via the nil-safe `run_callbacks` patch** (`active_support.rb`): when
-     `kind` is one we transport and the chain is empty (`replay_callbacks?` true in
-     Ractor mode), dispatch to `StorageStrategy#replay_callbacks!`, which branches
-     on `kind` (`process_action` → declared callbacks, `destroy` → dependent
-     associations). Thread mode skips replay (`replay_callbacks?` false) and runs
-     the real chain normally.
-  4. **Watch for frozen-graph mutations inside the replayed code.** The
-     `dependent:` path touches `counter_cache`, whose `inverse_which_updates_counter_cache`
-     *writes an ivar on the frozen, shared reflection*. That FrozenErrored in a
-     worker until it was routed through the existing **per-worker memo cache**
-     (`activerecord_reflection.rb`): any AR method that lazily memoizes an ivar on
-     a frozen reflection must be overridden to cache in `Ractor.current` instead.
-     This is the same class of fix as the other `class_name`/`foreign_key`
-     reflection overrides — add the new lazy-mutating method to that patch list.
+  1. **Identify the filter shape.** Symbolic method name → a `SymbolicTransport`
+     configured for that kind. Lambda/Proc → can its *effect* be described by
+     shareable data (Symbols, class names, config)? Capture that spec at prepare
+     time into a `SHAREABLE_*` constant and write a small transport whose
+     `before`/`after` re-drive the underlying framework method (as Transport B
+     does for `handle_dependency`).
+  2. **Register the transport** in `Callbacks.build_default_registry`. No other
+     file changes — the Registry dispatches by `applies_to?`.
+  3. **Watch for frozen-graph mutations** inside the replayed code (caveats above).
 
-  **Validation.** `ractor-rails-shim-test-app/test/integration/ractor_server_test.rb`
-  deletes a Post that owns two `counter_cache` child Comments through a real
-  worker Ractor with the test DB FK constraints carrying **no** `on_delete` action
-  (so the DB cannot bail out the cascade). A 302 + zero child rows (no FK-violation
-  555) proves the `dependent: :destroy` transport fires in `:ractor` mode.
+  **Validation (TDD).** `spec/callbacks/` unit-tests the Registry + both transports
+  in pure Ruby (no Rails) with fake contexts — pinning the orchestration order
+  (before → yield → after), multi-transport-per-kind, ancestor walking,
+  `only`/`except`, the `respond_to?` guard, and the dependent cascade. The
+  ractor integration test (`ractor-rails-shim-test-app/test/integration/ractor_server_test.rb`)
+  proves the controller `authenticate_user!` replay (302 redirect) and the
+  `dependent: :destroy` cascade (Post + two `counter_cache` Comments deleted
+  through a real worker Ractor with the test DB FKs carrying **no** `on_delete`
+  action) both fire via the Registry in `:ractor` mode.
 
   ## 6. Reload semantics & limitation
 

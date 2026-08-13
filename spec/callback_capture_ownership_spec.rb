@@ -22,7 +22,7 @@ class CallbackCaptureOwnershipSpec < Minitest::Spec
     # The facade should NOT hold the table after the call.
     refute RactorRailsShim.instance_variable_defined?(:@declared_callbacks),
            "facade must not hold @declared_callbacks (Issue #36a)"
-    CC.record_declared_callback(99901, :before, :set_post, [:index], nil)
+    CC.record_declared_callback(99901, :process_action, :before, :set_post, [:index], nil)
     # The table lives on CallbackCapture now.
     assert CC.instance_variable_defined?(:@declared_callbacks),
            "CallbackCapture should own @declared_callbacks"
@@ -38,7 +38,7 @@ class CallbackCaptureOwnershipSpec < Minitest::Spec
 
   it "freeze_declared_callbacks! reads from CallbackCapture's own table" do
     reset_table
-    CC.record_declared_callback(99902, :after, :audit, nil, [:destroy])
+    CC.record_declared_callback(99902, :process_action, :after, :audit, nil, [:destroy])
     CC.freeze_declared_callbacks!
     assert defined?(RactorRailsShim::SHAREABLE_DECLARED_CALLBACKS), "constant should be defined"
     val = RactorRailsShim::SHAREABLE_DECLARED_CALLBACKS
@@ -51,7 +51,7 @@ class CallbackCaptureOwnershipSpec < Minitest::Spec
 
   it "reset_declared_callbacks! clears the role's own table" do
     reset_table
-    CC.record_declared_callback(99903, :before, :check, nil, nil)
+    CC.record_declared_callback(99903, :process_action, :before, :check, nil, nil)
     assert CC.instance_variable_defined?(:@declared_callbacks)
     CC.reset_declared_callbacks!
     refute CC.instance_variable_defined?(:@declared_callbacks)

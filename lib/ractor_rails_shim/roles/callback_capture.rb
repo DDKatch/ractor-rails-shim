@@ -114,12 +114,16 @@ module RactorRailsShim
     end
 
     # Record a single declared symbolic filter. Called from the
-    # set_callback interceptor during eager load (main Ractor only).
-    def self.record_declared_callback(klass_id, kind, filter, only, except)
+    # set_callback interceptor during eager load (main Ractor only). `chain_kind`
+    # is the ActiveSupport::Callbacks chain name (:process_action, :save,
+    # :create, :destroy, …); `phase` is :before / :after. Storing chain_kind is
+    # what generalizes replay beyond controllers to model lifecycle callbacks.
+    def self.record_declared_callback(klass_id, chain_kind, phase, filter, only, except)
       @declared_callbacks = {} unless defined?(@declared_callbacks)
       table = @declared_callbacks
       (table[klass_id] ||= []) << {
-        kind: kind,
+        chain_kind: chain_kind,
+        phase: phase,
         filter: filter,
         only: (only.freeze if only),
         except: (except.freeze if except)
@@ -157,23 +161,29 @@ module RactorRailsShim
       mod.alias_method(:_rrs_orig_set_callback, :set_callback) unless mod.method_defined?(:_rrs_orig_set_callback)
       mod.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def set_callback(name, *filters, &block)
-          if name == :process_action && filters.length >= 2 && filters[0].is_a?(Symbol)
+          # Capture any SYMBOLIC filter (filters[1] is a Symbol) on an app class
+          # — controller (AbstractController::Base) OR ActiveRecord model — for
+          # ANY callback chain kind (:process_action, :save, :create, :destroy,
+          # …). Symbolic filters are shareable; we re-invoke the named method in
+          # worker Ractors. Lambda/block filters are unshareable and are left in
+          # the (empty in workers) chain — they need a dedicated transport (e.g.
+          # the dependent-association transport). Capturing ALL kinds (not just
+          # :process_action) is what generalizes the transport to any callback.
+          if filters.length >= 2 && filters[0].is_a?(Symbol) &&
+             self.is_a?(::Class) &&
+             (
+               (self.ancestors.include?(::AbstractController::Base) rescue false) ||
+               (defined?(::ActiveRecord::Base) && (self < ::ActiveRecord::Base))
+             )
             kind = filters[0]
             filter = filters[1]
-            if filter.is_a?(Symbol) &&
-               self.is_a?(::Class) &&
-               self.ancestors.include?(::AbstractController::Base)
-              # Rails converts `only:`/`except:` into an ActionFilter object
-              # stored in the callback's `:if`/`:unless` options (NOT a bare
-              # `:only` key). Read the constraint back from the ActionFilter's
-              # @conditional_key (:only/:except) and @actions (a Set of action
-              # name Strings) via the extracted, version-gated helper.
-              opts = filters.find { |f| f.is_a?(Hash) }
+            if filter.is_a?(Symbol)
+              opts = filters.find { |f| f.is_a?(::Hash) }
               only = nil
               except = nil
               if opts
                 [opts[:if], opts[:unless]].each do |arr|
-                  next unless arr.is_a?(Array)
+                  next unless arr.is_a?(::Array)
                   arr.each do |af|
                     ck, acts = ::RactorRailsShim::CallbackCapture.read_action_filter_constraints(af)
                     next unless ck && acts
@@ -183,7 +193,7 @@ module RactorRailsShim
                 end
               end
               ::RactorRailsShim::CallbackCapture.record_declared_callback(
-                self.object_id, kind, filter, only, except)
+                self.object_id, name, kind, filter, only, except)
             end
           end
           _rrs_orig_set_callback(name, *filters, &block)

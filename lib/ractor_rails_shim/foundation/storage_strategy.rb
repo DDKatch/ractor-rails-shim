@@ -178,66 +178,17 @@ module RactorRailsShim
         # (Thread mode) and the "on-empty" path (Ractor mode). Walks the
         # SHAREABLE_DECLARED_CALLBACKS table and replays captured symbolic
         # filters (before/after) that apply to the current action.
+        # Delegate callback replay to the generalized transport layer
+        # (RactorRailsShim::Callbacks::Registry). The registry owns the single
+        # `yield` and dispatches to every applicable transport (the symbolic
+        # filter transport for any kind + the dependent-association transport
+        # for :destroy). Kept as a thin delegator so the storage-strategy
+        # contract (replay_callbacks? / replay_callbacks!) stays intact and the
+        # Thread strategy can keep mirroring it. The run_callbacks nil-safe
+        # patch calls the registry directly, but external callers/tests may
+        # still reach the strategy.
         def replay_callbacks!(context, kind, &block)
-          if kind == :destroy
-            return replay_destroy_dependents!(context) { (yield if block_given?) }
-          end
-          table = ::RactorRailsShim::SHAREABLE_DECLARED_CALLBACKS
-          action = (context.action_name rescue nil)
-          action = action.to_sym if action
-          entries = []
-          k = context.class
-          while k && k <= ::ActionController::Base
-            rec = table[k.object_id]
-            entries = rec + entries if rec
-            k = k.superclass
-          end
-          unless entries.empty?
-            applies = lambda do |e|
-              next false unless (e[:kind] == :before || e[:kind] == :after)
-              in_only = e[:only].nil? || (action && e[:only].include?(action))
-              not_except = e[:except].nil? || !(action && e[:except].include?(action))
-              in_only && not_except
-            end
-            result = nil
-            halted = false
-            entries.each do |e|
-              next unless e[:kind] == :before && applies.call(e)
-              context.send(e[:filter]) if context.respond_to?(e[:filter], true)
-            end
-            result = block.call unless halted
-            entries.each do |e|
-              next unless e[:kind] == :after && applies.call(e)
-              context.send(e[:filter]) if context.respond_to?(e[:filter], true)
-            end
-            result
-          else
-            block.call
-          end
-        end
-
-        # Re-drive `dependent:` association cascades for a record being
-        # destroyed inside a worker Ractor. The Rails `dependent:` option
-        # registers a LAMBDA `before_destroy` filter that workers can't hold
-        # (un-shareable Proc), so the shared, frozen model has an EMPTY
-        # `:destroy` callback chain. Instead we recorded the dependency table at
-        # prepare time (SHAREABLE_DEPENDENT_ASSOCIATIONS) and invoke the exact
-        # method the original lambda called: `record.association(name)
-        # .handle_dependency`. That dispatches on `:dependent`'s type the same
-        # as Rails would (:destroy deletes children, :delete deletes rows,
-        # :nullify sets FK null, :restrict_* raises if children remain). Called
-        # BEFORE the record itself is deleted, matching the before_destroy order.
-        def replay_destroy_dependents!(record, &block)
-          table = ::RactorRailsShim::SHAREABLE_DEPENDENT_ASSOCIATIONS
-          if table && record.is_a?(::ActiveRecord::Base)
-            if (entries = table[record.class.name])
-              entries.each do |e|
-                assoc = record.association(e[:name])
-                assoc.handle_dependency if assoc.respond_to?(:handle_dependency)
-              end
-            end
-          end
-          block.call
+          ::RactorRailsShim::Callbacks.registry.replay(context, kind, &block)
         end
       end
     end

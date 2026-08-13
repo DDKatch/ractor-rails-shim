@@ -44,12 +44,13 @@ class CallbackCaptureSpec < Minitest::Spec
 
   it "record_declared_callback records a symbolic filter entry" do
     RactorRailsShim::CallbackCapture.reset_declared_callbacks!
-    RactorRailsShim::CallbackCapture.record_declared_callback(12345, :before, :set_post, [:index], nil)
+    RactorRailsShim::CallbackCapture.record_declared_callback(12345, :process_action, :before, :set_post, [:index], nil)
     table = RactorRailsShim::CallbackCapture.instance_variable_get(:@declared_callbacks)
     assert_kind_of Hash, table
     assert_includes table.keys, 12345
     entry = table[12345].last
-    assert_equal :before, entry[:kind]
+    assert_equal :process_action, entry[:chain_kind]
+    assert_equal :before, entry[:phase]
     assert_equal :set_post, entry[:filter]
     assert_equal [:index], entry[:only]
     assert_nil entry[:except]
@@ -59,7 +60,7 @@ class CallbackCaptureSpec < Minitest::Spec
 
   it "freeze_declared_callbacks! builds a shareable SHAREABLE_DECLARED_CALLBACKS constant" do
     RactorRailsShim::CallbackCapture.reset_declared_callbacks!
-    RactorRailsShim::CallbackCapture.record_declared_callback(67890, :after, :audit, nil, [:destroy])
+    RactorRailsShim::CallbackCapture.record_declared_callback(67890, :process_action, :after, :audit, nil, [:destroy])
     RactorRailsShim::CallbackCapture.freeze_declared_callbacks!
     assert defined?(RactorRailsShim::SHAREABLE_DECLARED_CALLBACKS), "constant should be defined"
     val = RactorRailsShim::SHAREABLE_DECLARED_CALLBACKS
@@ -203,7 +204,7 @@ class CallbackCaptureSpec < Minitest::Spec
     RactorRailsShim::CallbackCapture.define_singleton_method(:record_declared_callback) do |*args|
       delegated = true
     end
-    RactorRailsShim::CallbackCapture.record_declared_callback(999, :before, :x, nil, nil)
+    RactorRailsShim::CallbackCapture.record_declared_callback(999, :process_action, :before, :x, nil, nil)
     assert delegated
   ensure
     RactorRailsShim::CallbackCapture.define_singleton_method(:record_declared_callback, original)
