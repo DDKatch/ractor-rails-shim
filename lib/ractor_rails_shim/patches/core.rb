@@ -44,6 +44,13 @@ module RactorRailsShim
   # Proc-backed decorator) are simply omitted, degrading to [] in workers.
   SHAREABLE_PENDING_ATTR_MODS = {}.freeze
 
+  # Shareable map of { model_object_id => Module } capturing each AR model's
+  # @generated_attribute_methods module (populated by define_attribute_methods
+  # in main). Worker Ractors read this to reuse the pre-built attribute methods
+  # instead of creating an empty Module (which would leave name=, id=, etc.
+  # undefined and cause DelegationError on ActiveStorage::Attachment).
+  SHAREABLE_GEN_ATTR_METHODS = {}.freeze
+
   # Registry of patch names → tested Rails version segments. Owned by
   # VersionPolicy; the constant here is an alias so the historical
   # RactorRailsShim::PATCH_VERSIONS reference keeps working.

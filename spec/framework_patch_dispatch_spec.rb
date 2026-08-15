@@ -85,11 +85,14 @@ class FrameworkPatchDispatchSpec < Minitest::Spec
     _install_action_view_field_type_patch
     _install_action_view_safe_join_patch
     _install_action_view_sanitize_patch
+    _install_actionmailer_mailer_name_patch
     _install_loofah_patch
     _install_abstract_controller_patch
     _install_action_controller_controller_name_patch
     _install_action_controller_forgery_patch
     _install_flash_helpers_patch
+    _install_json_renderer_patch
+    _install_mail_patch
     _install_csrf_reset_patch
     _install_controller_logger_patch
     _install_controller_params_wrapper_patch
@@ -115,6 +118,7 @@ class FrameworkPatchDispatchSpec < Minitest::Spec
     _install_warden_hooks_patch
     _install_warden_strategies_patch
     _install_devise_failure_app_patch
+    _install_devise_mailer_patch
     _install_activerecord_connection_handler_patch
     _install_activerecord_configurations_patch
     _install_activerecord_db_config_handlers_patch
@@ -139,6 +143,9 @@ class FrameworkPatchDispatchSpec < Minitest::Spec
     _install_active_record_inheritance_patch
     _install_active_record_model_schema_patch
     _install_activerecord_model_schema_patch
+    _install_active_storage_patch
+    _install_active_record_store_patch
+    _install_marcel_patch
     _install_openssl_digest_patch
     _install_caching_key_generator_patch
     _install_active_model_conversion_patch

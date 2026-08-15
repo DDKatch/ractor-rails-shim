@@ -25,6 +25,8 @@ module RactorRailsShim
       PreSpawnSteps.apply_shareable_constants
       PreSpawnSteps.freeze_shareable_class_ivars
       PreSpawnSteps.install_framework_patches
+      RactorRailsShim.__send__(:_seed_active_storage_prefix!) if RactorRailsShim.respond_to?(:_seed_active_storage_prefix!, true)
+      RactorRailsShim.__send__(:_freeze_secure_random_alphabets!) if RactorRailsShim.respond_to?(:_freeze_secure_random_alphabets!, true)
       RactorRailsShim.snapshot_gem_paths!
       RactorRailsShim.snapshot_query_logs!
       RactorRailsShim.install_url_helpers_patch

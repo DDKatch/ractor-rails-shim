@@ -457,6 +457,7 @@ module RactorRailsShim
     # non-shareable Monitor).
     def self.generate_ar_attribute_methods!
       return unless defined?(::ActiveRecord::Base)
+      gen_attr_methods_map = {}
       ARModelWalker.each_model do |klass|
         next unless klass.respond_to?(:define_attribute_methods)
         # Force load_schema so @schema_loaded is set to true and @columns_hash
@@ -468,7 +469,25 @@ module RactorRailsShim
           nil
         end
         klass.define_attribute_methods
+        # Capture the @generated_attribute_methods Module (populated by
+        # define_attribute_methods) so worker Ractors can reuse it via
+        # per-Ractor IES instead of creating an empty Module. The Module
+        # itself is shareable (methods are defined via string-eval through
+        # CodeGenerator). Keyed by object_id (same key the IES reader uses).
+        begin
+          gam = klass.instance_variable_get(:@generated_attribute_methods)
+          if gam
+            Ractor.make_shareable(gam) rescue nil
+            gen_attr_methods_map[klass.object_id] = gam
+          end
+        rescue StandardError
+          nil
+        end
       end
+      # Freeze the map and store as a shareable constant workers read.
+      gen_attr_methods_map.freeze
+      Ractor.make_shareable(gen_attr_methods_map) rescue nil
+      RactorRailsShim._reassign_shareable_const(:SHAREABLE_GEN_ATTR_METHODS, gen_attr_methods_map)
       # Replace GeneratedAttributeMethods::LOCK (a Monitor) with a shareable
       # NoOpLock. The Monitor is only used during define_attribute_methods
       # (already completed above). Post-generation the lock is never contended,

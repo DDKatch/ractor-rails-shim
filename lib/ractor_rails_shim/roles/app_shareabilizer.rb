@@ -163,6 +163,12 @@ module RactorRailsShim
       precompute_lazy_ivars.call(app)
       precompute_propshaft.call(app)
       generate_ar_attribute_methods.call
+      # Fix ActiveStorage::Blob's :metadata attribute type AFTER
+      # generate_ar_attribute_methods! (which calls load_schema and rebuilds
+      # _default_attributes with the wrong Type::Text for :metadata). This
+      # must run BEFORE make_shareable freezes the graph, so workers see the
+      # correct Type::Serialized. Runs in main only.
+      RactorRailsShim.__send__(:_fix_blob_metadata_type!) if RactorRailsShim.respond_to?(:_fix_blob_metadata_type!, true) && Ractor.main?
       # Rebuild the per-model shareable snapshots (primary keys +
       # pending-attribute-modifications) AFTER eager-load, when
       # ActiveRecord::Base.descendants actually contains the app's models.

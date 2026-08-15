@@ -82,6 +82,7 @@ module RactorRailsShim
       # filters and continue the chain so app-defined `def` callbacks still run.
       def before(context, kind)
         each_applicable_filter(context, kind, :before) do |entry|
+          next unless condition_allows?(context, entry)
           context.send(entry[:filter]) if context.respond_to?(entry[:filter], true)
         rescue RuntimeError => e
           raise e unless unshareable_proc_error?(e)
@@ -92,6 +93,7 @@ module RactorRailsShim
       # Run the matching :after filters for `kind`, ancestor-first.
       def after(context, kind)
         each_applicable_filter(context, kind, :after) do |entry|
+          next unless condition_allows?(context, entry)
           context.send(entry[:filter]) if context.respond_to?(entry[:filter], true)
         rescue RuntimeError => e
           raise e unless unshareable_proc_error?(e)
@@ -161,6 +163,27 @@ module RactorRailsShim
         in_only = only.nil? || (action && only.include?(action))
         not_except = except.nil? || !(action && except.include?(action))
         in_only && not_except
+      end
+
+      # Check Symbol if:/unless: conditions on the callback entry against the
+      # context. `if_cond` / `unless_cond` are Symbol method names (or nil).
+      # The method is called on the context; truthy = run, falsy = skip.
+      # Non-Symbol conditions (lambdas/Procs) are NOT captured (they're
+      # unshareable), so nil means "no condition" (always allow).
+      def condition_allows?(context, entry)
+        if entry[:if_cond]
+          return false unless context.respond_to?(entry[:if_cond], true) &&
+                              context.send(entry[:if_cond])
+        end
+        if entry[:unless_cond]
+          return false if context.respond_to?(entry[:unless_cond], true) &&
+                           context.send(entry[:unless_cond])
+        end
+        true
+      rescue StandardError
+        # If the condition method raises, skip the callback (safer than
+        # running it unconditionally).
+        false
       end
     end
   end

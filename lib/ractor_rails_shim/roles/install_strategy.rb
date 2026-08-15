@@ -40,6 +40,24 @@ module RactorRailsShim
         # FrozenError in workers on the first association read. Route the
         # memoization through a per-worker cache instead.
         RactorRailsShim.__send__(:_install_activerecord_reflection_patch)
+        # Patch ActiveStorage's `has_one_attached` / `has_many_attached` BEFORE
+        # the app's models eager-load, so the generated `has_one`/`has_many`
+        # association scope lambda gets a shareable `self` (ActiveStorage's
+        # default scope uses the un-shareable association builder as `self`,
+        # which makes `User.reflections` un-shareable and breaks attachment
+        # reads in worker Ractors). The patch force-loads the macro module if
+        # needed and is idempotent (no-op at prepare time).
+        RactorRailsShim.__send__(:_install_active_storage_patch)
+        # Patch ActiveRecord::Store#store_accessor BEFORE any model that uses
+        # `store` is loaded, so the generated accessors (e.g. ActiveStorage's
+        # `identified=`/`analyzed=`/`composed=`) are emitted as string-eval
+        # `def`s (shareable) instead of `define_method` blocks. Without this,
+        # a worker Ractor raises "defined with an un-shareable Proc".
+        RactorRailsShim.__send__(:_install_active_record_store_patch)
+        # Patch Marcel's `EXTENSIONS` table BEFORE eager-load so the frozen,
+        # shareable Hash is in place when worker Ractors extract an attachment's
+        # content type (ActiveStorage::Blob#extract_content_type -> Marcel).
+        RactorRailsShim.__send__(:_install_marcel_patch)
         # Patch ActionView::Base.with_empty_template_cache EARLY (before
         # eager load) so production's DetailsKey.view_context_class uses the
         # block-free version. The framework's original defines

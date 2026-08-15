@@ -118,7 +118,7 @@ module RactorRailsShim
     # is the ActiveSupport::Callbacks chain name (:process_action, :save,
     # :create, :destroy, …); `phase` is :before / :after. Storing chain_kind is
     # what generalizes replay beyond controllers to model lifecycle callbacks.
-    def self.record_declared_callback(klass_id, chain_kind, phase, filter, only, except)
+    def self.record_declared_callback(klass_id, chain_kind, phase, filter, only, except, if_cond = nil, unless_cond = nil)
       @declared_callbacks = {} unless defined?(@declared_callbacks)
       table = @declared_callbacks
       (table[klass_id] ||= []) << {
@@ -126,7 +126,9 @@ module RactorRailsShim
         phase: phase,
         filter: filter,
         only: (only.freeze if only),
-        except: (except.freeze if except)
+        except: (except.freeze if except),
+        if_cond: (if_cond.freeze if if_cond),
+        unless_cond: (unless_cond.freeze if unless_cond)
       }
     end
 
@@ -181,6 +183,8 @@ module RactorRailsShim
               opts = filters.find { |f| f.is_a?(::Hash) }
               only = nil
               except = nil
+              if_cond = nil
+              unless_cond = nil
               if opts
                 [opts[:if], opts[:unless]].each do |arr|
                   next unless arr.is_a?(::Array)
@@ -191,9 +195,19 @@ module RactorRailsShim
                     except = acts if ck == :except
                   end
                 end
+                # Capture Symbol if:/unless: conditions (e.g. Devise's
+                # `after_update :send_email_changed_notification,
+                # if: :send_email_changed_notification?`). These are
+                # method-name Symbols that the transport can call on the
+                # context to gate the callback — without this, the callback
+                # fires unconditionally in worker Ractors.
+                raw_if = opts[:if]
+                raw_unless = opts[:unless]
+                if_cond = raw_if if raw_if.is_a?(::Symbol)
+                unless_cond = raw_unless if raw_unless.is_a?(::Symbol)
               end
               ::RactorRailsShim::CallbackCapture.record_declared_callback(
-                self.object_id, name, kind, filter, only, except)
+                self.object_id, name, kind, filter, only, except, if_cond, unless_cond)
             end
           end
           _rrs_orig_set_callback(name, *filters, &block)

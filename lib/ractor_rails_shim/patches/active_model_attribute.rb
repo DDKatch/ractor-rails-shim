@@ -48,6 +48,26 @@ module RactorRailsShim
     end
 
     module InstanceMethods
+      # `generated_attribute_methods` (ActiveModel::AttributeMethods::ClassMethods)
+      # memoizes `@generated_attribute_methods ||= Module.new.tap { |mod| include mod }`
+      # — a class ivar holding a Module. In a worker Ractor the class ivar is
+      # not shared with main, so the worker creates a NEW empty Module (no
+      # attribute methods), and `name=` / `id=` etc. are missing — they fall
+      # through to `method_missing` (e.g. ActiveStorage::Attachment's
+      # `delegate_missing_to :blob` raises DelegationError because `blob` is
+      # nil). Route the module through per-Ractor IES, seeded from a shareable
+      # snapshot of every AR model's generated_attribute_methods module,
+      # captured in main at prepare time.
+      def generated_attribute_methods
+        if ::Ractor.main?
+          super
+        else
+          key = :"rrs_generated_attribute_methods_#{object_id}"
+          RactorRailsShim.storage[key] ||=
+            (::RactorRailsShim::SHAREABLE_GEN_ATTR_METHODS[object_id] || ::Module.new.tap { |m| include m })
+        end
+      end
+
       def _default_attributes # :nodoc:
         key = :"rrs_default_attributes_#{object_id}"
         RactorRailsShim.storage[key] ||=
@@ -124,7 +144,32 @@ module RactorRailsShim
           end
           attribute_set = ::ActiveModel::AttributeSet.new(attributes_hash)
           apply_pending_attribute_modifications(attribute_set)
+          # ActiveStorage::Blob#metadata is declared via `store :metadata,
+          # coder: ActiveRecord::Coders::JSON`, which registers a
+          # Type::Serialized decorator via `decorate_attributes`. The
+          # decorator is applied once (pending list is then empty), but this
+          # per-worker rebuild from `columns_hash` uses the raw column type
+          # (Type::Text), not the decorated Type::Serialized. Re-apply the
+          # serialized type for :metadata so `read_attribute(:metadata)` and
+          # store accessors (`identified=`, ...) work in worker Ractors.
+          if defined?(::ActiveStorage::Blob) && self == ::ActiveStorage::Blob
+            _rrs_apply_blob_metadata_type!(attribute_set)
+          end
           attribute_set
+        end
+      end
+
+      # Apply `Type::Serialized` (with `IndifferentCoder(JSON)`) to the
+      # `:metadata` and `"metadata"` attributes in the given AttributeSet, so
+      # store accessors on `ActiveStorage::Blob` (e.g. `identified=`) persist.
+      def _rrs_apply_blob_metadata_type!(attribute_set)
+        coder = ::ActiveRecord::Coders::JSON.new
+        ind_coder = ::ActiveRecord::Store::IndifferentCoder.new(:metadata, coder)
+        [:metadata, "metadata"].each do |key|
+          attr = attribute_set[key]
+          next unless attr && !attr.type.is_a?(::ActiveRecord::Type::Serialized)
+          meta_type = ::ActiveRecord::Type::Serialized.new(attr.type, ind_coder)
+          attribute_set[key] = attr.with_type(meta_type)
         end
       end
     end

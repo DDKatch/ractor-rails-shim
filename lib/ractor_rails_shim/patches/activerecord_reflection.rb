@@ -204,7 +204,16 @@ module RactorRailsShim
 
     def source_reflection_name
       rrs_refl_cache[[object_id, :source_reflection_name]] ||= begin
-        names = [name.to_s.singularize, name].collect(&:to_sym).uniq
+        # The constructor sets @source_reflection_name from options[:source]
+        # (e.g. has_one :avatar_blob, through: :avatar_attachment, source: :blob
+        # sets it to :blob). If already set, use it — the fallback computation
+        # below derives from `name` (e.g. :avatar_blob) and would NOT find the
+        # :blob association on the through model.
+        names = if options[:source]
+          [options[:source]]
+        else
+          [name.to_s.singularize, name].collect(&:to_sym).uniq
+        end
         names = names.find_all { |n|
           through_reflection.klass._reflect_on_association(n)
         }
@@ -220,6 +229,57 @@ module RactorRailsShim
 
         names.first
       end
+    end
+
+    # ThroughReflection has its OWN check_validity! (distinct from
+    # AssociationReflection#check_validity!) that writes @validated on the
+    # frozen, shared reflection — raises FrozenError in a worker Ractor.
+    # Reimplement it to store the validated flag in the per-worker cache
+    # instead. The body mirrors Rails' ThroughReflection#check_validity!
+    # (minus the @validated write).
+    def check_validity!
+      cache = rrs_refl_cache
+      return if cache[[object_id, :validated]]
+
+      if through_reflection.nil?
+        raise ::ActiveRecord::HasManyThroughAssociationNotFoundError.new(active_record, self)
+      end
+
+      if through_reflection.polymorphic?
+        if has_one?
+          raise ::ActiveRecord::HasOneAssociationPolymorphicThroughError.new(active_record.name, self)
+        else
+          raise ::ActiveRecord::HasManyThroughAssociationPolymorphicThroughError.new(active_record.name, self)
+        end
+      end
+
+      if source_reflection.nil?
+        raise ::ActiveRecord::HasManyThroughSourceAssociationNotFoundError.new(self)
+      end
+
+      if options[:source_type] && !source_reflection.polymorphic?
+        raise ::ActiveRecord::HasManyThroughAssociationPointlessSourceTypeError.new(active_record.name, self, source_reflection)
+      end
+
+      if source_reflection.polymorphic? && options[:source_type].nil?
+        raise ::ActiveRecord::HasManyThroughAssociationPolymorphicSourceError.new(active_record.name, self, source_reflection)
+      end
+
+      if has_one? && through_reflection.collection?
+        raise ::ActiveRecord::HasOneThroughCantAssociateThroughCollection.new(active_record.name, self, through_reflection)
+      end
+
+      if parent_reflection.nil?
+        reflections = active_record.normalized_reflections.keys
+
+        if reflections.index(through_reflection.name) > reflections.index(name)
+          raise ::ActiveRecord::HasManyThroughOrderError.new(active_record.name, self, through_reflection)
+        end
+      end
+
+      check_validity_of_inverse!
+
+      cache[[object_id, :validated]] = true
     end
 
     def deprecated_nested_reflections

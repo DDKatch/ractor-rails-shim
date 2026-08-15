@@ -445,5 +445,45 @@ module RactorRailsShim
           ::ActionController::Base.send(:private, type) if ::ActionController::Base.private_method_defined?(type) rescue nil
         end
       end
+
+      # `render json:`, `render xml:`, and `render js:` are dispatched to
+      # `_render_with_renderer_json` / `_render_with_renderer_xml` /
+      # `_render_with_renderer_js` — methods Rails defines via
+      # `ActionController::Renderers.add(key, &block)` →
+      # `define_method(_render_with_renderer_method_name(key), &block)` at boot
+      # (action_controller/metal/renderers.rb). The block is compiled in the
+      # MAIN Ractor, so calling it from a worker Ractor raises "defined with an
+      # un-shareable Proc in a different Ractor" (the same failure the
+      # StatsController works around with stdlib JSON.generate). Redefine each
+      # default renderer as a string-eval'd `def` (no captured binding) so it is
+      # callable from any Ractor. The bodies replicate Rails' defaults exactly
+      # (to_json/to_xml + content_type + response_body), referencing only the
+      # receiver (`self`) and shareable constants (Mime[:json], Mime[:xml],
+      # Mime[:js]) — no captured locals.
+      def _install_json_renderer_patch
+        return if @json_renderer_patched
+        @json_renderer_patched = true
+        _register_patch :json_renderer, "8.1"
+        return unless defined?(::ActionController::Renderers)
+        ::ActionController::Renderers.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+          def _render_with_renderer_json(json, options)
+            json = json.to_json(options) unless json.kind_of?(String)
+            json = "\#{options[:callback]}(\#{json})" if options[:callback]
+            self.content_type = Mime[:json]
+            self.response_body = json
+          end
+
+          def _render_with_renderer_xml(xml, options)
+            xml = xml.to_xml(options) unless xml.kind_of?(String)
+            self.content_type = Mime[:xml]
+            self.response_body = xml
+          end
+
+          def _render_with_renderer_js(js, options)
+            self.content_type = Mime[:js]
+            self.response_body = js.respond_to?(:to_js) ? js.to_js : js
+          end
+        RUBY
+      end
   end
 end

@@ -99,6 +99,44 @@ module RactorRailsShim
       RUBY
     end
 
+    # Devise.mailer reads `@@mailer_ref` (a class variable) which raises
+    # IsolationError from a worker Ractor. The `@@mailer_ref` holds a
+    # Devise::Getter instance (which is shareable — it only holds a String
+    # class name). Capture it at prepare time and have workers read the
+    # captured shareable copy instead of the cvar.
+    # Also patch `Devise.parent_mailer` and `Devise.mailer_sender` which read
+    # `@@parent_mailer` / `@@mailer_sender` cvars — these are read when
+    # building mailer messages.
+    def _install_devise_mailer_patch
+      return if @devise_mailer_patched
+      @devise_mailer_patched = true
+      _register_patch :devise_mailer, "5.0"
+      return unless defined?(::Devise)
+
+      # Capture the Getter instance (it holds a String — shareable).
+      mailer_ref = nil
+      begin
+        mailer_ref = ::Devise.class_variable_get(:@@mailer_ref)
+      rescue StandardError
+        nil
+      end
+      if mailer_ref
+        RactorRailsShim.const_set(:SHAREABLE_DEVISE_MAILER_REF,
+          Ractor.make_shareable(mailer_ref))
+      end
+
+      ::Devise.singleton_class.module_eval <<-'RUBY', __FILE__, __LINE__ + 1
+        def mailer
+          if ::Ractor.main?
+            @@mailer_ref.get
+          else
+            ref = ::RactorRailsShim::SHAREABLE_DEVISE_MAILER_REF
+            ref ? ref.get : ::Devise::Mailer
+          end
+        end
+      RUBY
+    end
+
     def _install_devise_url_helpers_patch
       return if @devise_url_helpers_patched
       @devise_url_helpers_patched = true

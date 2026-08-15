@@ -804,10 +804,13 @@ module RactorRailsShim
       ::ActiveRecord::AttributeMethods::ClassMethods.module_eval do
         alias_method :_rrs_orig_define_attribute_methods, :define_attribute_methods
         def define_attribute_methods
-          return true if Ractor.main?
-          # Worker: attribute methods were generated in main. Return true
-          # (the original returns true on success) without writing class ivars.
-          true
+          if Ractor.main?
+            _rrs_orig_define_attribute_methods
+          else
+            # Worker: attribute methods were generated in main. Return true
+            # (the original returns true on success) without writing class ivars.
+            true
+          end
         end
       end
     end
@@ -908,6 +911,38 @@ module RactorRailsShim
             table_name
           end
         end
+
+        # `full_table_name_prefix` / `full_table_name_suffix` are reached from
+        # `compute_table_name` whenever a model's `table_name` is NOT already
+        # cached in the worker (e.g. ActiveStorage::Attachment / Blob, whose
+        # explicit `table_name=` is set in main and so is invisible to a
+        # worker's per-Ractor IES). Upstream they use
+        # `module_parents.detect { |p| p.respond_to?(:table_name_prefix) }` —
+        # the literal block is compiled in the main Ractor and is un-shareable,
+        # so invoking it from a worker raises "defined with an un-shareable Proc
+        # in a different Ractor". Reimplement with a plain `while` loop (no
+        # block) that yields identical results.
+        def full_table_name_prefix
+          parents = module_parents
+          i = 0
+          while i < parents.length
+            p = parents[i]
+            return p.table_name_prefix if p.respond_to?(:table_name_prefix)
+            i += 1
+          end
+          table_name_prefix || ""
+        end
+
+        def full_table_name_suffix
+          parents = module_parents
+          i = 0
+          while i < parents.length
+            p = parents[i]
+            return p.table_name_suffix if p.respond_to?(:table_name_suffix)
+            i += 1
+          end
+          table_name_suffix || ""
+        end
       end
 
       # `attribute_names` is defined on `ActiveRecord::AttributeMethods::
@@ -920,10 +955,13 @@ module RactorRailsShim
       # IES), a faithful substitute for the DB-backed attribute names.
       if defined?(::ActiveRecord::AttributeMethods::ClassMethods)
         am_mod = ::ActiveRecord::AttributeMethods::ClassMethods
+        unless am_mod.method_defined?(:_rrs_orig_attribute_names)
+          am_mod.alias_method(:_rrs_orig_attribute_names, :attribute_names)
+        end
         am_mod.module_eval do
           def attribute_names
             if ::Ractor.main?
-              super
+              _rrs_orig_attribute_names
             else
               key = :"rrs_attribute_names_#{object_id}"
               RactorRailsShim.storage[key] ||= if abstract_class?
