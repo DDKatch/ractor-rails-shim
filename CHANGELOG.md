@@ -7,6 +7,89 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0]
+
+### Added — Rails feature support for worker Ractors
+- **`render json:` / `render xml:` / `render js:` in worker Ractors.**
+  ActionController::Renderers defines `_render_with_renderer_*` via
+  `define_method(&block)` at boot — the block is compiled in the main Ractor
+  and can't be called from a worker. Redefined all three as string-eval'd
+  `def`s (no captured binding) callable from any Ractor.
+  (`_install_json_renderer_patch`, `patches/action_controller.rb`)
+
+- **ActionMailer `deliver_now` from a worker Ractor.** The full build +
+  ERB render + deliver path works in a worker Ractor. Patches the `mail`
+  gem (raw `@@cvar`s routed through per-Ractor IES; `Mail::Configuration`
+  per-worker; `Mail::Parsers::*Parser` + `Mail::Utilities` module ivars
+  captured into a shareable constant with string-eval `def` readers;
+  `Mail::TestMailer.deliveries` per-Ractor; `Mail::PartsList` /
+  `AttachmentsList` `DelegateClass` delegating methods redefined as
+  shareable `def`s). Patches `ActionMailer::Base` (`mailer_name` callers
+  reimplemented via string-eval; `PROTECTED_IVARS` made shareable; `config`
+  falls back to empty `OrderedOptions` when `class_attribute` resolves nil;
+  `local_prefixes` overridden for mailers). SMTP delivery also viable
+  (`Mail::SMTP::DEFAULTS` made shareable). (`patches/mail.rb`)
+
+- **ActiveStorage `has_one_attached` in a worker Ractor.** Blob creation,
+  file upload, attachment persistence, and cross-worker read-back all work.
+  16 patched layers:
+  - `has_one_attached` / `has_many_attached` scope lambda built with a
+    shareable `self` so `User.reflections` is Ractor-shareable.
+  - `Blob.build_after_unfurling` / `compute_checksum_in_chunks` redefined
+    without `tap` blocks.
+  - `Blob#service_name` falls back to `self.class.service&.name`.
+  - `Blob.type_for_attribute(:metadata)` / `attribute_types` / per-worker
+    `_default_attributes` force `Type::Serialized` with
+    `IndifferentCoder(JSON)` for `:metadata`.
+  - `generated_attribute_methods` modules captured in
+    `SHAREABLE_GEN_ATTR_METHODS` at prepare time; workers read via per-Ractor
+    IES instead of creating an empty Module.
+  - `ActiveRecord::Store#store_accessor` redefined as string-eval `def`s;
+    `store_accessor_for` coder resolution block-free.
+  - `ThroughReflection#source_reflection_name` respects `options[:source]`.
+  - `ThroughReflection#check_validity!` uses per-worker cache (was writing
+    `@validated` on frozen reflection → FrozenError).
+  - `full_table_name_prefix` / `full_table_name_suffix` reimplemented
+    without un-shareable `module_parents.detect { }` blocks.
+  - `attribute_names` aliased to `_rrs_orig_attribute_names` (was `super`
+    with no superclass method); `define_attribute_methods` calls original
+    in main (was no-op everywhere).
+  - `SecureRandom::BASE36_ALPHABET` / `BASE58_ALPHABET` deep-frozen at
+    `prepare_for_ractors!` time.
+  - `ActiveStorage.table_name_prefix` / `table_name_suffix` redefined as
+    shareable string-eval `def`s; `_seed_active_storage_prefix!` seeds
+    constants and resets `Blob`/`Attachment` `table_name` in main.
+  - `Marcel::MimeType` / `Marcel::Magic` block-based methods redefined as
+    string-eval `def`s; lookup tables frozen.
+  - `ActiveStorage::Service::Registry#fetch` works via `class_attribute`
+    fallback.
+  - `Devise.mailer` `@@mailer_ref` cvar captured as shareable constant;
+    workers read the captured copy.
+  - Callback `if:` / `unless:` Symbol conditions captured and checked via
+    `condition_allows?` in SymbolicTransport.
+  (`patches/active_storage.rb`, `patches/active_record_store.rb`,
+  `patches/marcel.rb`, `patches/active_model_attribute.rb`,
+  `patches/activerecord.rb`, `patches/activerecord_reflection.rb`,
+  `patches/devise.rb`, `callbacks/symbolic_transport.rb`,
+  `roles/callback_capture.rb`, `roles/shareability_traversal.rb`)
+
+- **`FEATURES.md` — feature support matrix.** Documents every supported /
+  unsupported / unverified feature for worker Ractor mode, with known
+  limitations (around callbacks, sanitize/Nokogiri, ActiveJob
+  `perform_later`, block `after_save` workaround, GlobalID
+  `after_create_commit` workaround).
+
+### Known limitations
+- `around_action` / `:around` callbacks — not transported (must wrap yield).
+- `sanitize` / `simple_format` (Nokogiri) — ractor-unsafe C extension.
+- ActiveJob `perform_later` / `deliver_later` — `queue_adapter`
+  `class_attribute` resolves nil in workers; `GlobalID.app` class ivar not
+  captured by the shim (nil in workers). **TODO #5**.
+- `has_one_attached` block `after_save` callback — lambda can't cross
+  Ractor boundary. Probe uses `blob.unfurl` + `insert!` workaround.
+- `ActiveStorage::Attachment` `after_create_commit` callbacks — enqueue
+  ActiveJobs via GlobalID (`@app` nil in workers). Probe uses `insert!`.
+
 ## [0.3.0]
 
 ### Changed — breaking (public API)
