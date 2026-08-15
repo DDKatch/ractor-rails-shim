@@ -54,8 +54,8 @@ Status legend:
 |---|---|---|---|
 | `mail` gem inside a worker Ractor (parsing/encoding/building) | ✅ | yes | `_install_mail_patch`: cvars→IES, `Mail::Configuration.instance` per-worker, `Mail::Parsers::*Parser` + `Mail::Utilities` module ivars captured, `Mail::TestMailer.deliveries` per-Ractor, `Mail::PartsList`/`AttachmentsList` (`DelegateClass`) delegating methods redefined as shareable `def` |
 | ActionMailer `deliver_now` from a worker Ractor | ✅ | yes (`UserMailer.welcome_email`) | full render + build + deliver works in a worker Ractor (verified via `GET /mail_probe` → 200 and `GET /mail_deliver_probe` → 200 with delivered_count, subject, body content). See TODO #3 for the full list of fixed layers. **TODO #3** |
-| ActionMailer `deliver_later` (ActiveJob) | ❌ | yes (`WelcomeJob`) | enqueue from a worker Ractor; Sidekiq backend ❌; **TODO #5** |
-| ActiveJob `perform_later` (enqueue from worker) | ❌ | yes (`WelcomeJob`) | enqueue from a worker Ractor; Sidekiq backend ❌; **TODO #5** |
+| ActionMailer `deliver_later` (ActiveJob) | ❌ | yes (`WelcomeJob`) | `deliver_later` calls `ActiveJob::Arguments#serialize` → `GlobalID.create` → `GlobalID.app` (nil in workers). **TODO #5** |
+| ActiveJob `perform_later` (enqueue from worker) | ❌ | yes (`WelcomeJob`) | `queue_adapter` is a `class_attribute` (nil in workers); `GlobalID.app` class ivar not captured. **TODO #5** |
 
 ## Misc
 | Feature | Status | App-used | Notes |
@@ -103,14 +103,14 @@ Status legend:
    - `ActiveStorage::Service::Registry#fetch` works (service instance is shareable via `class_attribute` fallback).
    - `Devise.mailer` `@@mailer_ref` cvar captured as shareable constant (`_install_devise_mailer_patch`); workers read the captured copy.
    - Callback `if:`/`unless:` Symbol conditions captured and checked via `condition_allows?` in SymbolicTransport (fixes Devise `after_update :send_email_changed_notification, if: :send_email_changed_notification?`).
-   - Known workaround: `attach_probe` uses `blob.unfurl` + `blob.save!` + `ActiveStorage::Attachment.insert!` to bypass `has_one_attached`'s block-based `after_save` callback (lambda can't cross Ractor boundary) and the Attachment's `after_create_commit` callbacks (enqueue ActiveJobs via GlobalID, which reads an unshareable `@app` class ivar).
-5. ❌ ActiveJob `perform_later` from a worker Ractor — enqueue from a worker Ractor is not yet supported; the ActiveJob queue adapter and GlobalID argument serialization read unshareable class ivars. **TODO #5**
+    - Known workaround: `attach_probe` uses `blob.unfurl` + `blob.save!` + `ActiveStorage::Attachment.insert!` to bypass `has_one_attached`'s block-based `after_save` callback (lambda can't cross Ractor boundary) and the Attachment's `after_create_commit` callbacks (enqueue ActiveJobs via GlobalID, whose `@app` class ivar is not captured by the shim, so `GlobalID.app` is nil in workers).
+5. ❌ ActiveJob `perform_later` from a worker Ractor — `perform_later` from a worker Ractor fails: ActiveJob's `queue_adapter` is a `class_attribute` (resolves nil in workers), and `GlobalID.app` (class ivar `@app` on `GlobalID`'s singleton class) is not captured by the shim, so `GlobalID.create` raises `ArgumentError: An app is required`. **TODO #5**
 
 ## Known limitations
 | Limitation | Status | Notes |
 |---|---|---|
 | `around_action` / `around_*` callbacks | ❌ (by design) | SymbolicTransport records `:around` filters but doesn't replay them (they must wrap the yield). |
 | `sanitize` / `simple_format` (Nokogiri) | ❌ | ractor-unsafe C ext — main-Ractor only in workers. |
-| ActiveJob `perform_later` / `deliver_later` | ❌ | TODO #5 — enqueue from a worker Ractor; queue adapter + GlobalID read unshareable class ivars. |
+| ActiveJob `perform_later` / `deliver_later` | ❌ | TODO #5 — `perform_later` from a worker Ractor fails: ActiveJob's `queue_adapter` is a `class_attribute` (resolves nil in workers), and `GlobalID.app` (class ivar `@app` on `GlobalID`'s singleton class) is not captured by the shim, so `GlobalID.create` raises `ArgumentError: An app is required`. |
 | `has_one_attached` block `after_save` callback | ⚠️ (workaround) | `has_one_attached` registers `after_save { ... }` (lambda), which can't cross Ractor boundary. Probe manually creates Blob + Attachment via `insert!`. |
-| `ActiveStorage::Attachment` `after_create_commit` callbacks | ⚠️ (workaround) | Callbacks enqueue ActiveJobs via GlobalID, which reads an unshareable `@app` class ivar. Probe uses `insert!` to bypass callbacks. |
+| `ActiveStorage::Attachment` `after_create_commit` callbacks | ⚠️ (workaround) | Callbacks (`mirror_blob_later`, `analyze_blob_later`, `transform_variants_later`) enqueue ActiveJobs via GlobalID, whose `@app` class ivar is not captured by the shim (nil in workers). Probe uses `insert!` to bypass callbacks. |
