@@ -30,7 +30,7 @@ module RactorRailsShim
         obj = ::Marcel.const_get(name)
         Ractor.make_shareable(obj) if Ractor.respond_to?(:make_shareable) && !Ractor.shareable?(obj)
         ::Marcel.const_set(name, obj)
-      rescue
+      rescue StandardError
         nil
       end
     end

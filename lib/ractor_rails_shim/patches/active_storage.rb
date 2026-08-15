@@ -310,7 +310,7 @@ module RactorRailsShim
         end
       end
       @_secure_random_tp.enable
-    rescue
+    rescue StandardError
       nil
     end
 
@@ -324,7 +324,7 @@ module RactorRailsShim
         alphabet = ::SecureRandom.const_get(const)
         next if ::Ractor.shareable?(alphabet)
         ::SecureRandom.const_set(const, ::Ractor.make_shareable(alphabet))
-      rescue
+      rescue StandardError
         nil
       end
     end
@@ -405,7 +405,7 @@ module RactorRailsShim
         def decorate_attributes(names = nil, &decorator)
           super
           instance_variable_set(:@attribute_types, nil)
-        rescue
+        rescue StandardError
           super
         end
       end)
