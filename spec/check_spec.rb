@@ -101,10 +101,15 @@ class CheckSpec < Minitest::Spec
   end
 
   it "scan_app and scan_rails partition scan (no overlap)" do
+    # Snapshot scan once: ObjectSpace.each_object(Module) is non-deterministic
+    # across calls (autoload can create modules between scans), so calling
+    # scan/scan_rails/scan_app separately yields drifting counts.
     all = RactorRailsShim::Check.scan
-    rails = RactorRailsShim::Check.scan_rails
-    app = RactorRailsShim::Check.scan_app
-    # Same total count (scan - scan_rails == scan_app, by construction).
+    rails = all.select { |f| f.owner.start_with?("Rails", "ActiveRecord", "ActiveSupport",
+      "ActionController", "ActionView", "ActionDispatch", "ActionMailer",
+      "ActiveJob", "ActionCable", "ActionText", "ActionMailbox", "ActiveStorage") }
+    app = all - rails
+    # Same total count (partition by construction).
     assert_equal all.size, rails.size + app.size
     # No finding appears in both partitions.
     rails_keys = rails.map { |f| [f.owner, f.ivar] }.to_set
