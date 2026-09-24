@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1]
+
+### Fixed — community-reported crash trio (GitHub issues #1, #2, #3)
+
+All three were triggered by the same docs gap: thread-mode users calling
+`prepare_for_ractors!` (Ractor-mode-only) because the README presented it
+unconditionally. Two real code defects were also exposed and fixed.
+
+- **`prepare_for_ractors!` now skips itself in thread mode** with a loud
+  warning (`roles/lifecycle.rb`). It is Ractor-mode-only: it dispatches the
+  full per-Ractor patch set and deep-freezes live Rails objects, which
+  breaks thread servers (Puma/Falcon/Thin/Webrick). Running it in thread
+  mode froze the main Ractor's live `DatabaseConfigurations::HashConfig`
+  objects → `FrozenError` in `Migration::CheckPending` on every dev HTTP
+  request. (Fixes #2; root cause of the trigger conditions in #1 and #3.)
+
+- **`SHAREABLE_AUTOSAVE_REFLECTIONS` registry swap made atomic**
+  (`patches/activerecord.rb`). `_rrs_store_autosave_reflection` removed the
+  constant before calling `Ractor.make_shareable`, so an unshareable
+  reflection (e.g. one capturing a Proc) left the constant permanently
+  missing and every later association declaration raised
+  `NameError: uninitialized constant SHAREABLE_AUTOSAVE_REFLECTIONS` on
+  boot for any app with ActiveStorage attachments. Now compute-then-swap
+  (a failure leaves the previous registry intact) plus self-healing (a
+  missing constant is re-seeded on the next store). (Fixes #1.)
+
+- **`action_methods` nil cache read fixed** in both patched copies
+  (`AbstractController::Base` and `AbstractController::UrlFor::ClassMethods`,
+  `patches/action_controller.rb`). `instance_variable_defined?` is true for
+  defined-but-nil ivars, and `clear_action_methods!` (Rails' invalidation
+  hook, hit while a mailer/controller class body is evaluated) sets
+  `@action_methods = nil` — so the next call read nil, cached nil, and
+  returned it, raising `NoMethodError: undefined method 'include?' for nil`
+  in `ActionMailer::Base#respond_to_missing?` (crashed `bin/rails
+  db:migrate` during a kamal release phase). (Fixes #3.)
+
+### Changed — docs
+- README Install section split into two explicit tracks (Ractor mode with
+  kino vs Thread mode with Puma/Falcon/Thin/Webrick), with warnings that
+  `prepare_for_ractors!` / `make_app_shareable!` must never be called in
+  thread mode.
+
 ## [0.4.0]
 
 ### Added — Rails feature support for worker Ractors
