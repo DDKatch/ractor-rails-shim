@@ -22,6 +22,16 @@ module RactorRailsShim
     # Idempotent; safe to call multiple times. Must run in the main
     # Ractor.
     def self.prepare_for_ractors!
+      if RactorRailsShim::RunMode.thread?
+        warn(
+          "[ractor-rails-shim] prepare_for_ractors! skipped: thread mode is active " \
+          "(RactorRailsShim.thread_mode = true). prepare_for_ractors! is Ractor-mode-only — " \
+          "it deep-freezes live Rails objects (db configs, constants) and installs the full " \
+          "per-Ractor patch set, which breaks thread servers (Puma/Falcon/Thin/Webrick). " \
+          "Remove this call from your boot, or drop thread_mode to run in Ractor mode."
+        )
+        return false
+      end
       PreSpawnSteps.apply_shareable_constants
       PreSpawnSteps.freeze_shareable_class_ivars
       PreSpawnSteps.install_framework_patches
