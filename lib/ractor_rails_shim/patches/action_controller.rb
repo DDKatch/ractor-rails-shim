@@ -139,7 +139,7 @@ module RactorRailsShim
           cache = (RactorRailsShim.storage[:ractor_rails_shim_action_methods_cache] ||= {})
           v = cache[self]
           return v if v
-          if Ractor.main? && instance_variable_defined?(:@action_methods)
+          if Ractor.main? && instance_variable_defined?(:@action_methods) && @action_methods
             v = @action_methods
             cache[self] = v
             return v
@@ -228,7 +228,7 @@ module RactorRailsShim
             cache = (RactorRailsShim.storage[:ractor_rails_shim_url_for_action_methods_cache] ||= {})
             v = cache[self]
             return v if v
-            if Ractor.main? && instance_variable_defined?(:@action_methods)
+          if Ractor.main? && instance_variable_defined?(:@action_methods) && @action_methods
               v = @action_methods
               cache[self] = v
               return v
