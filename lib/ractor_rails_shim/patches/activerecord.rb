@@ -2612,12 +2612,27 @@ module RactorRailsShim
       mod.module_eval do
         # Store a reflection in the shareable registry. Called at boot time
         # (main Ractor) during association declaration.
+        #
+        # Compute-then-swap: the shareable replacement is built BEFORE the
+        # current registry constant is removed. A previous version removed
+        # first and only then called Ractor.make_shareable, so any
+        # unshareable reflection (e.g. one capturing a Proc) left the
+        # constant permanently missing and every later declaration raised
+        # NameError — the poison was worse than the original failure.
+        # Also self-heals: if the constant is missing for any reason, it is
+        # re-seeded here instead of raising.
         def _rrs_store_autosave_reflection(key, reflection)
-          cur = RactorRailsShim::SHAREABLE_AUTOSAVE_REFLECTIONS.dup
+          registry = if RactorRailsShim.const_defined?(:SHAREABLE_AUTOSAVE_REFLECTIONS, false)
+            RactorRailsShim::SHAREABLE_AUTOSAVE_REFLECTIONS
+          else
+            RactorRailsShim.const_set(:SHAREABLE_AUTOSAVE_REFLECTIONS, Ractor.make_shareable({}))
+          end
+          cur = registry.dup
           cur[key] = reflection
+          shareable = Ractor.make_shareable(cur)
           RactorRailsShim.send(:remove_const, :SHAREABLE_AUTOSAVE_REFLECTIONS) if
             RactorRailsShim.const_defined?(:SHAREABLE_AUTOSAVE_REFLECTIONS, false)
-          RactorRailsShim.const_set(:SHAREABLE_AUTOSAVE_REFLECTIONS, Ractor.make_shareable(cur))
+          RactorRailsShim.const_set(:SHAREABLE_AUTOSAVE_REFLECTIONS, shareable)
         end
 
         # Look up a reflection from the shareable registry. Called at runtime
