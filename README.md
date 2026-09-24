@@ -56,6 +56,8 @@ replay. The per-Ractor IES-routing patches are skipped because IES is empty
 on a thread server's request threads and would break the app; Rails' own
 class globals are thread-safe and used as-is. Use this when you want the
 callback-correctness fixes without running in Ractor mode.
+**Never call `prepare_for_ractors!` or `make_app_shareable!` in thread mode** —
+both are Ractor-mode-only (see the Install section's two tracks).
 
 **Benchmarks:** throughput/latency/memory of this shim + the test app under
 kino `:ractor` vs Puma vs Falcon are documented in
@@ -256,7 +258,16 @@ Add to your Gemfile:
 gem "ractor-rails-shim", group: :production
 ```
 
-Then install early in boot, before `Rails.application` is first accessed:
+**Pick exactly one track below** — the two modes install different patch sets
+and use different lifecycle calls. Mixing them (e.g. calling
+`prepare_for_ractors!` on a thread server) deep-freezes live Rails objects and
+installs the full per-Ractor patch set in a mode that was never designed for
+it; this breaks the app (frozen db configs, missing registries, nil
+`action_methods`).
+
+### Track A: Ractor mode (kino `-m ractor`)
+
+Install early in boot, before `Rails.application` is first accessed:
 
 ```ruby
 # config/boot.rb
@@ -265,16 +276,18 @@ require "ractor_rails_shim"
 RactorRailsShim.install
 ```
 
-After Rails is fully booted (after `Rails.application.initialize!`) and **before
-spawning worker Ractors**, call `prepare_for_ractors!` to make the remaining
-unshareable constants (e.g. `Rails::Railtie::ABSTRACT_RAILTIES`, which loads
-after `module Rails` opens) shareable:
+After Rails is fully booted (after `Rails.application.initialize!`) and
+**before spawning worker Ractors**, call `prepare_for_ractors!` to make the
+remaining unshareable constants (e.g. `Rails::Railtie::ABSTRACT_RAILTIES`,
+which loads after `module Rails` opens) shareable:
 
 ```ruby
 # config/environment.rb, or wherever you boot your app before spawning workers
 Rails.application.initialize!
 RactorRailsShim.prepare_for_ractors!
 ```
+
+**Do not set `RactorRailsShim.thread_mode = true` in this track.**
 
 To share the whole app across worker Ractors (the `:ractor` mode path), call
 `make_app_shareable!` — it replaces every self-capturing Proc in the app graph
@@ -303,6 +316,29 @@ unshareable constants in your own app/gems, add them to the registry before
 RactorRailsShim.shareable_constants << "MyGem::MUTABLE_LIST"
 RactorRailsShim.prepare_for_ractors!
 ```
+
+### Track B: Thread mode (Puma / Falcon / Thin / Webrick)
+
+Set the mode **before** `install`, and install early in boot:
+
+```ruby
+# config/boot.rb
+require "bundler/setup"
+require "ractor_rails_shim"
+RactorRailsShim.thread_mode = true   # or: ENV["SERVER"] = "falcon" before boot
+RactorRailsShim.install
+```
+
+That is the **whole setup**. Thread mode installs a minimal patch set
+(`class_attribute` isolation + nil-safe callback replay + callback capture) and
+uses Rails' own thread-safe class globals as-is.
+
+**Do NOT call `prepare_for_ractors!` or `make_app_shareable!` in thread mode.**
+Both are Ractor-mode-only: they deep-freeze the app graph (db configurations,
+constants, class ivars) and dispatch the full per-Ractor patch set, which a
+threaded server cannot survive. (`prepare_for_ractors!` detects thread mode and
+skips itself with a warning as of v0.4.1, but don't rely on that — keep it out
+of your boot.)
 
 Or from a Rails console / runner for a quick check:
 
