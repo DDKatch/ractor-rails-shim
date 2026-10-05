@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — shim TODO #5: ActiveJob `perform_later` / `deliver_later` from a worker Ractor
+
+The last code-level ❌ in `FEATURES.md`. `WelcomeJob.perform_later(user)` from
+a worker Ractor crashed with two different walls; both fixed. Regression specs
+in `spec/cgi_escape_patch_spec.rb`; verified end-to-end by the test app's
+`GET /job_enqueue_probe` → 200 `{enqueued: true, job_class: "WelcomeJob"}`
+from real kino `:ractor` workers.
+
+- **`GlobalID.app` captured via `SHAREABLE_CLASS_IVARS`** (`["GlobalID",
+  :@app]`, `patches/make_shareable.rb`). The railtie sets it to an *unfrozen*
+  String, and workers cannot even READ an unfrozen class ivar —
+  `GlobalID.create` (any ActiveJob argument serialization) died with
+  `IsolationError: can not get unshareable values from instance variables
+  ... (@app from GlobalID)` before GlobalID's own "An app is required" check
+  even ran. Deep-frozen at prepare time like the other captured ivars.
+- **New `patches/cgi.rb`** — `CGI::Escape`/`CGI::EscapeExt` default their
+  `unescape` / `unescapeURIComponent` encoding argument to the
+  `@@accept_charset` CLASS VARIABLE (the C ext impl from `cgi/escape.so`
+  reads it internally too). Ruby forbids reading class variables from
+  non-main Ractors outright — even shareable ones. globalid's URI::GID
+  parsing calls `CGI.unescape`, putting this on the enqueue path. Both
+  methods are re-defined (string eval, shareable) defaulting to a frozen
+  snapshot constant; wired into the Ractor install strategy before eager
+  load. Requires no behavior change: explicit-encoding calls keep working,
+  and the class variable storage is untouched for main-Ractor callers.
+- **`queue_adapter` needed no shim change**: ActiveJob's reader lazily
+  instantiates a per-worker adapter (`self.queue_adapter = :async if
+  _queue_adapter.nil?`) through the class_attribute IES writer, which
+  already works in workers.
+
 ### Fixed — worker-Ractor cache access (low-level Rails.cache + fragment caching)
 
 Exercising the caching audit in the test app surfaced three isolation walls

@@ -146,6 +146,7 @@ class FrameworkPatchDispatchSpec < Minitest::Spec
     _install_active_storage_patch
     _install_active_record_store_patch
     _install_marcel_patch
+    _install_cgi_patch
     _install_openssl_digest_patch
     _install_caching_key_generator_patch
     _install_active_model_conversion_patch

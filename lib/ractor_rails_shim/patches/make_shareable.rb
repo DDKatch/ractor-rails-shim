@@ -35,6 +35,16 @@ module RactorRailsShim
     SHAREABLE_CLASS_IVARS.concat([
       ["ActiveSupport::Editor", :@editors],
       ["Warden::Strategies", :@strategies],
+      # GlobalID.app: an UNFROZEN String set by global_id's railtie from
+      # config.global_id.app. Worker Ractors cannot even READ an unfrozen
+      # class ivar — so GlobalID.create (i.e. any ActiveJob argument
+      # serialization: perform_later / deliver_later from a worker) dies with
+      # "IsolationError: can not get unshareable values from instance
+      # variables of classes/modules from non-main Ractors (@app from
+      # GlobalID)" before GlobalID's own "An app is required" check even
+      # runs. Deep-freeze the String so argument serialization works in
+      # workers (shim TODO #5).
+      ["GlobalID", :@app],
     ])
 
     # Public API: make Rails.application shareable across Ractors. Delegates

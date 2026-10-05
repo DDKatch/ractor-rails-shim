@@ -54,6 +54,11 @@ module RactorRailsShim
         # `def`s (shareable) instead of `define_method` blocks. Without this,
         # a worker Ractor raises "defined with an un-shareable Proc".
         RactorRailsShim.__send__(:_install_active_record_store_patch)
+        # Patch CGI::Escape's class-variable default arguments BEFORE anything
+        # URL-decodes in a worker (globalid -> URI::GID -> CGI.unescape):
+        # @@accept_charset is a class VARIABLE, and Ruby forbids reading class
+        # variables from non-main Ractors outright — even shareable ones.
+        RactorRailsShim.__send__(:_install_cgi_patch)
         # Patch Marcel's `EXTENSIONS` table BEFORE eager-load so the frozen,
         # shareable Hash is in place when worker Ractors extract an attachment's
         # content type (ActiveStorage::Blob#extract_content_type -> Marcel).
