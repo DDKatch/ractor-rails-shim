@@ -11,6 +11,7 @@
 #   4.  _precompute_propshaft!(app)         warm propshaft assets
 #   5.  _generate_ar_attribute_methods!     force AR method generation in main
 #   6.  _warm_attribute_method_patterns!    warm ActiveModel caches
+#   6b. _warm_cache_serializer_fallbacks!   warm Cache serializer probes
 #   7.  _freeze_declared_callbacks!         freeze the captured callback table
 #   8.  _freeze_shareable_class_ivars!      freeze SHAREABLE_CLASS_IVARS
 #   9.  _warm_journey_routes!               warm the routes simulator
@@ -41,6 +42,7 @@ module RactorRailsShim
     @precompute_propshaft = nil
     @generate_ar_attribute_methods = nil
     @warm_attribute_method_patterns = nil
+    @warm_cache_serializer_fallbacks = nil
     @freeze_declared_callbacks = nil
     @freeze_shareable_class_ivars = nil
     @warm_journey_routes = nil
@@ -54,6 +56,7 @@ module RactorRailsShim
     def self.configure(apply_shareable_constants: nil, install_all_framework_patches: nil,
                        precompute_lazy_ivars: nil, precompute_propshaft: nil,
                        generate_ar_attribute_methods: nil, warm_attribute_method_patterns: nil,
+                       warm_cache_serializer_fallbacks: nil,
                        freeze_declared_callbacks: nil, freeze_shareable_class_ivars: nil,
                        warm_journey_routes: nil, neutralize_logger_io: nil,
                        replace_unshareable_procs: nil, replace_locks_and_concurrent_maps: nil,
@@ -65,6 +68,7 @@ module RactorRailsShim
       @precompute_propshaft = precompute_propshaft
       @generate_ar_attribute_methods = generate_ar_attribute_methods
       @warm_attribute_method_patterns = warm_attribute_method_patterns
+      @warm_cache_serializer_fallbacks = warm_cache_serializer_fallbacks
       @freeze_declared_callbacks = freeze_declared_callbacks
       @freeze_shareable_class_ivars = freeze_shareable_class_ivars
       @warm_journey_routes = warm_journey_routes
@@ -83,6 +87,7 @@ module RactorRailsShim
       @precompute_propshaft = nil
       @generate_ar_attribute_methods = nil
       @warm_attribute_method_patterns = nil
+      @warm_cache_serializer_fallbacks = nil
       @freeze_declared_callbacks = nil
       @freeze_shareable_class_ivars = nil
       @warm_journey_routes = nil
@@ -116,6 +121,10 @@ module RactorRailsShim
 
     def self.warm_attribute_method_patterns
       @warm_attribute_method_patterns || RactorRailsShim::ShareabilityTraversal.method(:warm_attribute_method_patterns!)
+    end
+
+    def self.warm_cache_serializer_fallbacks
+      @warm_cache_serializer_fallbacks || RactorRailsShim.method(:_warm_cache_serializer_fallbacks!)
     end
 
     def self.freeze_declared_callbacks
@@ -177,6 +186,7 @@ module RactorRailsShim
       # return nil and URL helpers / record inspection break.
       RactorRailsShim._rebuild_activerecord_model_snapshots! if Ractor.main?
       warm_attribute_method_patterns.call
+      warm_cache_serializer_fallbacks.call
       freeze_declared_callbacks.call
       freeze_shareable_class_ivars.call
       warm_journey_routes.call

@@ -26,9 +26,64 @@ module RactorRailsShim
     "ActiveSupport::JSON::Encoding::HTML_ENTITIES_REGEX",
     "ActiveSupport::JSON::Encoding::FULL_ESCAPE_REGEX",
     "ActiveSupport::JSON::Encoding::JS_SEPARATORS_REGEX",
+    # ActiveSupport::Cache::OPTION_ALIASES is shallow-frozen by Rails (the Hash
+    # is frozen, its Array values are not), so worker Ractors cannot even READ
+    # it — every Store#fetch / #write / #read with an options hash hits
+    # normalize_options → merged_options → OPTION_ALIASES and dies with
+    # Ractor::IsolationError ("can not access non-shareable objects in
+    # constant ... by non-main ractor"). That blocks both low-level
+    # Rails.cache.fetch and view fragment caching in worker Ractors.
+    # Deep-freeze it into a shareable twin (it is a read-only alias map).
+    "ActiveSupport::Cache::OPTION_ALIASES",
+    # ActiveSupport::Cache::Coder pack templates + deserializer registries:
+    # read-only after definition but never frozen by Rails, so worker Ractors
+    # hit IsolationError in Coder#load (entry deserialization) during
+    # Store#fetch — the next wall behind OPTION_ALIASES. STRING_DESERIALIZERS
+    # / STRING_ENCODINGS hold only Encoding objects and stateless
+    # StringDeserializer instances, so deep-freezing is safe.
+    "ActiveSupport::Cache::Coder::PACKED_TYPE_TEMPLATE",
+    "ActiveSupport::Cache::Coder::PACKED_EXPIRES_AT_TEMPLATE",
+    "ActiveSupport::Cache::Coder::PACKED_VERSION_LENGTH_TEMPLATE",
+    "ActiveSupport::Cache::Coder::STRING_DESERIALIZERS",
+    "ActiveSupport::Cache::Coder::STRING_ENCODINGS",
+    # ActiveSupport::NumberHelper converter constants: DEFAULTS (the nested
+    # number-format defaults Hash) is read via `options.dup`/lookups on EVERY
+    # number_with_delimiter / number_to_currency / etc. call — unfrozen, so
+    # worker Ractors cannot read it (IsolationError). DECIMAL_UNITS /
+    # INVERTED_DECIMAL_UNITS / STORAGE_UNITS are read by number_to_human /
+    # number_to_human_size; DEFAULT_DELIMITER_REGEX by number_to_delimited.
+    # All are read-only after definition — deep-freeze is safe.
+    "ActiveSupport::NumberHelper::NumberConverter::DEFAULTS",
+    "ActiveSupport::NumberHelper::NumberToDelimitedConverter::DEFAULT_DELIMITER_REGEX",
+    "ActiveSupport::NumberHelper::NumberToHumanConverter::DECIMAL_UNITS",
+    "ActiveSupport::NumberHelper::NumberToHumanConverter::INVERTED_DECIMAL_UNITS",
+    "ActiveSupport::NumberHelper::NumberToHumanSizeConverter::STORAGE_UNITS",
   ])
 
   class << self
+    # Warm ActiveSupport::Cache::SerializerWithFallback subclasses'
+    # `available?` class ivars in the MAIN Ractor, BEFORE the app graph is
+    # frozen (called from AppShareabilizer.make_shareable!). The subclasses
+    # memoize the availability probe as a class ivar (`@available ||= ...`);
+    # if the first caller is a worker Ractor, the ivar WRITE raises
+    # "can not set instance variables of classes/modules by non-main Ractors"
+    # — which breaks every cache-entry LOAD (Coder#load → dumped?) and hence
+    # low-level Rails.cache.fetch / fragment-cache reads in workers. Warming
+    # here leaves `defined?(@available)` true with a shareable boolean, so
+    # workers take the memoized fast path.
+    def _warm_cache_serializer_fallbacks!
+      return unless defined?(::ActiveSupport::Cache::SerializerWithFallback)
+      fallback_mod = ::ActiveSupport::Cache::SerializerWithFallback
+      fallback_mod.constants.each do |name|
+        serializer = fallback_mod.const_get(name)
+        # The fallbacks are `module ... extend self` (Rails 8.1), so accept
+        # Modules (Class is a Module too) with a private `available?` probe.
+        next unless serializer.is_a?(Module) && serializer.respond_to?(:available?, true)
+        _swallow("warm cache serializer #{serializer.name}") do
+          serializer.send(:available?)
+        end
+      end
+    end
     # Patch ActiveSupport::Inflector::Inflections to not read @__en_instance__
     # / @__instance__ class ivars from a worker Ractor. The inflections instance
     # holds rules (Arrays/Hashes of Strings) populated at boot; for a frozen

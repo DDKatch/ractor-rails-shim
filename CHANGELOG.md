@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — worker-Ractor cache access (low-level Rails.cache + fragment caching)
+
+Exercising the caching audit in the test app surfaced three isolation walls
+that made ANY cache call (`Rails.cache.fetch`, view fragment caching) die in a
+worker Ractor. All fixed; regression specs in
+`spec/cache_option_aliases_shareable_spec.rb`.
+
+- **`ActiveSupport::Cache::OPTION_ALIASES` registered in
+  `SHAREABLE_CONSTANTS`** (`patches/active_support.rb`). Rails freezes the
+  Hash shallowly — its Array values stay unfrozen — so workers could not even
+  READ the constant (`IsolationError` in `Store#normalize_options` →
+  `merged_options`), which broke every `fetch`/`read`/`write` with an options
+  hash. Deep-frozen at boot like the other read-only alias maps.
+- **`ActiveSupport::Cache::Coder` constants registered** (`PACKED_TYPE_
+  TEMPLATE`, `PACKED_EXPIRES_AT_TEMPLATE`, `PACKED_VERSION_LENGTH_TEMPLATE`,
+  `STRING_DESERIALIZERS`, `STRING_ENCODINGS`) — read during cache-entry
+  deserialization (`Coder#load`); the next wall behind OPTION_ALIASES.
+- **Cache serializer availability probes warmed in main**
+  (`_warm_cache_serializer_fallbacks!`, new step in the `AppShareabilizer`
+  pipeline between `_warm_attribute_method_patterns!` and
+  `_freeze_declared_callbacks!`). The `SerializerWithFallback` fallbacks
+  (Rails 8.1: `module ... extend self`) memoize `available?` as an ivar on
+  the module object; a worker making the first probe crashed on the ivar
+  WRITE (`can not set instance variables of classes/modules by non-main
+  Ractors`) during `Coder#load` → `dumped?`. Warming the probes before the
+  freeze leaves `defined?(@available)` true with a shareable boolean.
+- **`ActiveSupport::NumberHelper` converter constants registered**
+  (`NumberConverter::DEFAULTS`, `NumberToDelimitedConverter::
+  DEFAULT_DELIMITER_REGEX`, `NumberToHumanConverter::DECIMAL_UNITS` /
+  `INVERTED_DECIMAL_UNITS`, `NumberToHumanSizeConverter::STORAGE_UNITS`) —
+  read on every `number_with_delimiter` / `number_to_currency` / human-size
+  call; `DEFAULTS` was entirely unfrozen. Needed once views render number
+  helpers from worker Ractors.
+
+Verified end-to-end: the test app's fragment / russian-doll / low-level
+caching and number-helper views now serve from real kino `:ractor` workers
+(`root_load_test.rb` passes; full suite 111 runs / 0 failures / 0 skips).
+
 ## [0.4.1]
 
 ### Fixed — community-reported crash trio (GitHub issues #1, #2, #3)
