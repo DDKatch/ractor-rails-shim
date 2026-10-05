@@ -47,7 +47,7 @@ Status legend:
 | ERB rendering + partials + layouts | ✅ | yes | |
 | Propshaft asset serving (`/assets/*`) | ✅ | yes | |
 | Kaminari pagination links | ✅ | yes | |
-| `sanitize` / `simple_format` (Nokogiri) | ❌ | no | ractor-unsafe C ext — main-Ractor only in workers |
+| `sanitize` / `simple_format` (Nokogiri) | ❌ | no | ractor-unsafe C ext — main-Ractor only in workers. The test app never calls it: `posts/show` renders post bodies with ERB escaping + `whitespace-pre-wrap` (see the app's RAILS_FEATURES.md "Living without Nokogiri"). |
 
 ## Mail / jobs
 | Feature | Status | App-used | Notes |
