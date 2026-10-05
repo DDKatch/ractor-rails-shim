@@ -45,23 +45,80 @@ module RactorRailsShim
 
       # Re-drive every dependent association the record's class declared,
       # BEFORE the record itself is deleted (matching the before_destroy order).
+      # Per-entry isolation: one failing association must not skip the others
+      # (a swallowed failure here leaves orphaned children → FK violation on
+      # the parent DELETE, so surface the reason on stderr before continuing).
+      #
+      # Entries are the UNION of (a) the main-Ractor-captured table and
+      # (b) entries derived from the worker's OWN shareable `_reflections`.
+      # The capture runs at an arbitrary boot point and in lazily-loaded
+      # (test/non-eager) apps can miss app models entirely — the worker-side
+      # derivation uses the same shareable reflections the worker already
+      # reads for association lookups, so it is load-order independent.
       def before(context, kind)
         return unless kind == :destroy
-        table = source
-        entries = table && table[class_name_of(context)]
-        return unless entries
+        entries = entries_for(context)
+        if entries.empty?
+          warn "ractor-rails-shim: dependent cascade: no entries for " \
+               "#{class_name_of(context).inspect} (table=#{source.inspect[0, 200]})"
+          return
+        end
         entries.each do |entry|
           assoc = association_of(context, entry[:name])
-          assoc.handle_dependency if assoc && assoc.respond_to?(:handle_dependency)
+          next unless assoc && assoc.respond_to?(:handle_dependency)
+          begin
+            assoc.handle_dependency
+          rescue StandardError => e
+            warn "ractor-rails-shim: dependent cascade #{context.class.name}##{entry[:name]} " \
+                 "failed (#{e.class}: #{e.message[0, 160]})"
+          end
         end
       end
 
-      # Dependent cascades are a before_destroy concern; nothing runs after.
+      # After: nothing — dependent cascades are a before_destroy concern.
       def after(_context, _kind)
         nil
       end
 
       private
+
+      # Captured-table entries + worker-derived entries, deduped by name.
+      def entries_for(context)
+        seen = {}
+        (captured_entries(context) + derived_entries(context)).each do |entry|
+          seen[entry[:name]] = entry
+        end
+        seen.values
+      end
+
+      def captured_entries(context)
+        table_entries = source
+        (table_entries && table_entries[class_name_of(context)]) || []
+      rescue StandardError
+        []
+      end
+
+      # Derive [{name:, type:, macro:}] from the record class's OWN
+      # `_reflections` — the same shareable hash workers read for association
+      # lookups (via the class-attribute fallback chain), so no unshareable
+      # state is touched.
+      def derived_entries(context)
+        klass = context.class
+        reflections = klass._reflections
+        return [] unless reflections.is_a?(Hash)
+        reflections.values.map do |refl|
+          next unless refl.respond_to?(:options)
+          dep = refl.options[:dependent]
+          next unless dep
+          {
+            name: refl.name.to_sym,
+            type: dep.to_sym,
+            macro: refl.macro.to_sym,
+          }
+        end.compact
+      rescue StandardError
+        []
+      end
 
       def class_name_of(context)
         klass = context.class

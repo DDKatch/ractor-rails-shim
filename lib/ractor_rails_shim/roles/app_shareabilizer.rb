@@ -184,7 +184,15 @@ module RactorRailsShim
       # The initial install-time pass only captured ActiveRecord::Base, so
       # without this, worker Ractors see a nil primary_key -> `id`/to_param
       # return nil and URL helpers / record inspection break.
+      # Re-capture the dependent-associations table here too: the
+      # install-time pass runs before the app's models are defined, so
+      # SHAREABLE_DEPENDENT_ASSOCIATIONS only holds engine models — workers
+      # then skip `dependent: :destroy` cascades and parent DELETEs die with
+      # foreign-key violations (observed with Action Text/Mailbox installed,
+      # which added engine models to the table while Post/Comment were
+      # missing).
       RactorRailsShim._rebuild_activerecord_model_snapshots! if Ractor.main?
+      RactorRailsShim._capture_dependent_associations! if Ractor.main? && RactorRailsShim.respond_to?(:_capture_dependent_associations!, true)
       RactorRailsShim._prewarm_activerecord_memoizations! if Ractor.main?
       warm_attribute_method_patterns.call
       warm_cache_serializer_fallbacks.call

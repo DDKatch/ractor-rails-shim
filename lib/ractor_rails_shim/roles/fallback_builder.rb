@@ -332,6 +332,23 @@ module RactorRailsShim
           Ractor.make_shareable(val)
           val
         rescue StandardError => e2
+          # Final fallback: REBUILD the value. A failed plain make_shareable
+          # deep-freezes the graph up to the first unshareable Proc, so the
+          # replacement traversal above can no longer mutate the frozen
+          # parents (FrozenError is swallowed by the funnel) and the Procs
+          # survive into attempt 2, which fails again. Observed with
+          # ActionText: `has_rich_text :content` adds a has_one reflection
+          # whose @scope is `proc { instance_exec(-> { where(name: name) }) }`
+          # (builder/association.rb) — the wrapper Proc's binding captures the
+          # inner lambda, whose self is the model class. Plain attempt 1
+          # freezes the Reflection objects, attempt 2 can't swap the Proc.
+          # Rebuild: identity-memoized deep copy that drops the failed-freeze
+          # poison (dup drops the frozen flag), traversal replaces Procs on
+          # the MUTABLE copies, then make_shareable the rebuilt value. Only
+          # reached when plain + traversal both fail, so previously-green
+          # attributes keep their (semantics-preserving) plain path.
+          rebuilt = rebuild_unfrozen_shareable(val)
+          return rebuilt if rebuilt
           unless default
             warn "ractor-rails-shim: could not make attribute " \
                  "#{owner_name}##{attr_name} shareable (#{e2.class}: #{e2.message[0,80]}); workers will fall back to default or nil"
@@ -339,6 +356,92 @@ module RactorRailsShim
           nil
         end
       end
+    end
+
+    # Rebuild a value that plain make_shareable + the in-place traversal both
+    # failed on (see try_make_shareable for the failure anatomy). Produces an
+    # identity-memoized deep copy: every mutable object is dup'd (dup drops
+    # the frozen flag, un-poisoning the failed plain attempt), child references
+    # are rewritten through the memo so the INTERNAL GRAPH stays intact
+    # (reflection chains like ThroughReflection#delegate_reflection keep
+    # pointing at one shared object — only now at the shared COPY), Procs are
+    # carried over as-is so the replacement traversal can swap them on the
+    # now-mutable parents, then the traversal + lock-replacement + plain
+    # make_shareable run on the rebuilt value.
+    #
+    # Modules, Symbols, Strings, and Numerics are shared as-is (immutable or
+    # legitimately shared globals). Any object that can't be dup'd aborts the
+    # rebuild (nil) — the caller then keeps the old warn-and-nil behavior.
+    def self.rebuild_unfrozen_shareable(val)
+      memo = {}
+      fresh = _rebuild_copy(val, memo, 0)
+      replace_unshareable_procs.call(fresh)
+      replace_locks_and_concurrent_maps.call(fresh)
+      Ractor.make_shareable(fresh)
+      fresh
+    rescue StandardError
+      nil
+    end
+
+    MAX_REBUILD_DEPTH = 12
+
+    # Aborts a _rebuild_copy run. Raised — NOT returned — because `nil` is a
+    # perfectly legitimate VALUE in the graphs we copy (a belongs_to
+    # reflection's @class_name/@klass/@scope are nil until first use), so a
+    # nil sentinel would abort on well-formed data and get silently stored
+    # into Hash copies (observed: `_reflections` rebuilt as
+    # { user: nil, ... } because every reflection has nil ivars).
+    class RebuildAbort < StandardError; end
+
+    # Identity-memoized unfreezing copy. Returns a fresh copy of `val` with
+    # the same structure; cycles and DAGs collapse onto one copy each.
+    # Raises RebuildAbort when the value can't be copied.
+    #
+    # Hash/Array SUBCLASSES (e.g. ActiveSupport::InheritableOptions — the
+    # `config` object ActionController delegates `default_static_extension`
+    # to) are re-instantiated as their own class, NOT collapsed to plain
+    # Hash/Array: their behavior lives in defined methods / method_missing,
+    # which a plain copy would silently drop (workers would then read
+    # config fine in the main process but crash on every delegation in the
+    # worker). If the subclass can't be re-instantiated, abort — the caller
+    # keeps the previous warn-and-nil behavior, and worker reads fall back
+    # to their (proven) recompute path.
+    def self._rebuild_copy(val, memo, depth)
+      raise RebuildAbort if depth > MAX_REBUILD_DEPTH
+      return val if val.is_a?(Module) || val.is_a?(Symbol) ||
+                    val.is_a?(String) || val.is_a?(Numeric) || val.equal?(true) || val.equal?(false) || val.equal?(nil)
+      return memo[val.object_id] if memo.key?(val.object_id)
+      return val if val.is_a?(Proc) # carried as-is; traversal replaces later
+
+      copy =
+        case val
+        when Hash
+          begin
+            val.class.new
+          rescue StandardError
+            raise RebuildAbort
+          end
+        when Array
+          begin
+            val.class.new
+          rescue StandardError
+            raise RebuildAbort
+          end
+        else
+          raise RebuildAbort unless val.respond_to?(:dup)
+          val.dup
+        end
+      memo[val.object_id] = copy
+      copy.default_proc = val.default_proc if copy.is_a?(Hash) && val.default_proc
+      val.instance_variables.each do |ivar|
+        copy.instance_variable_set(ivar, _rebuild_copy(val.instance_variable_get(ivar), memo, depth + 1))
+      end
+      if copy.is_a?(Hash)
+        val.each { |k, v| copy[_rebuild_copy(k, memo, depth + 1)] = _rebuild_copy(v, memo, depth + 1) }
+      elsif copy.is_a?(Array)
+        val.each { |v| copy << _rebuild_copy(v, memo, depth + 1) }
+      end
+      copy
     end
 
     # Return a fresh copy of a mutable default container (Hash/Array) so the

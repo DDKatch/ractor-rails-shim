@@ -547,7 +547,8 @@ module RactorRailsShim
               macro: refl.macro,
             }
           end
-        rescue StandardError
+        rescue StandardError => e
+          warn "ractor-rails-shim: dependent-association capture failed for #{name} (#{e.class}: #{e.message[0, 140]})"
           nil
         end
       end
