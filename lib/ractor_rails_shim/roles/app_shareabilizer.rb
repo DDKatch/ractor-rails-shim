@@ -185,6 +185,7 @@ module RactorRailsShim
       # without this, worker Ractors see a nil primary_key -> `id`/to_param
       # return nil and URL helpers / record inspection break.
       RactorRailsShim._rebuild_activerecord_model_snapshots! if Ractor.main?
+      RactorRailsShim._prewarm_activerecord_memoizations! if Ractor.main?
       warm_attribute_method_patterns.call
       warm_cache_serializer_fallbacks.call
       freeze_declared_callbacks.call

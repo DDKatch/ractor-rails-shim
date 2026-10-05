@@ -604,6 +604,113 @@ module RactorRailsShim
       shareable = Ractor.make_shareable(pk_map)
       _reassign_shareable_const(:AR_PRIMARY_KEYS_SHAREABLE, shareable)
     end
+
+    # Pre-warm lazy CLASS-IVAR memoizations on every AR descendant in the MAIN
+    # Ractor so workers only ever READ them (post-freeze a worker write raises
+    # IsolationError):
+    # - connection_class: `@connection_class ||= false` (core.rb) re-ASSIGNS
+    #   whenever the stored value is false (falsy), so a pre-warmed `false`
+    #   alone is not enough — connection_class is re-defined (string eval) to
+    #   write only when the ivar is UNDEFINED, and the ivar is pre-defined on
+    #   Base + all descendants here. Read on every query via
+    #   current_role -> connection_class? (SolidCache's
+    #   Entry.without_query_cache walks it per model class too).
+    # - @_type_candidates_cache: compute_type's memoized type-name map
+    #   (inheritance.rb) — written on the first reflection klass computation
+    #   (AssociationReflection#compute_class). The cache is PER OWNER CLASS
+    #   and keyed by the REFERENCED class name, so every (owner, name) pair
+    #   is pre-warmed (N^2 over models — bounded, tens of calls). Once a
+    #   frozen instance exists (built in main during boot), a worker adding a
+    #   missing entry raises FrozenError ("can't modify frozen Hash").
+    def _prewarm_activerecord_memoizations!
+      return unless defined?(::ActiveRecord::Base)
+
+      unless @ar_memoization_patches_installed
+        @ar_memoization_patches_installed = true
+
+        # connection_class: `@connection_class ||= false` re-ASSIGNS whenever
+        # the stored value is false (falsy) — on a frozen class in a worker
+        # that is an IsolationError even though the read is harmless. Write
+        # only when the ivar is UNDEFINED instead.
+        base_singleton = class << ::ActiveRecord::Base; self; end
+        base_singleton.class_eval <<~RUBY, __FILE__, __LINE__ + 1
+          remove_method :connection_class
+          def connection_class
+            if instance_variable_defined?(:@connection_class)
+              @connection_class
+            else
+              @connection_class = false
+            end
+          end
+        RUBY
+
+        # compute_type: a worker computing a type whose entry is missing from
+        # the FROZEN @_type_candidates_cache raises FrozenError on the memo
+        # write ("can't modify frozen Hash") — e.g. the first reflection klass
+        # computation for a new association during a destroy cascade. Workers
+        # (frozen classes) resolve through safe_constantize every time without
+        # memoizing; main keeps upstream semantics.
+        inheritance_mod = ::ActiveRecord::Inheritance::ClassMethods
+        inheritance_mod.class_eval <<~RUBY, __FILE__, __LINE__ + 1
+          remove_method :compute_type
+          protected def compute_type(type_name)
+            if type_name.start_with?("::")
+              type_name.constantize
+            else
+              type_candidate = @_type_candidates_cache[type_name]
+              if type_candidate && (type_constant = type_candidate.safe_constantize)
+                return type_constant
+              end
+
+              candidates = []
+              name.scan(/::|$/) { candidates.unshift "\#{$`}::\#{type_name}" }
+              candidates << type_name
+
+              candidates.each do |candidate|
+                constant = candidate.safe_constantize
+                if candidate == constant.to_s
+                  # Memoize only when the cache can accept writes. Worker
+                  # model classes are UNFROZEN clones that share the frozen
+                  # cache Hash built in main — `frozen?` on the class is not
+                  # the right guard, the cache's own frozen state is.
+                  @_type_candidates_cache[type_name] = candidate unless @_type_candidates_cache.frozen?
+                  return constant
+                end
+              end
+
+              raise NameError.new("uninitialized constant \#{candidates.first}", candidates.first)
+            end
+          end
+        RUBY
+      end
+
+      classes = [::ActiveRecord::Base]
+      classes.concat(::ActiveRecord::Base.descendants) rescue nil
+      classes = classes.select { |klass| klass.name }
+
+      # connection_class ivar defined (not just false-assigned) in main.
+      classes.each do |klass|
+        begin
+          klass.connection_class
+        rescue StandardError
+          nil
+        end
+      end
+
+      # Complete the per-owner type caches in main (N^2 over models — bounded,
+      # tens of pairs) so workers hit the frozen cache for every reflection.
+      # send() bypasses the `protected` visibility check (an explicit-receiver
+      # protected call from this module context would raise NoMethodError).
+      classes.each do |owner|
+        classes.each do |referenced|
+          begin
+            owner.send(:compute_type, referenced.name) if owner.respond_to?(:compute_type, true)
+          rescue StandardError, NameError
+            nil
+          end
+        end
+      end
+    end
     #  - Monitor/Mutex  -> NoOpLock (never contended post-boot)
     #  - Concurrent::Map -> frozen Hash
     #  - else           -> Ractor.make_shareable; if that fails (statement

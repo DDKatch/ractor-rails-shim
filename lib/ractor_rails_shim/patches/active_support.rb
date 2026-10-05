@@ -58,6 +58,18 @@ module RactorRailsShim
     "ActiveSupport::NumberHelper::NumberToHumanConverter::DECIMAL_UNITS",
     "ActiveSupport::NumberHelper::NumberToHumanConverter::INVERTED_DECIMAL_UNITS",
     "ActiveSupport::NumberHelper::NumberToHumanSizeConverter::STORAGE_UNITS",
+    # SolidCache (the Rails 8 default cache store): Failsafe rescues
+    # `*TRANSIENT_ACTIVE_RECORD_ERRORS` on every cache call — the Array is
+    # UNFROZEN, so the rescue-clause splat read from a worker Ractor dies
+    # with IsolationError ("can not access non-shareable objects in constant
+    # ... TRANSIENT_ACTIVE_RECORD_ERRORS"). SQL_WILDCARD_CHARS (Api) is
+    # read during every fuzzy key lookup. Both are read-only after
+    # definition — deep-freeze is safe. (Solid Cache ships the store + a
+    # Concurrent::FixedThreadPool; the pool's AtomicReference
+    # Mutex/ConditionVariable internals are handled by the locks
+    # replacement in ShareabilityTraversal.)
+    "SolidCache::Store::Failsafe::TRANSIENT_ACTIVE_RECORD_ERRORS",
+    "SolidCache::Store::Api::SQL_WILDCARD_CHARS",
   ])
 
   class << self

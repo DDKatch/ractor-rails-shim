@@ -407,37 +407,41 @@ module RactorRailsShim
     # cross-concern dispatcher reached via RactorRailsShim._strategy_replacement_for.
     # The extracted traversal calls it through the facade.
 
-    def self.replace_locks_and_concurrent_maps!(app)
-      seen = {}
-      stack = [[app, nil, nil]]
-      until stack.empty?
-        o, _parent, _ivar = stack.pop
-        next if o.equal?(nil)
-        next unless introspectable?(o)
-        next if seen[o.object_id]
-        seen[o.object_id] = true
-        next if o.is_a?(Mutex) || o.is_a?(Monitor)
-        each_ivar_and_child(o) do |child, child_ivar|
-          next if child_ivar == :__default_proc__
-          if child.is_a?(Mutex) || child.is_a?(Monitor)
-            funnel.call("replace lock ivar") do
-              o.instance_variable_set(child_ivar, noop_lock_class.new) if child_ivar
+      def self.replace_locks_and_concurrent_maps!(app)
+        condvar_class = defined?(Thread::ConditionVariable) ? Thread::ConditionVariable : nil
+        lock_like = lambda do |o|
+          o.is_a?(Mutex) || o.is_a?(Monitor) || (condvar_class && o.is_a?(condvar_class))
+        end
+        seen = {}
+        stack = [[app, nil, nil]]
+        until stack.empty?
+          o, _parent, _ivar = stack.pop
+          next if o.equal?(nil)
+          next unless introspectable?(o)
+          next if seen[o.object_id]
+          seen[o.object_id] = true
+          next if lock_like.call(o)
+          each_ivar_and_child(o) do |child, child_ivar|
+            next if child_ivar == :__default_proc__
+            if lock_like.call(child)
+              funnel.call("replace lock ivar") do
+                o.instance_variable_set(child_ivar, noop_lock_class.new) if child_ivar
+              end
+              # If the lock is in an Array/Set/Hash (no ivar), we can't swap
+              # it in place here — leave it; make_shareable will handle the
+              # frozen container. The ivar case is the load-bearing one.
+            elsif defined?(::Concurrent::Map) && child.is_a?(::Concurrent::Map) && child_ivar
+              hash_copy = {}
+              child.each_pair { |k, val| hash_copy[k] = val }
+              funnel.call("replace concurrent map ivar") do
+                o.instance_variable_set(child_ivar, hash_copy)
+              end
+            elsif child
+              stack << [child, o, child_ivar]
             end
-            # If the lock is in an Array/Set/Hash (no ivar), we can't swap
-            # it in place here — leave it; make_shareable will handle the
-            # frozen container. The ivar case is the load-bearing one.
-          elsif defined?(::Concurrent::Map) && child.is_a?(::Concurrent::Map) && child_ivar
-            hash_copy = {}
-            child.each_pair { |k, val| hash_copy[k] = val }
-            funnel.call("replace concurrent map ivar") do
-              o.instance_variable_set(child_ivar, hash_copy)
-            end
-          elsif child
-            stack << [child, o, child_ivar]
           end
         end
       end
-    end
 
     # Force lazy app ivars to populate in the MAIN Ractor before the graph
     # is frozen. Each call rescues nil (the app may not define the method,
