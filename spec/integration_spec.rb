@@ -103,6 +103,14 @@ class IntegrationSpec < Minitest::Spec
     Bundler.require(*Rails.groups)
     Rails.application.initialize!
 
+    # Mirror config_ractor.ru's real boot sequence: prepare_for_ractors! runs
+    # BEFORE make_app_shareable! — it seeds the ActiveStorage prefix/suffix
+    # constants and resets ActiveStorage::Blob's table_name (left as the
+    # eager-load value "blobs" when the prefix is unknown). Without this,
+    # schema loading inside make_app_shareable! fails with
+    # `PG::UndefinedTable: relation "blobs" does not exist`.
+    RactorRailsShim.prepare_for_ractors! if RactorRailsShim.respond_to?(:prepare_for_ractors!)
+
     app = RactorRailsShim.make_app_shareable!(Rails.application)
     assert Ractor.shareable?(app), "app should be shareable after make_app_shareable!"
 
