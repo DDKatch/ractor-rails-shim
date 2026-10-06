@@ -374,6 +374,34 @@ module RactorRailsShim
       RUBY
     end
 
+    # ActiveSupport::CurrentAttributes.current_instances_key lazily memoizes
+    # `@current_instances_key ||= name.to_sym` — a class-ivar WRITE on the
+    # CurrentAttributes subclass. In a worker Ractor the first attribute
+    # access (e.g. Current.request_id via a before_action) raises
+    # IsolationError ("can not set instance variables of classes/modules").
+    # The memo is a pure micro-optimization: re-define the singleton method
+    # as a REAL def with no ivar at all (name.to_sym is deterministic), safe
+    # in main and workers alike.
+    def _install_current_attributes_key_patch
+      return if @current_attributes_key_patched
+      @current_attributes_key_patched = true
+      _register_patch :current_attributes_key, "8.1"
+      return unless defined?(::ActiveSupport::CurrentAttributes)
+
+      ::ActiveSupport::CurrentAttributes.singleton_class.class_eval <<~'RUBY', __FILE__, __LINE__ + 1
+        remove_method :current_instances_key rescue nil
+
+        def current_instances_key
+          n = name
+          n ? n.to_sym : :__anonymous_current_attributes__
+        end
+      RUBY
+    rescue StandardError => e
+      warn "ractor-rails-shim: CurrentAttributes current_instances_key patch failed " \
+           "(#{e.class}: #{e.message[0, 160]})"
+      nil
+    end
+
     # Patch ActiveSupport::LogSubscriber.logger — a raw class ivar with lazy
     # init (@logger ||= Rails.logger) that's WRITTEN at request teardown via
     # flush_all!. Workers can't write class ivars → IsolationError. Route

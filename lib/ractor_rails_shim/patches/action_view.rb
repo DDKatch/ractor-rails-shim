@@ -660,6 +660,62 @@ module RactorRailsShim
       RUBY
     end
 
+    # Same class-ivar lazy memo as Tags::TextField.field_type, but for
+    # Tags::DateSelect.select_type (`@select_type ||= name...` on the class
+    # singleton). A worker rendering `date_select` in a form hits the memo
+    # write on the (frozen) DateSelect class → IsolationError. Route through
+    # the per-Ractor storage; DatetimeSelect/TimeSelect inherit the patched
+    # singleton so they are covered too.
+    def _install_action_view_select_type_patch
+      return if @action_view_select_type_patched
+      @action_view_select_type_patched = true
+      _register_patch :action_view_select_type, "8.1"
+      return unless defined?(::ActionView::Helpers::Tags::DateSelect)
+      ds = ::ActionView::Helpers::Tags::DateSelect
+      ds.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def select_type
+          key = :"ractor_rails_shim_select_type_\#{name}"
+          v = RactorRailsShim.storage[key]
+          return v if v
+          st = name.split("::").last.sub("Select", "").downcase
+          RactorRailsShim.storage[key] = st
+          st
+        end
+      RUBY
+    end
+
+    # DateTimeSelector defines its per-component attribute readers via
+    # `%w( sec min hour day month year ).each { define_method(method) do ... end }`
+    # (date_helper.rb, class body). `define_method` with a block compiles the
+    # body as a Proc in the main Ractor; calling `day` (etc.) from a worker
+    # raises "defined with an un-shareable Proc in a different Ractor" (hit by
+    # every `date_select` / `datetime_select` render, e.g. select_day calling
+    # `build_day_options(day)`). Redefine all six as plain string-eval'd defs
+    # with identical semantics. Render-time-only usage, so a prepare-time
+    # install (post-boot) is safe — no class-body-time calls.
+    def _install_action_view_datetime_selector_patch
+      return if @action_view_datetime_selector_patched
+      @action_view_datetime_selector_patched = true
+      _register_patch :action_view_datetime_selector, "8.1"
+      return unless defined?(::ActionView::Helpers::DateTimeSelector)
+      dts = ::ActionView::Helpers::DateTimeSelector
+      dts.class_eval <<-RUBY, __FILE__, __LINE__ + 1
+        %w( sec min hour day month year ).each do |method|
+          msym = method.to_sym.inspect
+          class_eval(<<~DEF, __FILE__, __LINE__ + 1)
+            def \#{method}
+              case @datetime
+              when Hash then @datetime[\#{msym}]
+              when Numeric then @datetime
+              when nil then nil
+              else @datetime.send(\#{msym})
+              end
+            end
+          DEF
+        end
+      RUBY
+    end
+
     # Patch ActionView::Helpers::OutputSafetyHelper#safe_join. Its default
     # separator parameter is `sep = $,` — a reference to the `$` global, which a
     # worker Ractor cannot read (Ractor::IsolationError: can not access global

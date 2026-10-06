@@ -142,6 +142,58 @@ module RactorRailsShim
       CLASS_ATTRIBUTES << ["Rack::Utils", :multipart_file_limit, mfl_key, nil]
     end
 
+    # Ruby's delegate.rb defines the `special` methods of every
+    # DelegateClass(X) (Tempfile < DelegateClass(File) included) via
+    # `define_method(method, Delegator.delegating_block(method))` — the body
+    # is a lambda compiled in the main Ractor. Calling any of them from a
+    # worker Ractor raises "defined with an un-shareable Proc in a different
+    # Ractor". The bulk delegate methods are string-eval'd (shareable defs),
+    # which is why `Tempfile#write` works from a worker while `Tempfile#<<`
+    # explodes — observed on every multipart/form-data upload
+    # (Rack::Multipart::Parser::Collector#on_mime_body appends to the
+    # Tempfile with `<<`).
+    #
+    # Fix: at prepare time (classes still mutable), detect every method that
+    # was defined from `Delegator.delegating_block`'s lambda — all such
+    # methods share that lambda's exact source_location — and redefine them
+    # as plain string-eval'd defs with identical semantics
+    # (`target.__send__(mid, *args, &block)`). Detection is version-proof: the
+    # marker location is resolved live from delegating_block itself.
+    def _install_delegator_patch
+      return if @delegator_patched
+      @delegator_patched = true
+      _register_patch :delegator, "8.1"
+      return unless defined?(::Delegator) && defined?(::Tempfile)
+
+      marker = ::Delegator.delegating_block(:"__rrs_marker__").source_location
+      return unless marker.is_a?(::Array) && marker.size == 2
+      marker_file = marker[0]
+      marker_line = marker[1]
+
+      require "objspace"
+      ::ObjectSpace.each_object(::Class) do |klass|
+        next unless (sc = klass.superclass) && sc.name.nil?
+        (klass.instance_methods(false) + klass.protected_instance_methods(false) + klass.private_instance_methods(false)).each do |m|
+          mm = (klass.instance_method(m) rescue nil)
+          loc = mm&.source_location
+          next unless loc.is_a?(::Array) && loc.size == 2 &&
+                      loc[0] == marker_file && loc[1] == marker_line
+          begin
+            klass.class_eval(<<~RUBY, __FILE__, __LINE__ + 1)
+              def #{m}(*args, &b)
+                t = self.__getobj__
+                t.__send__(#{m.inspect}, *args, &b)
+              end
+            RUBY
+          rescue StandardError
+            # frozen class or oddball method name — leave the original; the
+            # worker call will fail loudly instead of silently.
+          end
+        end
+      end
+      true
+    end
+
     # Find the Rack::Files (asset) server in the middleware chain, used by
     # make_app_shareable! when replacing the Rack::Head#@app lambda (whose
     # binding receiver is the Rack::Files instance). Moved here from

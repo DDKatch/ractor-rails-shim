@@ -54,6 +54,11 @@ module RactorRailsShim
         # `def`s (shareable) instead of `define_method` blocks. Without this,
         # a worker Ractor raises "defined with an un-shareable Proc".
         RactorRailsShim.__send__(:_install_active_record_store_patch)
+        # Patch http_basic_authenticate_with BEFORE the app's controllers are
+        # eager-loaded, so the guard is registered as a symbol filter + real
+        # def (the upstream block filter is silently no-op'd by proc
+        # replacement in worker Ractors — basic auth was skipped entirely).
+        RactorRailsShim.__send__(:_install_http_basic_auth_patch)
         # Patch CGI::Escape's class-variable default arguments BEFORE anything
         # URL-decodes in a worker (globalid -> URI::GID -> CGI.unescape):
         # @@accept_charset is a class VARIABLE, and Ruby forbids reading class

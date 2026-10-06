@@ -83,6 +83,8 @@ class FrameworkPatchDispatchSpec < Minitest::Spec
     _install_action_view_resolver_patch
     _install_action_view_partial_path_patch
     _install_action_view_field_type_patch
+    _install_action_view_datetime_selector_patch
+    _install_action_view_select_type_patch
     _install_action_view_safe_join_patch
     _install_action_view_sanitize_patch
     _install_actionmailer_mailer_name_patch
@@ -94,6 +96,7 @@ class FrameworkPatchDispatchSpec < Minitest::Spec
     _install_json_renderer_patch
     _install_mail_patch
     _install_csrf_reset_patch
+    _install_http_basic_auth_patch
     _install_controller_logger_patch
     _install_controller_params_wrapper_patch
     _install_active_support_error_reporter_patch
@@ -104,9 +107,11 @@ class FrameworkPatchDispatchSpec < Minitest::Spec
     _install_messages_serializer_patch
     _install_template_handlers_patch
     _install_execution_context_patch
+    _install_current_attributes_key_patch
     _install_request_parameter_parsers_patch
     _install_query_parser_patch
     _install_rack_utils_patch
+    _install_delegator_patch
     _install_log_subscriber_patch
     _install_local_cache_patch
     _install_reloader_patch
@@ -156,7 +161,7 @@ class FrameworkPatchDispatchSpec < Minitest::Spec
     _install_activerecord_query_logs_patch
     _install_activerecord_define_attribute_methods_patch
     _install_activerecord_scope_patch
-    _install_activerecord_autosave_patch
+    _install_ar_association_scope_attrs_patch
     _install_kaminari_config_patch
     _install_kaminari_page_method_patch
     _install_mime_negotiation_worker_patch
