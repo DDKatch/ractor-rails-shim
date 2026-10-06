@@ -37,6 +37,10 @@ class SymbolicTransportSpec < Minitest::Spec
   # itself record an invocation; individual tests override it via a singleton def.
   class FakeContext
     attr_reader :invoked, :klass
+    # Written by replayed validator entries (`run_validator` does
+    # `record.validated_by ||= []`); defined explicitly so the read/write
+    # does not route through method_missing.
+    attr_accessor :validated_by
 
     def initialize(klass)
       @klass = klass
@@ -390,5 +394,140 @@ class SymbolicTransportSpec < Minitest::Spec
     t = RactorRailsShim::Callbacks::SymbolicTransport.new(source: source, kinds: [:save])
     refute t.before(ctx, :save)
     assert_equal [:hook_one, :hook_two], ctx.invoked
+  end
+
+  # --- validator-object entries (row 1: worker-side validate chain) ---
+
+  # A top-level validator stand-in the transport can const_get: stores its
+  # options and records the validated context on the record.
+  ::RrsSpecEachValidator = Class.new do
+    attr_reader :options
+
+    def initialize(options = {})
+      @options = options
+    end
+
+    def validate(record)
+      (record.validated_by ||= []) << self.class.name
+    end
+  end
+
+  it "replays validator-object entries by rebuilding the validator and calling validate" do
+    source = {
+      10 => [{
+        chain_kind: :validate, phase: :before,
+        filter: "RrsSpecEachValidator",
+        validator_attributes: [:body], validator_options: {}.freeze,
+        only: nil, except: nil
+      }]
+    }
+    klass = build_klass_chain([10])
+    ctx = build_context([10], source)
+    t = RactorRailsShim::Callbacks::SymbolicTransport.new(source: source, kinds: [:validate])
+    refute t.before(ctx, :validate), "a validator entry must never halt the chain"
+    assert_equal ["RrsSpecEachValidator"], ctx.validated_by
+    # :before entries do not run in the after phase.
+    t.after(ctx, :validate)
+    assert_equal 1, ctx.validated_by.size
+  end
+
+  it "merges validator_attributes back into the reconstructed validator's options" do
+    source = {
+      10 => [{
+        chain_kind: :validate, phase: :before,
+        filter: "RrsSpecEachValidator",
+        validator_attributes: [:title, :body], validator_options: { minimum: 10 }.freeze,
+        only: nil, except: nil
+      }]
+    }
+    ctx = build_context([10], source)
+    t = RactorRailsShim::Callbacks::SymbolicTransport.new(source: source, kinds: [:validate])
+    t.before(ctx, :validate)
+    assert_equal ["RrsSpecEachValidator"], ctx.validated_by
+  end
+
+  it "ignores the validator's return value (signals via errors, not halt)" do
+    falsy_validator = Class.new do
+      def initialize(options = {}); end
+
+      def validate(record)
+        false # must NOT halt the chain
+      end
+    end
+    Object.const_set(:RrsSpecFalsyValidator, falsy_validator)
+    source = {
+      10 => [{
+        chain_kind: :validate, phase: :before,
+        filter: "RrsSpecFalsyValidator",
+        validator_attributes: nil, validator_options: nil,
+        only: nil, except: nil
+      }]
+    }
+    ctx = build_context([10], source)
+    t = RactorRailsShim::Callbacks::SymbolicTransport.new(source: source, kinds: [:validate])
+    refute t.before(ctx, :validate), "a false .validate return must not halt"
+  ensure
+    Object.send(:remove_const, :RrsSpecFalsyValidator)
+  end
+
+  it "gates validator entries by validation_context (:on)" do
+    source = {
+      10 => [{
+        chain_kind: :validate, phase: :before,
+        filter: "RrsSpecEachValidator",
+        validator_attributes: [:body], validator_options: {}.freeze,
+        only: nil, except: nil, on: [:create].freeze, except_on: nil
+      }]
+    }
+    t = RactorRailsShim::Callbacks::SymbolicTransport.new(source: source, kinds: [:validate])
+
+    create_ctx = build_context([10], source)
+    def create_ctx.validation_context; :create; end
+    t.before(create_ctx, :validate)
+    assert_equal ["RrsSpecEachValidator"], create_ctx.validated_by
+
+    update_ctx = build_context([10], source)
+    def update_ctx.validation_context; :update; end
+    t.before(update_ctx, :validate)
+    assert_nil update_ctx.validated_by
+  end
+
+  it "gates validator entries by validation_context (:except_on)" do
+    source = {
+      10 => [{
+        chain_kind: :validate, phase: :before,
+        filter: "RrsSpecEachValidator",
+        validator_attributes: [:body], validator_options: {}.freeze,
+        only: nil, except: nil, on: nil, except_on: [:destroy].freeze
+      }]
+    }
+    t = RactorRailsShim::Callbacks::SymbolicTransport.new(source: source, kinds: [:validate])
+
+    destroy_ctx = build_context([10], source)
+    def destroy_ctx.validation_context; :destroy; end
+    t.before(destroy_ctx, :validate)
+    assert_nil destroy_ctx.validated_by
+
+    create_ctx = build_context([10], source)
+    def create_ctx.validation_context; :create; end
+    t.before(create_ctx, :validate)
+    assert_equal ["RrsSpecEachValidator"], create_ctx.validated_by
+  end
+
+  it "runs on:-gated symbolic entries only in the matching validation context" do
+    source = {
+      10 => [{ chain_kind: :validate, phase: :before, filter: :custom_check, only: nil, except: nil, on: [:create].freeze, except_on: nil }]
+    }
+    t = RactorRailsShim::Callbacks::SymbolicTransport.new(source: source, kinds: [:validate])
+
+    create_ctx = build_context([10], source)
+    def create_ctx.validation_context; :create; end
+    t.before(create_ctx, :validate)
+    assert_includes create_ctx.invoked, :custom_check
+
+    update_ctx = build_context([10], source)
+    def update_ctx.validation_context; :update; end
+    t.before(update_ctx, :validate)
+    refute_includes update_ctx.invoked, :custom_check
   end
 end

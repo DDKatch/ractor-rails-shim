@@ -750,6 +750,7 @@ module RactorRailsShim
 
       _redefine_engine_railtie_singletons!
       _redefine_ar_autosave_methods!
+      _share_activemodel_validation_constants!
 
       unless @ar_memoization_patches_installed
         @ar_memoization_patches_installed = true
@@ -1359,6 +1360,34 @@ module RactorRailsShim
           end
           ::ActiveModel::Name.new(self, namespace)
         end
+      end
+
+      # Frozen-safe lazy memos on ActiveModel::Name (i18n_keys / i18n_scope).
+      # Error-message generation (Errors#generate_message ->
+      # model_name.human) reads these; the upstream `@i18n_keys ||=` is a
+      # memo WRITE that raises FrozenError on a Name instance frozen by
+      # make_app_shareable! (the Name is reachable from the frozen class
+      # graph via @_model_name). Workers are covered by the per-Ractor
+      # model_name store above (fresh mutable Names); this patch covers MAIN
+      # after the freeze and any other frozen Name. Compute without the memo
+      # write when the memo is unset and the receiver is frozen.
+      nm = ::ActiveModel::Name
+      unless nm.method_defined?(:_rrs_orig_i18n_keys)
+        nm.class_eval <<-RUBY, __FILE__, __LINE__ + 1
+          alias_method :_rrs_orig_i18n_keys, :i18n_keys
+          def i18n_keys
+            return _rrs_orig_i18n_keys if !frozen? || instance_variable_defined?(:@i18n_keys)
+            @klass.respond_to?(:lookup_ancestors) ?
+              @klass.lookup_ancestors.map { |k| k.model_name.i18n_key } : []
+          end
+
+          alias_method :_rrs_orig_i18n_scope, :i18n_scope
+          def i18n_scope
+            return _rrs_orig_i18n_scope if !frozen? || instance_variable_defined?(:@i18n_scope)
+            @klass.respond_to?(:i18n_scope) ? [@klass.i18n_scope, :models] : []
+          end
+          private :i18n_keys, :i18n_scope
+        RUBY
       end
     end
 
@@ -2757,6 +2786,42 @@ module RactorRailsShim
     # workers (observed: Post.create!(comments_attributes:) persisted the
     # post but zero comments, counter_cache stayed 0).
     #
+    # Fix (prepare-time): make the UNFROZEN data constants inside the
+    # ActiveModel::Validations tree Ractor-shareable (deep-freeze them).
+    # Validators read these from worker Ractors — e.g. LengthValidator's
+    # `RESERVED_OPTIONS.each` in validate_each raises
+    # `Ractor::IsolationError: can not access non-shareable objects in
+    # constant …LengthValidator::RESERVED_OPTIONS by non-main` the first
+    # time a length validation runs in a worker. Upstream never mutates
+    # these constants, so freezing is safe. Only Array/Hash/String/Set
+    # constants are touched; classes/modules are natively shareable.
+    # Runs from _prewarm_activerecord_memoizations! (before the graph
+    # freeze — a constant the main graph froze is already shareable; this
+    # covers constants the shim's own traversal does not reach).
+    def _share_activemodel_validation_constants!
+      return unless defined?(::ActiveModel)
+      owners = [::ActiveModel]
+      owners << ::ActiveModel::Validations if defined?(::ActiveModel::Validations)
+      owners << ::ActiveRecord::Validations if defined?(::ActiveRecord::Validations)
+      owners.each do |namespace|
+        (namespace.constants rescue []).each do |c|
+          owner = namespace.const_get(c) rescue next
+          next unless owner.is_a?(::Class) || owner.is_a?(::Module)
+          (owner.constants rescue []).each do |nested|
+          value = owner.const_get(nested) rescue next
+          next if Ractor.shareable?(value)
+          next unless value.is_a?(::Array) || value.is_a?(::Hash) ||
+                      value.is_a?(::String) || value.is_a?(::Set)
+          begin
+            Ractor.make_shareable(value)
+          rescue StandardError, Ractor::Error
+            nil
+          end
+        end
+      end
+      end
+    end
+
     # Fix (prepare-time, like _redefine_engine_railtie_singletons!): walk
     # every AR model's associations and re-define both method families as
     # REAL `def`s whose body looks the reflection up from the class itself

@@ -13,10 +13,19 @@ require "set"
 # to both controllers and ActiveRecord models.
 #
 # Source shape (frozen into SHAREABLE_DECLARED_CALLBACKS by CallbackCapture):
-#   { class_object_id => [ {chain_kind:, phase:, filter:, only:, except:}, … ] }
+#   { class_object_id => [ {chain_kind:, phase:, filter:, only:, except:,
+#                           if_cond:, unless_cond:, on:, except_on:,
+#                           validator_attributes:, validator_options:}, … ] }
 # where `chain_kind` is the ActiveSupport::Callbacks chain name (e.g. :save),
 # `phase` is :before / :after, and `only`/`except` are nil or frozen Arrays of
-# action-name Symbols. All values are natively shareable.
+# action-name Symbols. Two filter shapes are replayed:
+#   - filter: Symbol — a shareable method name, `send`-ed on the context.
+#   - filter: String — a validator CLASS NAME (recorded by
+#     CallbackCapture.record_declared_validator_callback); a fresh validator
+#     is rebuilt from validator_attributes/validator_options and
+#     .validate(record) is called. This is what makes worker-side `valid?`
+#     run real validations.
+# All values are natively shareable.
 #
 # The transport is duck-typed around `context`:
 #   - context.class.ancestors -> Enumerable of class-like objects with object_id
@@ -33,14 +42,15 @@ module RactorRailsShim
     class SymbolicTransport
       # The callback chain kinds this transport owns by default. Controllers
       # use `:process_action`; models use :save/:create/:update/:destroy and
-      # their sub-kinds (:validation, :commit, :rollback). Filter methods defined
+      # their sub-kinds (:validate — the ActiveModel validations chain —
+      # :validation, :commit, :rollback). Filter methods defined
       # via `define_method(&block)` with an un-shareable Proc (e.g. AR's autosave
       # association callbacks) are rescued and skipped so app `def` callbacks
       # still run.
       DEFAULT_KINDS = [
         :process_action,
         :save, :create, :update, :destroy,
-        :validation, :commit, :rollback
+        :validate, :validation, :commit, :rollback
       ].freeze
 
       # source: a Hash { class_object_id => [entry, …] } as described above, OR a
@@ -93,7 +103,8 @@ module RactorRailsShim
         halted = false
         each_applicable_filter(context, kind, :before) do |entry|
           next unless condition_allows?(context, entry)
-          result = context.send(entry[:filter]) if context.respond_to?(entry[:filter], true)
+          next unless validation_context_allows?(context, entry)
+          result = invoke_filter(context, entry)
           if result == false || (context.respond_to?(:performed?) && context.performed?)
             halted = true
             break
@@ -109,7 +120,8 @@ module RactorRailsShim
       def after(context, kind)
         each_applicable_filter(context, kind, :after) do |entry|
           next unless condition_allows?(context, entry)
-          context.send(entry[:filter]) if context.respond_to?(entry[:filter], true)
+          next unless validation_context_allows?(context, entry)
+          invoke_filter(context, entry)
         rescue RuntimeError => e
           raise e unless unshareable_proc_error?(e)
         end
@@ -178,6 +190,65 @@ module RactorRailsShim
         in_only = only.nil? || (action && only.include?(action))
         not_except = except.nil? || !(action && except.include?(action))
         in_only && not_except
+      end
+
+      # Invoke one captured entry against the context. Two entry shapes:
+      #   - Symbolic: entry[:filter] is a method-name Symbol — `send` it on
+      #     the context (guarded by respond_to?).
+      #   - Validator: entry[:filter] is the validator CLASS NAME (String)
+      #     recorded by CallbackCapture.record_declared_validator_callback —
+      #     rebuild a fresh validator from the shareable descriptor and call
+      #     .validate(record). The validator signals via record.errors (its
+      #     return value is ignored — Rails halts the validate chain on
+      #     errors, not on filter return values).
+      def invoke_filter(context, entry)
+        if entry[:filter].is_a?(::String)
+          run_validator(context, entry)
+        elsif context.respond_to?(entry[:filter], true)
+          context.send(entry[:filter])
+        end
+      end
+
+      # Rebuild a validator from its shareable descriptor and run it against
+      # the context (the record). Reconstruction mirrors
+      # EachValidator#initialize: :attributes is merged back into a dup of
+      # the captured options (EachValidator deletes :attributes on init and
+      # requires it to be present; plain Validators have no #attributes — the
+      # descriptor records nil for them and no merge happens). A fresh
+      # instance per invocation: validators are stateless w.r.t. the record,
+      # construction is cheap, and per-Ractor memoization would add a cache
+      # for no measurable gain.
+      def run_validator(context, entry)
+        validator_class = ::Object.const_get(entry[:filter])
+        opts = entry[:validator_options]
+        opts = opts.dup if opts
+        if entry[:validator_attributes] && !entry[:validator_attributes].empty?
+          (opts ||= {})[:attributes] = entry[:validator_attributes]
+        end
+        validator_class.new(opts || {}).validate(context)
+        nil
+      end
+
+      # Gate `on:` / `except_on:` callbacks by the context's
+      # `validation_context` (Rails compiles `on: :create` into an
+      # unshareable Proc if:, so the capture records the context Symbols and
+      # the transport applies them here). Only meaningful on the
+      # :validate/:validation chains, where `valid?(context)` sets the
+      # context on the record before the chain runs.
+      def validation_context_allows?(context, entry)
+        on = entry[:on]
+        except_on = entry[:except_on]
+        return true if on.nil? && except_on.nil?
+        return false unless context.respond_to?(:validation_context)
+        ctx = context.validation_context
+        ctx_arr = ctx.is_a?(Array) ? ctx : Array(ctx)
+        in_on = on.nil? || Array(on).any? { |c| ctx_arr.include?(c) }
+        not_except = except_on.nil? || !Array(except_on).any? { |c| ctx_arr.include?(c) }
+        in_on && not_except
+      rescue StandardError
+        # If the context read raises, skip the callback (safer than running
+        # it unconditionally).
+        false
       end
 
       # Check Symbol if:/unless: conditions on the callback entry against the

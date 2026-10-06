@@ -403,4 +403,140 @@ class CallbackCaptureSpec < Minitest::Spec
   ensure
     RactorRailsShim::CallbackCapture.reset_configuration
   end
+
+  # --- decode_callback_conditions / normalize_context_keys (row 1) ---
+
+  it "decode_callback_conditions passes Symbol if:/unless: through" do
+    result = RactorRailsShim::CallbackCapture.decode_callback_conditions({ if: :paid?, unless: :frozen_guard })
+    assert_equal [:paid?, :frozen_guard, nil, nil, true], result
+  end
+
+  it "decode_callback_conditions captures on:/except_on: as shareable context keys" do
+    result = RactorRailsShim::CallbackCapture.decode_callback_conditions({ if: [->(m) { true }], on: :create })
+    assert_equal [nil, nil, :create, nil, true], result
+
+    result2 = RactorRailsShim::CallbackCapture.decode_callback_conditions({ on: %i[create update], except_on: :destroy })
+    assert_equal [nil, nil, %i[create update], :destroy, true], result2
+    assert Ractor.shareable?(result2[2])
+    assert Ractor.shareable?(result2[3])
+  end
+
+  it "decode_callback_conditions flags an unresolvable user Proc (all_resolvable false)" do
+    result = RactorRailsShim::CallbackCapture.decode_callback_conditions({ if: ->(m) { true } })
+    assert_equal [nil, nil, nil, nil, false], result
+
+    result2 = RactorRailsShim::CallbackCapture.decode_callback_conditions({ if: [->(m) { true }] })
+    assert_equal [nil, nil, nil, nil, false], result2
+
+    result3 = RactorRailsShim::CallbackCapture.decode_callback_conditions({ unless: ->(m) { true } })
+    assert_equal [nil, nil, nil, nil, false], result3
+  end
+
+  it "decode_callback_conditions treats non-Proc constraint objects as resolvable (only:/except: ActionFilters)" do
+    fake_filter = Object.new # ActionFilter stand-in: neither Symbol nor Proc
+    result = RactorRailsShim::CallbackCapture.decode_callback_conditions({ if: [fake_filter] })
+    assert_equal [nil, nil, nil, nil, true], result
+  end
+
+  it "decode_callback_conditions returns all nils for a non-Hash opts" do
+    assert_equal [nil, nil, nil, nil, true], RactorRailsShim::CallbackCapture.decode_callback_conditions(nil)
+    assert_equal [nil, nil, nil, nil, true], RactorRailsShim::CallbackCapture.decode_callback_conditions("not a hash")
+  end
+
+  it "normalize_context_keys normalizes Symbols and Symbol Arrays, nils otherwise" do
+    assert_equal :create, RactorRailsShim::CallbackCapture.normalize_context_keys(:create)
+    assert_equal %i[create update], RactorRailsShim::CallbackCapture.normalize_context_keys(%i[create update])
+    assert_nil RactorRailsShim::CallbackCapture.normalize_context_keys(["create"])
+    assert_nil RactorRailsShim::CallbackCapture.normalize_context_keys(42)
+  end
+
+  # --- build_validator_descriptor / record_declared_validator_callback ---
+
+  RrsSpecDescriptorValidator = Class.new do
+    attr_reader :options
+
+    def initialize
+      @options = { minimum: 10, if: :allow_short? }
+    end
+
+    def attributes
+      [:body]
+    end
+
+    def self.name
+      "RrsSpecDescriptorValidator"
+    end
+  end
+
+  it "build_validator_descriptor builds a frozen shareable descriptor" do
+    descriptor = RactorRailsShim::CallbackCapture.build_validator_descriptor(RrsSpecDescriptorValidator.new)
+    refute_nil descriptor
+    assert_equal "RrsSpecDescriptorValidator", descriptor[:validator]
+    assert_equal [:body], descriptor[:attributes]
+    assert_equal({ minimum: 10, if: :allow_short? }, descriptor[:options])
+    assert descriptor.frozen?
+    assert Ractor.shareable?(descriptor)
+  end
+
+  it "build_validator_descriptor returns nil for an unshareable validator (proc options)" do
+    proc_validator = Class.new(RrsSpecDescriptorValidator) do
+      def initialize
+        @options = { minimum: 10, if: ->(m) { true } } # unshareable Proc
+      end
+
+      def self.name
+        "RrsSpecProcValidator"
+      end
+    end
+    capture_stderr do
+      assert_nil RactorRailsShim::CallbackCapture.build_validator_descriptor(proc_validator.new)
+    end
+  end
+
+  it "build_validator_descriptor merges the declaring class into options when given" do
+    declaring = Class.new
+    def declaring.name
+      "RrsSpecDeclaringModel"
+    end
+    descriptor = RactorRailsShim::CallbackCapture.build_validator_descriptor(RrsSpecDescriptorValidator.new, declaring)
+    assert descriptor[:options][:class].equal?(declaring), "the declaring class must be carried by reference"
+    assert Ractor.shareable?(descriptor)
+  end
+
+  it "record_declared_validator_callback records a validator entry in the table" do
+    RactorRailsShim::CallbackCapture.reset_declared_callbacks!
+    descriptor = RactorRailsShim::CallbackCapture.build_validator_descriptor(RrsSpecDescriptorValidator.new)
+    RactorRailsShim::CallbackCapture.record_declared_validator_callback(
+      98765, :validate, :before, descriptor, nil, nil, :create, nil)
+    table = RactorRailsShim::CallbackCapture.instance_variable_get(:@declared_callbacks)
+    entry = table[98765].last
+    assert_equal :validate, entry[:chain_kind]
+    assert_equal :before, entry[:phase]
+    assert_equal "RrsSpecDescriptorValidator", entry[:filter]
+    assert_equal [:body], entry[:validator_attributes]
+    assert_equal({ minimum: 10, if: :allow_short? }, entry[:validator_options])
+    assert_equal :create, entry[:on]
+    assert_nil entry[:only]
+  ensure
+    RactorRailsShim::CallbackCapture.reset_declared_callbacks!
+  end
+
+  it "freeze_declared_callbacks! freezes a table containing validator entries (shareable)" do
+    RactorRailsShim::CallbackCapture.reset_declared_callbacks!
+    descriptor = RactorRailsShim::CallbackCapture.build_validator_descriptor(RrsSpecDescriptorValidator.new)
+    RactorRailsShim::CallbackCapture.record_declared_validator_callback(
+      4321, :validate, :before, descriptor, :allow_short?, nil, nil, nil)
+    RactorRailsShim::CallbackCapture.record_declared_callback(4321, :save, :before, :normalize_title, nil, nil)
+    RactorRailsShim::CallbackCapture.freeze_declared_callbacks!
+    table = RactorRailsShim::SHAREABLE_DECLARED_CALLBACKS
+    assert Ractor.shareable?(table)
+    entries = table[4321]
+    validator_entry = entries.find { |e| e[:filter] == "RrsSpecDescriptorValidator" }
+    refute_nil validator_entry
+    assert_equal :allow_short?, validator_entry[:if_cond]
+    symbol_entry = entries.find { |e| e[:filter] == :normalize_title }
+    refute_nil symbol_entry
+  ensure
+    RactorRailsShim::CallbackCapture.reset_declared_callbacks!
+  end
 end
