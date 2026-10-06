@@ -46,6 +46,38 @@ module RactorRailsShim
       def call(*_); @value; end
     end
 
+    # Shareable stand-in for the enum type-decoration Proc that
+    # ActiveRecord::Enum#enum queues via `decorate_attributes` (a closure
+    # over `name`, `enum_values`, `validate` — and Ruby refuses
+    # Ractor.make_shareable on it because `validate` may be reassigned in
+    # `enum`). Mirrors the upstream closure exactly: builds a FRESH
+    # ActiveRecord::Enum::EnumType per invocation (called during
+    # apply_pending_attribute_modifications, i.e. at most once per Ractor
+    # per attribute during the lazy attribute-set rebuild), unwrapping an
+    # existing EnumType like upstream so re-decoration is idempotent.
+    # All constructor inputs (enum name, frozen labels/values hash, validate
+    # flag) are shareable, so instances freeze+share cleanly.
+    class EnumTypeDecorator
+      def initialize(enum_name, enum_values, validate)
+        @enum_name = enum_name
+        @enum_values = enum_values
+        @validate = validate
+      end
+
+      def call(_attribute_name, subtype)
+        if subtype == ::ActiveModel::Type.default_value
+          raise ::ArgumentError,
+                "Undeclared attribute type for enum '#{@enum_name}'. Enums must be " \
+                "backed by a database column or declared with an explicit type " \
+                "via `attribute`."
+        end
+        subtype = subtype.subtype if ::ActiveRecord::Enum::EnumType === subtype
+        ::ActiveRecord::Enum::EnumType.new(
+          @enum_name, @enum_values, subtype, raise_on_invalid_values: !@validate
+        )
+      end
+    end
+
     # Shareable snapshot of a Devise::Mapping. The real Mapping holds an
     # unshareable lambda (failure_app) plus a default-proc Hash (controllers),
     # so it can't be Ractor.make_shareable'd. Request-time code only reads a

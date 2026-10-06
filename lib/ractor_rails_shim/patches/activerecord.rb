@@ -625,6 +625,19 @@ module RactorRailsShim
       classes = [::ActiveRecord::Base]
       classes.concat(::ActiveRecord::Base.descendants) rescue nil
 
+      # The pending-mod lists must be shareable BEFORE this capture: the
+      # enum/attribute-macro decoration Procs inside the pending Structs are
+      # invisible to the ivar-walk Proc replacement (Struct members are not
+      # ivars) and Ruby refuses make_shareable on the enum decoration closure
+      # ("outer variable 'validate' may be reassigned" in
+      # ActiveRecord::Enum#enum). _share_ar_pending_attribute_modifications!
+      # rebuilds the lists as shareable Structs first; without it the
+      # make_shareable below raised IsolationError and the model was dropped
+      # from the capture — workers fell back to [] and lost the attribute
+      # type registration (observed: `p.state` cast to raw 0 and
+      # `state = :moderated` to nil in workers for enum columns).
+      _share_ar_pending_attribute_modifications! if Ractor.main?
+
       # pending attribute modifications (custom attribute macros)
       capture = {}
       classes.each do |klass|
@@ -750,7 +763,9 @@ module RactorRailsShim
 
       _redefine_engine_railtie_singletons!
       _redefine_ar_autosave_methods!
+      _redefine_ar_enum_methods!
       _share_activemodel_validation_constants!
+      _share_ar_pending_attribute_modifications!
 
       unless @ar_memoization_patches_installed
         @ar_memoization_patches_installed = true
@@ -2917,6 +2932,246 @@ module RactorRailsShim
       src = (klass.instance_method(method_name).source_location rescue nil)
       srcs = src.is_a?(Array) ? src : [src].compact
       srcs.any? { |s| s.is_a?(String) && s.end_with?("autosave_association.rb") }
+    end
+
+    # Fix (prepare-time, like _redefine_ar_autosave_methods!): ActiveRecord
+    # enums generate their predicate/bang methods (`moderated?`, `moderated!`)
+    # via `define_method` with Procs compiled inside `_enum_methods_module` —
+    # a Module whose method-table Procs the shim's proc-replacement traversal
+    # cannot reach (it walks ivars, not included modules' method tables).
+    # Workers calling those methods raise "defined with an un-shareable Proc
+    # in a different Ractor" (observed: every enum bang/predicate in a
+    # worker Ractor). The class-level `#{name.pluralize}` values reader
+    # (e.g. `Post.states`) and the per-value scopes (`Post.moderated`,
+    # `Post.not_moderated`) have the same problem (scope bodies are Procs
+    # capturing `name`/`value` locals; workers replay them with a lost
+    # binding and die on `NameError: undefined local variable or method
+    # 'value'`).
+    #
+    # Re-define all four families as REAL `def`s (string-eval'd, mirroring
+    # the engine-singleton pattern): predicates read the attribute via the
+    # generated `#{name}_for_database` reader and compare against the baked
+    # value; bangs write through `update!`; scopes build plain
+    # `all.where(...)` relations; the pluralized values reader returns the
+    # frozen `defined_enums` hash, const-backed so the def needs no class
+    # attribute read. Overriding is safe: Rails' `detect_enum_conflict!`
+    # raises at `enum` declaration time when a user method already occupies
+    # any of these names, so every method we replace belongs to the enum.
+    # Runs AFTER eager load from _prewarm_activerecord_memoizations! (before
+    # the graph freeze, so class_eval still works and workers clone the
+    # re-defined method table).
+    def _redefine_ar_enum_methods!
+      return unless defined?(::ActiveRecord::Base) && ::ActiveRecord::Base.method_defined?(:update!)
+      return if @ar_enum_methods_redefined
+      @ar_enum_methods_redefined = true
+      _register_patch :ar_enum_methods, "8.1"
+
+      classes = ((::ActiveRecord::Base.descendants rescue []) + [::ActiveRecord::Base]).compact
+      classes.each do |klass|
+        next unless klass.name
+        begin
+          enums = (klass.defined_enums rescue nil)
+          next unless enums.is_a?(::Hash) && !enums.empty?
+          enum_mod = (klass.send(:_enum_methods_module) rescue nil)
+          next unless enum_mod.is_a?(::Module)
+
+          # Predicate + bang methods: enumerate the enum methods module and
+          # map each `?`/`!` method back to its (attribute, value) pair by
+          # matching the stripped base name against the declared labels.
+          # Prefix/suffix/alias value-method variants (non-Word labels)
+          # cannot be mapped reliably here and are left as-is (documented
+          # residual: such variants stay worker-unavailable).
+          enum_mod.instance_methods(false).each do |mname|
+            base = mname.to_s
+            if base.end_with?("?")
+              kind = :predicate
+              base = base[0..-2]
+            elsif base.end_with?("!")
+              kind = :bang
+              base = base[0..-2]
+            else
+              next
+            end
+            found = nil
+            enums.each do |enum_name, values|
+              if values.key?(base)
+                found = [enum_name, values[base]]
+                break
+              end
+            end
+            next unless found
+            enum_name, value = found
+            case kind
+            when :predicate
+              klass.class_eval(<<~RUBY, __FILE__, __LINE__ + 1)
+                def #{mname}
+                  public_send(:#{enum_name}_for_database) == #{value.inspect}
+                end
+              RUBY
+            when :bang
+              klass.class_eval(<<~RUBY, __FILE__, __LINE__ + 1)
+                def #{mname}
+                  update!(#{enum_name.inspect} => #{value.inspect})
+                end
+              RUBY
+            end
+          end
+
+          # Scopes + the pluralized values reader: enum scopes are named
+          # exactly after the value labels (positive) and `not_#{label}`
+          # (negative, when `scopes:` is enabled — the default). The values
+          # reader is `#{enum_name}.pluralize`.
+          enums.each do |enum_name, values|
+            values.each_key do |label|
+              label = label.to_s
+              {"" => "where", "not_" => "where.not"}.each do |pre, query|
+                sname = "#{pre}#{label}"
+                next unless klass.respond_to?(sname, true)
+                klass.singleton_class.class_eval(<<~RUBY, __FILE__, __LINE__ + 1)
+                  def #{sname}
+                    all.#{query}(#{enum_name.inspect} => #{values[label].inspect})
+                  end
+                RUBY
+              end
+            end
+            plural = enum_name.to_s.pluralize
+            if klass.respond_to?(plural, true)
+              const_name = :"RRS_ENUM_VALUES_#{enum_name.to_s.upcase}"
+              klass.const_set(const_name, values) unless klass.const_defined?(const_name, false)
+              klass.singleton_class.class_eval(<<~RUBY, __FILE__, __LINE__ + 1)
+                def #{plural}
+                  #{klass.name}::#{const_name}
+                end
+              RUBY
+            end
+          end
+        rescue StandardError => e
+          warn "ractor-rails-shim: enum method redefinition failed for #{klass.name} " \
+               "(#{e.class}: #{e.message[0, 160]})"
+        end
+      end
+      nil
+    end
+
+    # Fix (prepare-time): ActiveModel::AttributeRegistration queues attribute
+    # work as PendingType/PendingDefault/PendingDecorator Structs in the
+    # class ivar `@pending_attribute_modifications`. Enum declarations add a
+    # PendingDecorator whose `decorator` member is a Proc compiled inside
+    # `ActiveRecord::Enum#enum` (it builds the EnumType from captured
+    # locals). Struct members are NOT instance variables, so the shim's
+    # proc-replacement traversal never reaches the Proc — the pending
+    # Array ends up frozen-but-unshareable, every worker read falls back to
+    # empty, and the worker-side attribute rebuild applies ONLY the
+    # schema-column decorators. Result in workers: the enum attribute type
+    # registration is lost (`p.state` casts to raw 0 instead of "draft",
+    # `p.state = :moderated` casts to nil — silent data corruption).
+    #
+    # Make every Proc member of every pending Struct shareable in place
+    # (self is the model class — shareable — and the captured locals are the
+    # enum name/labels hash/flags, all shareable); undecoratable Procs get a
+    # no-op (the decoration is then skipped, preserving the type as-is).
+    # Then freeze the Array. Workers clone the shareable pending list and
+    # rebuild `@default_attributes` / `@attribute_types` locally, replaying
+    # the EnumType registration themselves (a fresh EnumType is constructed
+    # per Ractor from the frozen decorator closure — safe and correct).
+    # Runs AFTER eager load from _prewarm_activerecord_memoizations! (before
+    # the graph freeze).
+    def _share_ar_pending_attribute_modifications!
+      return unless defined?(::ActiveRecord::Base)
+      return if @ar_pending_attribute_modifications_shared
+      @ar_pending_attribute_modifications_shared = true
+      _register_patch :ar_pending_attribute_modifications, "8.1"
+
+      noop_builder = nil
+      classes = ((::ActiveRecord::Base.descendants rescue []) + [::ActiveRecord::Base]).compact
+      classes.each do |klass|
+        next unless klass.name
+        begin
+          pending = klass.instance_variable_get(:@pending_attribute_modifications)
+          next unless pending.is_a?(::Array)
+
+          # NOTE: an earlier prepare pass (_share_model_classes! walks class
+          # ivars and calls Ractor.make_shareable on them) can PARTIALLY
+          # FREEZE the pending entries — a failed make_shareable freezes
+          # everything it traversed before failing, and the Struct members
+          # it failed on (unshareable Procs invisible to the ivar walk) stay
+          # frozen-unshareable. Frozen Struct members cannot be written, so
+          # entries that did not come out shareable are REBUILT as fresh
+          # Struct instances (same class, same members, Procs made shareable
+          # or swapped for no-ops) and the Array is replaced wholesale while
+          # the class itself is still mutable.
+          rebuilt = false
+          new_pending = pending.map do |entry|
+            next entry if Ractor.shareable?(entry) rescue entry
+            if entry.is_a?(::Struct)
+              vals = entry.members.map do |mem|
+                val = (entry[mem] rescue next nil)
+                next val if val.nil? || Ractor.shareable?(val)
+                next val unless val.is_a?(::Proc)
+                begin
+                  Ractor.make_shareable(val)
+                rescue StandardError, Ractor::Error
+                  # Ruby refuses make_shareable on the enum decoration Proc
+                  # ("the outer variable 'validate' may be reassigned" in
+                  # ActiveRecord::Enum#enum). Reconstruct the decoration as a
+                  # shareable callable: read the closure's captured locals
+                  # via Proc#binding (main Ractor, pre-freeze) and bake them
+                  # into RactorRailsShim::EnumTypeDecorator, which rebuilds a
+                  # fresh EnumType per apply.
+                  replacement = nil
+                  loc = (val.source_location rescue nil)
+                  srcs = loc.is_a?(::Array) ? loc : [loc]
+                  if srcs.any? { |s| s.is_a?(::String) && s.end_with?("enum.rb") } && defined?(::ActiveRecord::Enum::EnumType)
+                    begin
+                      bnd = val.binding
+                      enum_name = bnd.local_variable_get(:name)
+                      enum_values = bnd.local_variable_get(:enum_values)
+                      validate = bnd.local_variable_get(:validate)
+                      replacement = RactorRailsShim.singleton_class.const_get(:EnumTypeDecorator)
+                                           .new(enum_name, enum_values, validate)
+                      Ractor.make_shareable(replacement)
+                    rescue StandardError, Ractor::Error
+                      replacement = nil
+                    end
+                  end
+                  replacement ||
+                    begin
+                      # Undecorable Proc (binding self or locals unshareable):
+                      # swap a no-op in so the Struct stays shareable.
+                      # PendingDecorator#apply_to ignores a nil return, so the
+                      # attribute keeps its prior type.
+                      noop_builder ||= RactorRailsShim.singleton_class.const_get(:NoOpProc)
+                      noop_builder.new
+                    end
+                end
+              end
+              e2 = entry.class.new(*vals)
+              begin
+                Ractor.make_shareable(e2)
+              rescue StandardError, Ractor::Error
+                nil
+              end
+              rebuilt = true
+              e2
+            else
+              entry
+            end
+          end
+          if rebuilt
+            klass.instance_variable_set(:@pending_attribute_modifications, new_pending)
+            pending = new_pending
+          end
+          begin
+            Ractor.make_shareable(pending)
+          rescue StandardError, Ractor::Error
+            nil
+          end
+        rescue StandardError => e
+          warn "ractor-rails-shim: pending attribute modification sharing failed for " \
+               "#{klass.name} (#{e.class}: #{e.message[0, 160]})"
+        end
+      end
+      nil
     end
 
     # Association scopes (`has_one :x, -> { where(name: name) }, ...`) are
