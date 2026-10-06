@@ -623,8 +623,81 @@ module RactorRailsShim
     #   is pre-warmed (N^2 over models — bounded, tens of calls). Once a
     #   frozen instance exists (built in main during boot), a worker adding a
     #   missing entry raises FrozenError ("can't modify frozen Hash").
+    # Rails::Engine#isolate_namespace installs Proc-backed singleton methods on
+    # the engine's NAMESPACE module (SolidCable, ActionText, SolidQueue, ...):
+    #
+    #   define_method(:railtie_namespace) { railtie }                  # captures the engine class
+    #   define_method(:table_name_prefix) { "#{name}_" }               # + an on_load redefine variant
+    #
+    # define_method bodies are Procs. A worker calling them raises
+    # "defined with an un-shareable Proc in a different Ractor" — observed for
+    # lazily-loaded engine models (SolidCable::Message via /cable_probe):
+    # table_name -> compute_table_name -> full_table_name_prefix ->
+    # SolidCable.table_name_prefix -> Proc from main -> RuntimeError, and the
+    # model's table name then computes WRONG ("messages" instead of
+    # "solid_cable_messages"). Engine-namespaced models are therefore unusable
+    # from a worker unless they were loaded (and prewarmed) in main before
+    # spawn.
+    #
+    # Fix: re-define both singletons as REAL def methods (no Proc) with the
+    # engine name baked in as a literal. Only the Engine-defined methods are
+    # replaced (detected via source_location) — an app's explicit
+    # table_name_prefix definition wins, exactly as `isolate_namespace`
+    # respects it with its `unless mod.respond_to?` guard. Idempotent.
+    def _redefine_engine_railtie_singletons!
+      return unless defined?(::Rails::Engine)
+      return unless Ractor.main?
+
+      ::Rails::Engine.subclasses.each do |engine_class|
+        next unless engine_class.isolated?
+        mod = (engine_class.railtie_namespace rescue nil) || engine_class.module_parent
+        next unless mod.is_a?(Module)
+        sc = mod.singleton_class
+
+        # table_name_prefix — only the Engine definition (railties engine.rb).
+        if sc.method_defined?(:table_name_prefix) || sc.private_method_defined?(:table_name_prefix)
+          src = (sc.instance_method(:table_name_prefix).source_location rescue nil)
+          # Ruby 4 source_location returns an Array of locations.
+          srcs = src.is_a?(Array) ? src : [src]
+          if srcs.any? { |s| s.is_a?(String) && s.end_with?("lib/rails/engine.rb") }
+            prefix = "#{mod.name.underscore}_"
+            sc.class_eval <<~RUBY, __FILE__, __LINE__ + 1
+              remove_method :table_name_prefix
+              def table_name_prefix
+                base = ::ActiveRecord::Base.table_name_prefix rescue ""
+                base + "#{prefix}"
+              end
+            RUBY
+          end
+        end
+
+        # railtie_namespace — same Proc problem, same source.
+        if sc.method_defined?(:railtie_namespace)
+          src = (sc.instance_method(:railtie_namespace).source_location rescue nil)
+          srcs = src.is_a?(Array) ? src : [src]
+          if srcs.any? { |s| s.is_a?(String) && s.end_with?("lib/rails/engine.rb") }
+            engine_class_name = engine_class.name
+            sc.class_eval <<~RUBY, __FILE__, __LINE__ + 1
+              remove_method :railtie_namespace
+              def railtie_namespace
+                ::#{engine_class_name}
+              end
+            RUBY
+          end
+        end
+      end
+    rescue StandardError => e
+      # Best-effort: without the redefinition, engine-namespaced models that
+      # were NOT prewarmed in main still fail in workers (as before).
+      warn "ractor-rails-shim: engine railtie singleton redefinition failed " \
+           "(#{e.class}: #{e.message[0, 200]})"
+      nil
+    end
+
     def _prewarm_activerecord_memoizations!
       return unless defined?(::ActiveRecord::Base)
+
+      _redefine_engine_railtie_singletons!
 
       unless @ar_memoization_patches_installed
         @ar_memoization_patches_installed = true
@@ -1039,6 +1112,14 @@ module RactorRailsShim
             i += 1
           end
           table_name_prefix || ""
+        rescue StandardError => e
+          # A prefix read can still fail in a worker (an unpatched Proc-backed
+          # reader). Returning "" silently produced WRONG table names
+          # ("messages" instead of "solid_cable_messages" — observed for
+          # lazily-loaded engine models), so surface the cause loudly.
+          warn "ractor-rails-shim: full_table_name_prefix failed for #{name} " \
+               "(#{e.class}: #{e.message[0, 200]}) — falling back to \"\""
+          ""
         end
 
         def full_table_name_suffix
@@ -1050,6 +1131,10 @@ module RactorRailsShim
             i += 1
           end
           table_name_suffix || ""
+        rescue StandardError => e
+          warn "ractor-rails-shim: full_table_name_suffix failed for #{name} " \
+               "(#{e.class}: #{e.message[0, 200]}) — falling back to \"\""
+          ""
         end
       end
 

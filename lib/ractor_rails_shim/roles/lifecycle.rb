@@ -36,6 +36,8 @@ module RactorRailsShim
       PreSpawnSteps.freeze_shareable_class_ivars
       PreSpawnSteps.install_framework_patches
       RactorRailsShim.__send__(:_seed_active_storage_prefix!) if RactorRailsShim.respond_to?(:_seed_active_storage_prefix!, true)
+      RactorRailsShim.__send__(:_install_action_cable_worker_server_patch!) if RactorRailsShim.respond_to?(:_install_action_cable_worker_server_patch!, true)
+      RactorRailsShim.__send__(:_install_solid_cable_configuration_patch!) if RactorRailsShim.respond_to?(:_install_solid_cable_configuration_patch!, true)
       RactorRailsShim.__send__(:_freeze_secure_random_alphabets!) if RactorRailsShim.respond_to?(:_freeze_secure_random_alphabets!, true)
       RactorRailsShim.snapshot_gem_paths!
       RactorRailsShim.snapshot_query_logs!
