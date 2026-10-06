@@ -430,10 +430,51 @@ module RactorRailsShim
 
       classes = [::ActiveRecord::Base]
       classes.concat(::ActiveRecord::Base.descendants) rescue nil
+      # The per-klass table was frozen at the end of the previous pass (see
+      # the worker-shareability freeze at the bottom of this method); dup it
+      # back into mutability so this pass can add newly-loaded models.
+      @rrs_assoc_scope_attrs = @rrs_assoc_scope_attrs ? @rrs_assoc_scope_attrs.transform_values(&:dup) : {}
       classes.each do |klass|
-        # Warm the class's lazy ivars by actually exercising the query paths
-        # the workers will hit. Main has a working connection handler, so this
-        # populates exactly the ivars a real query touches.
+        # Bake each scoped association's where-values NOW, before the ivar
+        # shareability pass below runs `replace_unshareable_procs!` over
+        # `@__reflections` — after that, the scope Proc is a NoOpProc, so the
+        # scope's attributes would be lost forever. Workers cannot call the
+        # scope lambda (its `self` is the not-yet-shareable model class), and
+        # AR normally applies the scope's where-values to records built
+        # through the association. Observed without this: worker-built
+        # ActionText::RichText rows INSERTed with a NULL `name` (the
+        # `-> { where(name: name) }` scope on Post#rich_text_content) and hit
+        # a NotNullViolation. The frozen table is read by the redefined
+        # Association#initialize_attributes (see
+        # _install_ar_association_scope_attrs_patch) to re-apply the scope's
+        # attributes to records built in workers.
+        if klass.name && !(klass.respond_to?(:abstract_class?) && klass.abstract_class?)
+          begin
+            per = (@rrs_assoc_scope_attrs[klass.name.to_s.freeze] ||= {})
+            (klass.reflect_on_all_associations rescue []).each do |refl|
+              next if per.key?(refl.name.to_s)
+              next unless refl.respond_to?(:scope) && (refl.collection? || refl.has_one?)
+              scope = (refl.scope rescue nil)
+              next unless scope.is_a?(::Proc) && !scope.class.name.to_s.end_with?("NoOpProc")
+              begin
+                rel = (klass.unscoped.instance_exec(klass.new, &scope) rescue nil)
+                next unless rel.respond_to?(:where_clause)
+                wh = {}
+                (rel.where_clause.to_h rescue nil)&.each do |col, val|
+                  next unless val.nil? || val == true || val == false ||
+                              val.is_a?(::Numeric) || val.is_a?(::Symbol) || val.is_a?(::String)
+                  wh[col.to_s.freeze] = val.is_a?(::String) ? val.freeze : val
+                end
+                per[refl.name.to_s.freeze] = wh.freeze unless wh.empty?
+              rescue StandardError
+                nil
+              end
+            end
+          rescue StandardError
+            nil
+          end
+        end
+
         # Warm the class's lazy ivars by actually exercising the query paths
         # the workers will hit. Main has a working connection handler, so this
         # populates exactly the ivars a real query touches. Each call is
@@ -508,6 +549,16 @@ module RactorRailsShim
           # BasicObject / frozen owners
         end
 
+      end
+
+      # Freeze the baked association-scope table for worker readability: a
+      # module ivar is only readable from a worker Ractor when its value is
+      # shareable. Called once per _share_model_classes! pass; later passes
+      # dup the per-klass hashes back into mutability at the top of the
+      # per-class walk.
+      if @rrs_assoc_scope_attrs
+        @rrs_assoc_scope_attrs.each_value(&:freeze)
+        @rrs_assoc_scope_attrs.freeze
       end
 
       # Build the per-model shareable snapshots (primary keys + pending
@@ -698,6 +749,7 @@ module RactorRailsShim
       return unless defined?(::ActiveRecord::Base)
 
       _redefine_engine_railtie_singletons!
+      _redefine_ar_autosave_methods!
 
       unless @ar_memoization_patches_installed
         @ar_memoization_patches_installed = true
@@ -803,15 +855,32 @@ module RactorRailsShim
         end
         Ractor.make_shareable(h)
       else
+        # Replace unshareable Procs BEFORE make_shareable. A failed
+        # make_shareable can partially freeze the graph it traversed, which
+        # would make a later in-place Proc replacement impossible (writing a
+        # frozen object's ivar raises). The traversal uses the same
+        # PROC_REPLACEMENTS table as the global app pass, and the specific
+        # builders there target Rack/Devise/routes Procs that never live
+        # under model-class ivars — so early replacement here is equivalent.
+        # Idempotent no-op walk for graphs without Procs.
+        begin
+          ::RactorRailsShim::ShareabilityTraversal.replace_unshareable_procs!(v)
+        rescue StandardError
+          nil
+        end
         begin
           Ractor.make_shareable(v)
         rescue StandardError => e
-          case v
-          when ::Hash then Ractor.make_shareable({})
-          when ::Array then Ractor.make_shareable([])
-          when ::Set then Ractor.make_shareable(::Set.new)
-          else nil
-          end
+          # NEVER substitute an empty twin ({} / [] / Set.new) for a container
+          # whose contents are unshareable. The twin would be WRITTEN BACK
+          # onto the class, silently destroying memoized data (observed:
+          # Post's @__reflections memoized a Hash of Reflection objects — the
+          # {} swap made reflect_on_all_associations return [] forever, which
+          # broke dependent-association capture and autosave redefinition for
+          # Post). Leaving the original value is safe: a worker reading a
+          # still-unshareable value gets a LOUD IsolationError instead of
+          # silently-empty results.
+          nil
         end
       end
     end
@@ -2676,164 +2745,159 @@ module RactorRailsShim
       end
     end
 
-    # Patch ActiveRecord::AutosaveAssociation to redefine the
-    # `autosave_associated_records_for_<assoc>` and
-    # `validate_associated_records_for_<assoc>` methods via string eval (compiled
-    # `def`, no captured binding) instead of Rails' `define_method(&block)`.
+    # Patch ActiveRecord::AutosaveAssociation's proc-backed association
+    # callbacks. Rails generates `autosave_associated_records_for_<assoc>` /
+    # `validate_associated_records_for_<assoc>` via `define_non_cyclic_method`
+    # -> `define_method(&block)` — the method body is a Proc compiled in the
+    # main Ractor. Calling it from a worker raises "defined with an
+    # un-shareable Proc in a different Ractor", which the shim's
+    # SymbolicTransport callback replay treats as skip-and-continue — so
+    # nested attributes (built children stay in the association target but
+    # are never INSERTed) and `validate:` associations silently no-op in
+    # workers (observed: Post.create!(comments_attributes:) persisted the
+    # post but zero comments, counter_cache stayed 0).
     #
-    # The original block captures a binding from the main Ractor (where
-    # `add_autosave_association_callbacks` runs during eager load), so calling
-    # the method from a worker Ractor raises "defined with an un-shareable Proc
-    # in a different Ractor". The reflection object itself IS shareable
-    # (frozen as part of the shared app graph), so we store it in a frozen
-    # shareable registry and emit a string-eval'd `def` that looks it up at call
-    # time. The cyclic-guard logic from `define_non_cyclic_method` is inlined
-    # into the string body.
-    #
-    # MUST install BEFORE models are eager-loaded, because
-    # `add_autosave_association_callbacks` fires during `belongs_to`/`has_many`/
-    # `has_one` evaluation at boot. We alias the original method, call it (which
-    # registers the callback AND creates the unshareable method), then
-    # immediately overwrite the method with a string-eval'd version.
-    def _install_activerecord_autosave_patch
-      return if @ar_autosave_patched
-      @ar_autosave_patched = true
-      _register_patch :activerecord_autosave, "8.1"
+    # Fix (prepare-time, like _redefine_engine_railtie_singletons!): walk
+    # every AR model's associations and re-define both method families as
+    # REAL `def`s whose body looks the reflection up from the class itself
+    # (self.class.reflect_on_association — a frozen, worker-readable Hash
+    # lookup), with define_non_cyclic_method's cyclic guard inlined. Only
+    # methods whose source is Rails' autosave_association.rb are replaced;
+    # an app's own override wins (mirrors upstream's method_defined? guard).
+    # Runs AFTER eager load from _prewarm_activerecord_memoizations! (before
+    # the graph freeze, so class_eval still works and workers clone the
+    # re-defined method table).
+    def _redefine_ar_autosave_methods!
+      return unless defined?(::ActiveRecord::Base)
 
-      # Frozen shareable registry: { [model_name, method_name] => reflection }.
-      # Rebuilt atomically (like SCOPE_SOURCE_CODES) as each association is
-      # declared during boot.
-      unless RactorRailsShim.const_defined?(:SHAREABLE_AUTOSAVE_REFLECTIONS, false)
-        RactorRailsShim.const_set(:SHAREABLE_AUTOSAVE_REFLECTIONS, Ractor.make_shareable({}))
+      classes = ([::ActiveRecord::Base] + (::ActiveRecord::Base.descendants rescue [])).compact
+      classes.each do |klass|
+        next unless klass.name
+        begin
+          refls = (klass.reflect_on_all_associations rescue nil)
+          (refls || []).each do |refl|
+            name = refl.name.to_s
+            refl_lookup = "self.class.reflect_on_association(#{name.inspect})"
+
+            # NOTE: association scopes' where-values for worker-built records
+            # are handled by _install_ar_association_scope_attrs_patch (the
+            # build path saves has_ones immediately via replace(), before any
+            # autosave hook could run).
+            save_method = :"autosave_associated_records_for_#{name}"
+            if klass.method_defined?(save_method) && _rrs_rails_autosave_source?(klass, save_method)
+              body_call =
+                if refl.collection?
+                  "save_collection_association(#{refl_lookup})"
+                elsif refl.has_one?
+                  "save_has_one_association(#{refl_lookup})"
+                else
+                  "throw(:abort) if save_belongs_to_association(#{refl_lookup}) == false"
+                end
+              klass.class_eval <<~RUBY, __FILE__, __LINE__ + 1
+                def #{save_method}
+                  result = true
+                  @_already_called ||= {}
+                  unless @_already_called[:#{name}]
+                    begin
+                      @_already_called[:#{name}] = true
+                      result = #{body_call}
+                    ensure
+                      @_already_called[:#{name}] = false
+                    end
+                  end
+                  result
+                end
+              RUBY
+            end
+
+            validation_method = :"validate_associated_records_for_#{name}"
+            if klass.method_defined?(validation_method) && _rrs_rails_autosave_source?(klass, validation_method)
+              val_method =
+                if refl.collection?
+                  :validate_collection_association
+                elsif refl.has_one?
+                  :validate_has_one_association
+                else
+                  :validate_belongs_to_association
+                end
+              klass.class_eval <<~RUBY, __FILE__, __LINE__ + 1
+                def #{validation_method}
+                  result = true
+                  @_already_called ||= {}
+                  unless @_already_called[:#{name}]
+                    begin
+                      @_already_called[:#{name}] = true
+                      result = send(:#{val_method}, #{refl_lookup})
+                    ensure
+                      @_already_called[:#{name}] = false
+                    end
+                  end
+                  result
+                end
+              RUBY
+            end
+          end
+        rescue StandardError => e
+          warn "ractor-rails-shim: autosave method redefinition failed for #{klass.name} " \
+               "(#{e.class}: #{e.message[0, 160]})"
+        end
       end
-
-      _apply_activerecord_autosave_patch
+      nil
     end
 
-    def _apply_activerecord_autosave_patch
-      return unless defined?(::ActiveRecord::AutosaveAssociation::ClassMethods)
+    # True when the method was generated by Rails' define_non_cyclic_method
+    # (its source_location points at autosave_association.rb). Ruby 4 returns
+    # an Array there — normalize first.
+    def _rrs_rails_autosave_source?(klass, method_name)
+      src = (klass.instance_method(method_name).source_location rescue nil)
+      srcs = src.is_a?(Array) ? src : [src].compact
+      srcs.any? { |s| s.is_a?(String) && s.end_with?("autosave_association.rb") }
+    end
 
-      mod = ::ActiveRecord::AutosaveAssociation::ClassMethods
+    # Association scopes (`has_one :x, -> { where(name: name) }, ...`) are
+    # main-compiled Procs: workers can neither call them (their `self` is the
+    # not-yet-shareable model class at replacement time, so they become
+    # NoOpProcs) nor re-derive them. Rails normally applies a scope's
+    # where-values to records BUILT through the association
+    # (Association#initialize_attributes <- scope_for_create). Observed
+    # without the fix: worker-built ActionText::RichText rows INSERTed with a
+    # NULL `name` and hit a NotNullViolation — and the INSERT happens inside
+    # HasOneAssociation#replace (owner persisted → immediate save), so no
+    # autosave-time hook can fix it.
+    #
+    # Fix: redefine initialize_attributes with the upstream body plus a
+    # re-application of the values captured by _share_model_classes! into
+    # @rrs_assoc_scope_attrs (a frozen, shareable module ivar — readable from
+    # workers). Idempotent in main, where scope_for_create already carries
+    # the values (attribute_present? skips them).
+    def _install_ar_association_scope_attrs_patch
+      return if @ar_assoc_scope_attrs_patched
+      @ar_assoc_scope_attrs_patched = true
+      _register_patch :ar_association_scope_attrs, "8.1"
+      return unless defined?(::ActiveRecord::Associations::Association)
 
-      # --- save callbacks ---
-      mod.alias_method(:_rrs_orig_add_autosave_association_callbacks,
-                       :add_autosave_association_callbacks) unless
-        mod.method_defined?(:_rrs_orig_add_autosave_association_callbacks)
-
-      mod.module_eval do
-        def add_autosave_association_callbacks(reflection)
-          # Call the original: registers the callback (after_create/save/etc.)
-          # and creates the unshareable define_method method.
-          _rrs_orig_add_autosave_association_callbacks(reflection)
-
-          # Immediately redefine the method via string eval (no captured
-          # binding). The reflection is stored in the shareable registry.
-          save_method = :"autosave_associated_records_for_#{reflection.name}"
-          key = [self.name.to_s, save_method.to_s]
-
-          _rrs_store_autosave_reflection(key, reflection)
-
-          if reflection.collection?
-            body_call = "save_collection_association(_rrs_autosave_reflection(#{key.inspect}))"
-          elsif reflection.has_one?
-            body_call = "save_has_one_association(_rrs_autosave_reflection(#{key.inspect}))"
-          else
-            body_call = "throw(:abort) if save_belongs_to_association(_rrs_autosave_reflection(#{key.inspect})) == false"
-          end
-
-          class_eval <<-RUBY, __FILE__, __LINE__ + 1
-            def #{save_method}
-              @_already_called ||= {}
-              return true if @_already_called[#{save_method.inspect}]
-              result = true
-              begin
-                @_already_called[#{save_method.inspect}] = true
-                #{body_call}
-              ensure
-                @_already_called[#{save_method.inspect}] = false
+      ::ActiveRecord::Associations::Association.class_eval <<~'RUBY', __FILE__, __LINE__ + 1
+        def initialize_attributes(record, except_from_scope_attributes = nil) # :nodoc:
+          except_from_scope_attributes ||= {}
+          skip_assign = [reflection.foreign_key, reflection.type].compact
+          assigned_keys = record.changed_attribute_names_to_save
+          assigned_keys += except_from_scope_attributes.keys.map(&:to_s)
+          attributes = scope_for_create.except!(*(assigned_keys - skip_assign))
+          record.send(:_assign_attributes, attributes) if attributes.any?
+          if record.respond_to?(:new_record?) && record.new_record?
+            table = RactorRailsShim.instance_variable_get(:@rrs_assoc_scope_attrs)
+            baked = table && table[reflection.active_record.name]
+            baked = baked && baked[reflection.name.to_s]
+            if baked
+              baked.each do |k, v|
+                record[k] = v unless record.attribute_present?(k)
               end
-              result
             end
-          RUBY
-        end
-      end
-
-      # --- validation callbacks ---
-      mod.alias_method(:_rrs_orig_define_autosave_validation_callbacks,
-                       :define_autosave_validation_callbacks) unless
-        mod.method_defined?(:_rrs_orig_define_autosave_validation_callbacks)
-
-      mod.module_eval do
-        def define_autosave_validation_callbacks(reflection)
-          # Call the original: registers the validate callback + creates the
-          # unshareable define_method method.
-          _rrs_orig_define_autosave_validation_callbacks(reflection)
-
-          validation_method = :"validate_associated_records_for_#{reflection.name}"
-          # Only redefine if the original actually created the method.
-          return unless method_defined?(validation_method, false)
-
-          key = [self.name.to_s, validation_method.to_s]
-          _rrs_store_autosave_reflection(key, reflection)
-
-          if reflection.collection?
-            val_method = :validate_collection_association
-          elsif reflection.has_one?
-            val_method = :validate_has_one_association
-          else
-            val_method = :validate_belongs_to_association
           end
-
-          class_eval <<-RUBY, __FILE__, __LINE__ + 1
-            def #{validation_method}
-              @_already_called ||= {}
-              return true if @_already_called[#{validation_method.inspect}]
-              result = true
-              begin
-                @_already_called[#{validation_method.inspect}] = true
-                send(#{val_method.inspect}, _rrs_autosave_reflection(#{key.inspect}))
-              ensure
-                @_already_called[#{validation_method.inspect}] = false
-              end
-              result
-            end
-          RUBY
+          set_inverse_instance(record)
         end
-      end
-
-      # --- helper methods for registry access ---
-      mod.module_eval do
-        # Store a reflection in the shareable registry. Called at boot time
-        # (main Ractor) during association declaration.
-        #
-        # Compute-then-swap: the shareable replacement is built BEFORE the
-        # current registry constant is removed. A previous version removed
-        # first and only then called Ractor.make_shareable, so any
-        # unshareable reflection (e.g. one capturing a Proc) left the
-        # constant permanently missing and every later declaration raised
-        # NameError — the poison was worse than the original failure.
-        # Also self-heals: if the constant is missing for any reason, it is
-        # re-seeded here instead of raising.
-        def _rrs_store_autosave_reflection(key, reflection)
-          registry = if RactorRailsShim.const_defined?(:SHAREABLE_AUTOSAVE_REFLECTIONS, false)
-            RactorRailsShim::SHAREABLE_AUTOSAVE_REFLECTIONS
-          else
-            RactorRailsShim.const_set(:SHAREABLE_AUTOSAVE_REFLECTIONS, Ractor.make_shareable({}))
-          end
-          cur = registry.dup
-          cur[key] = reflection
-          shareable = Ractor.make_shareable(cur)
-          RactorRailsShim.send(:remove_const, :SHAREABLE_AUTOSAVE_REFLECTIONS) if
-            RactorRailsShim.const_defined?(:SHAREABLE_AUTOSAVE_REFLECTIONS, false)
-          RactorRailsShim.const_set(:SHAREABLE_AUTOSAVE_REFLECTIONS, shareable)
-        end
-
-        # Look up a reflection from the shareable registry. Called at runtime
-        # (worker Ractor) inside the string-eval'd method body.
-        def _rrs_autosave_reflection(key)
-          RactorRailsShim::SHAREABLE_AUTOSAVE_REFLECTIONS[key]
-        end
-      end
+      RUBY
+      ::ActiveRecord::Associations::Association.send(:private, :initialize_attributes)
     end
   end
 end

@@ -328,8 +328,22 @@ module RactorRailsShim
         # See strategy_replacement_for for the full rationale.
         t.strategy_replacement_for.call(proc_obj)
       },
-      [nil, nil] => ->(t, _p, _parent, _mw) {
-        t.noop_proc_class.new
+      [nil, nil] => ->(t, proc_obj, _parent, _mw) {
+        # Ruby 4: a Proc whose captured environment is freeze-able can be
+        # made SHAREABLE — and a shareable Proc is CALLABLE from worker
+        # Ractors with its full original semantics. That is strictly better
+        # than a NoOpProc, which silently drops behavior (observed: the
+        # Action Text association scope `-> { where(name: name) }` on
+        # Post#rich_text_content was NoOpProc'd, so worker-built RichText
+        # rows were INSERTed with a NULL name and hit a NotNullViolation).
+        # Only fall back to NoOpProc when the Proc genuinely cannot be made
+        # shareable (it captures unshareable runtime state).
+        begin
+          Ractor.make_shareable(proc_obj)
+          proc_obj
+        rescue StandardError
+          t.noop_proc_class.new
+        end
       },
     }.freeze
 
