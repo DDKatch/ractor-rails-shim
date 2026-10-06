@@ -46,10 +46,20 @@ module RactorRailsShim
       # applicable transport's before-work, yields the block ONCE, then runs
       # every applicable transport's after-work. Returns the block's result.
       # If nothing applies, just yields (matching the original empty-chain path).
+      #
+      # Halting (Rails semantics): a :before filter that returns exactly
+      # `false` halts the chain — the block does NOT run and NO after-work
+      # runs. `replay` returns `false`, which propagates out of
+      # `run_callbacks` exactly like a halted real chain. Transports signal
+      # this by returning `false` from `before` (a transport that only runs
+      # work and has no halt signal returns nil).
       def replay(context, kind, &block)
         applicable = applicable(kind)
         return yield if applicable.empty?
-        applicable.each { |t| t.before(context, kind) }
+        applicable.each do |t|
+          halted = t.before(context, kind)
+          return false if halted == false
+        end
         result = yield
         applicable.each { |t| t.after(context, kind) }
         result

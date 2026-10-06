@@ -26,6 +26,50 @@ module RactorRailsShim
   SHAREABLE_ALLOW_FORGERY = false
 
   class << self
+    def _install_http_basic_auth_patch
+      return if @http_basic_auth_patched
+      @http_basic_auth_patched = true
+      _register_patch :http_basic_auth, "8.1"
+      unless defined?(::ActionController::HttpAuthentication::Basic::ControllerMethods::ClassMethods)
+        ActiveSupport.on_load(:action_controller_base) do
+          RactorRailsShim.__send__(:_apply_http_basic_auth_patch)
+        end
+        return
+      end
+      _apply_http_basic_auth_patch
+    end
+
+    # ActionController::HttpAuthentication::Basic::ControllerMethods
+    # .http_basic_authenticate_with registers its guard via
+    # `before_action(options) { http_basic_authenticate_or_request_with ... }`
+    # — a BLOCK filter. The shim's proc replacement turns cross-boundary
+    # block filters into no-ops, so a worker silently SKIPS basic auth
+    # (observed: /features/basic_auth returned 200 without credentials).
+    # Re-implement the class method: bake name/password/realm into a real
+    # string-eval'd `def` (compiled when the controller class body runs —
+    # in main for eager-loaded controllers) and register it as a SYMBOL
+    # filter, which SymbolicTransport replays in workers.
+    def _apply_http_basic_auth_patch
+      mod = ::ActionController::HttpAuthentication::Basic::ControllerMethods::ClassMethods
+      mod.module_eval <<-RUBY, __FILE__, __LINE__ + 1
+        alias_method :_rrs_orig_http_basic_authenticate_with, :http_basic_authenticate_with
+        def http_basic_authenticate_with(name:, password:, realm: nil, **options)
+          raise ArgumentError, "Expected name: to be a String, got \#{name.class}" unless name.is_a?(String)
+          raise ArgumentError, "Expected password: to be a String, got \#{password.class}" unless password.is_a?(String)
+
+          guard = :"_rrs_http_basic_authenticate_\#{name.hash.abs}"
+          class_eval <<~GUARD
+            def \#{guard}
+              http_basic_authenticate_or_request_with(name: \#{name.inspect}, password: \#{password.inspect}, realm: \#{realm.inspect})
+            end
+          GUARD
+          before_action(guard, **options)
+        end
+      RUBY
+    rescue NameError
+      nil
+    end
+
     # Patch ActionController::ParameterEncoding::ClassMethods#action_encoding_template
     # to not read @_parameter_encodings (a raw class ivar) from a worker
     # Ractor. The default is an empty-ish Hash; for a frozen shared app workers

@@ -51,6 +51,14 @@ class SymbolicTransportSpec < Minitest::Spec
       nil
     end
 
+    # `performed?` is defined explicitly (returns false) so the transport's
+    # ActionController terminator check (`performed?` after each filter) does
+    # not itself record an invocation or spuriously halt via the truthy
+    # `:sent` method_missing return; halting tests override it in subclasses.
+    def performed?
+      false
+    end
+
     def respond_to_missing?(name, include_private = false)
       true
     end
@@ -314,5 +322,73 @@ class SymbolicTransportSpec < Minitest::Spec
 
     t = RactorRailsShim::Callbacks::SymbolicTransport.new(source: source, kinds: [:save])
     assert_raises(NoMethodError) { t.before(ctx, :save) }
+  end
+
+  # Halt semantics (Rails-accurate): a before filter that returns exactly
+  # `false` halts the chain (model halt semantics), and a context that is
+  # `performed?` after a filter halts (the ActionController `:process_action`
+  # terminator — how http_basic_authenticate_with's 401 stops the action:
+  # it sets response_body directly and returns truthy).
+  it "halts the chain when a filter returns exactly false" do
+    source = {
+      10 => [
+        { chain_kind: :save, phase: :before, filter: :false_hook, only: nil, except: nil },
+        { chain_kind: :save, phase: :before, filter: :later_hook, only: nil, except: nil }
+      ]
+    }
+    klass = build_klass_chain([10])
+
+    ctx = Class.new(FakeContext) do
+      def send(name, *args, &block)
+        @invoked << name
+        name == :false_hook ? false : :ok
+      end
+      alias __send__ send
+    end.new(klass)
+
+    t = RactorRailsShim::Callbacks::SymbolicTransport.new(source: source, kinds: [:save])
+    assert_equal false, t.before(ctx, :save), "before must return false as the halt signal"
+    assert_equal [:false_hook], ctx.invoked, "filters after the false-returning filter must be skipped"
+  end
+
+  it "halts the chain when the context is performed? after a filter" do
+    source = {
+      10 => [
+        { chain_kind: :process_action, phase: :before, filter: :render_hook, only: nil, except: nil },
+        { chain_kind: :process_action, phase: :before, filter: :later_hook, only: nil, except: nil }
+      ]
+    }
+    klass = build_klass_chain([10])
+
+    ctx = Class.new(FakeContext) do
+      def send(name, *args, &block)
+        @invoked << name
+        @performed = true if name == :render_hook # simulates render in the filter
+        :ok
+      end
+      alias __send__ send
+
+      def performed?
+        @performed == true
+      end
+    end.new(klass)
+
+    t = RactorRailsShim::Callbacks::SymbolicTransport.new(source: source, kinds: [:process_action])
+    assert_equal false, t.before(ctx, :process_action), "performed? must halt with a false signal"
+    assert_equal [:render_hook], ctx.invoked, "filters after the performed? filter must be skipped"
+  end
+
+  it "does not halt when a filter returns a truthy non-false value" do
+    source = {
+      10 => [
+        { chain_kind: :save, phase: :before, filter: :hook_one, only: nil, except: nil },
+        { chain_kind: :save, phase: :before, filter: :hook_two, only: nil, except: nil }
+      ]
+    }
+    klass = build_klass_chain([10])
+    ctx = FakeContext.new(klass) # method_missing returns :sent (truthy)
+    t = RactorRailsShim::Callbacks::SymbolicTransport.new(source: source, kinds: [:save])
+    refute t.before(ctx, :save)
+    assert_equal [:hook_one, :hook_two], ctx.invoked
   end
 end

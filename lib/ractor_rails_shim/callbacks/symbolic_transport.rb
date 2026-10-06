@@ -75,19 +75,34 @@ module RactorRailsShim
       # only/except. `respond_to?` guards each send so a stale capture never
       # raises NoMethodError (matches the original controller replay behavior).
       #
+      # Returns `false` (halt signal) when a filter returned exactly `false`
+      # (model halt semantics) OR when the context is `performed?` after a
+      # filter ran (the ActionController `:process_action` terminator:
+      # `terminator: ->(c, _) { c.performed? }` — this is how
+      # http_basic_authenticate_with's 401 stops the action: it sets
+      # response_body directly and returns truthy). Otherwise returns nil.
+      # The Registry honors the signal by skipping the yield and all
+      # after-work (skip_after_callbacks_if_terminated: true).
+      #
       # A filter defined via `define_method(&block)` with an un-shareable Proc
       # raises "defined with an un-shareable Proc in a different Ractor" when
       # `send`-ed in a worker. ActiveRecord generates such methods for autosave
       # associations (e.g. `autosave_associated_records_for_*`). We SKIP those
       # filters and continue the chain so app-defined `def` callbacks still run.
       def before(context, kind)
+        halted = false
         each_applicable_filter(context, kind, :before) do |entry|
           next unless condition_allows?(context, entry)
-          context.send(entry[:filter]) if context.respond_to?(entry[:filter], true)
+          result = context.send(entry[:filter]) if context.respond_to?(entry[:filter], true)
+          if result == false || (context.respond_to?(:performed?) && context.performed?)
+            halted = true
+            break
+          end
         rescue RuntimeError => e
           raise e unless unshareable_proc_error?(e)
           # Skip the unshareable-Proc filter; the chain continues.
         end
+        false if halted
       end
 
       # Run the matching :after filters for `kind`, ancestor-first.
