@@ -26,6 +26,10 @@ module RactorRailsShim
       "ActionDispatch::Response::RackBody::BODY_METHODS",
         "ActionDispatch::Response::Buffer::BODY_METHODS",
         "ActionView::Helpers::ControllerHelper::CONTROLLER_DELEGATES",
+      # Read per-request by the cache-control parser (cache_control_segments);
+      # a worker response that carries Cache-Control headers (the blob proxy
+      # route sets expires_in) reads it. An unfrozen Set is unshareable.
+      "ActionDispatch::Http::Cache::Response::SPECIAL_KEYS",
       ])
 
   # Source-location constants used by make_app_shareable!'s proc-replacement

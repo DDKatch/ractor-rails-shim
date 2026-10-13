@@ -178,6 +178,8 @@ class FrameworkPatchDispatchSpec < Minitest::Spec
     _install_active_model_attribute_patch
     _install_hash_compute_if_absent_patch
     _install_railtie_configuration_patch
+    _install_live_streaming_patch
+    _install_dependencies_interlock_patch
   ].freeze)
 
   it "dispatches exactly the same set of patches as the original hardcoded list" do

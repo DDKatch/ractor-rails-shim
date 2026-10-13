@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — worker-side streaming (`ActionController::Live`) hangs / dies
+
+Surfaced by the test app's blob proxy dispatch (row 127:
+`GET /rails/active_storage/blobs/proxy/:signed_id/:filename` in a worker).
+
+- The Active Storage blob proxy controller includes `ActionController::Live`,
+  which processes the action on a pool thread: a lazy class-method reader
+  sets a class ivar (`@live_thread_pool_executor ||=
+  Concurrent::CachedThreadPool.new` — Ruby 4.0 forbids class-ivar writes
+  from non-main Ractors, `Ractor::IsolationError`), and `Live#process` then
+  blocks on `await_commit` until the spawned thread commits. Even with a
+  worker-local pool, the thread hop deadlocks in practice: any exception
+  before `commit!` kills the pooled thread (`abort_on_exception = true`)
+  and the request hangs forever.
+- The patch runs the streaming action INLINE in worker Ractors:
+  `new_controller_thread` yields on the request thread (main keeps the
+  upstream pool-thread behavior verbatim). The bytes still stream through
+  the Rack response body; only true streaming concurrency (early header
+  flush) is lost worker-side, which is documented in the row note.
+
+### Fixed — worker `Dependencies.interlock` read dies on the unshareable class ivar
+
+Surfaced by the same blob proxy dispatch (the next frame after the
+streaming fix): `ActionController::Live#process` runs the action inside
+`ActiveSupport::Dependencies.interlock.running { ... }`, and upstream sets
+the `interlock` class ivar at load time to an Interlock wrapping an
+unshareable `Concurrency::ShareLock` — reading it from a worker is a
+`Ractor::IsolationError` (can not get unshareable values from instance
+variables of classes/modules). Regular worker requests don't hit it: the
+shim's production stack drops the `ActionDispatch::Executor` middleware,
+the only other interlock consumer.
+
+- The reader is replaced with a Ractor-aware method: main returns the
+  upstream class ivar (100% upstream semantics); workers get a per-Ractor
+  Interlock from IsolatedExecutionState. Workers never reload (the graph
+  is frozen), so the per-Ractor lock never contends. The upstream writer
+  (`interlock=`) is untouched.
+
 ### Fixed — `config_for` / method_missing-backed config reads die in workers (`@@options` class variable)
 
 Surfaced by the test app's `GET /features/config_probe` (rows 115/134/138:

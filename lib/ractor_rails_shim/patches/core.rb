@@ -364,6 +364,34 @@ module RactorRailsShim
       Patches::RailtieConfiguration.install
     end
 
+    # Patch `ActionController::Live` so streaming controllers (the Active
+    # Storage blob proxy route includes ActionController::Live) can serve
+    # from worker Ractors. Upstream processes the action on a pool thread:
+    # the class-level `live_thread_pool_executor` reader lazily sets a
+    # class ivar (forbidden for non-main Ractors — Ractor::IsolationError),
+    # and the spawned-thread hop + `await_commit` deadlocks when the pooled
+    # thread dies before committing. Workers therefore run the streaming
+    # action INLINE (`new_controller_thread` yields on the request thread);
+    # main keeps the upstream pool-thread behavior verbatim. See
+    # `Patches::LiveStreaming` for the semantics contract.
+    def _install_live_streaming_patch
+      Patches::LiveStreaming.install
+    end
+
+    # Patch `ActiveSupport::Dependencies.interlock` so worker Ractors can
+    # read it. Upstream sets the class ivar at load time to an Interlock
+    # wrapping a Concurrency::ShareLock — unshareable, so a worker-side
+    # read dies with Ractor::IsolationError (can not get unshareable values
+    # from class ivars). The streaming controller path
+    # (`ActionController::Live#process` → `Dependencies.interlock.running`)
+    # hits this on every worker-side streaming request. Main keeps the
+    # upstream class ivar; workers get a per-Ractor Interlock from
+    # IsolatedExecutionState (workers never reload, so the lock never
+    # contends). See `Patches::DependenciesInterlock`.
+    def _install_dependencies_interlock_patch
+      Patches::DependenciesInterlock.install
+    end
+
     # Patch the `Concurrent` global executor readers (timer / io / fast).
     # The gem backs them with unshareable `GLOBAL_*` Delay constants; a worker
     # Ractor reading those constants dies with
