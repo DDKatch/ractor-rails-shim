@@ -347,6 +347,50 @@ module RactorRailsShim
       Patches::HashComputeIfAbsent.install
     end
 
+    # Patch the `Concurrent` global executor readers (timer / io / fast).
+    # The gem backs them with unshareable `GLOBAL_*` Delay constants; a worker
+    # Ractor reading those constants dies with
+    #   IsolationError: can not access non-shareable objects in constant
+    #   Concurrent::GLOBAL_TIMER_SET by non-main ractor.
+    # — which is what a worker-side ActiveJob `set(wait:)` enqueue hits (the
+    # async adapter schedules via Concurrent::ScheduledTask, whose completion
+    # notification also goes through the global IO executor). Give each worker
+    # its own executors through IES; main keeps the global ones. Workers then
+    # run their own scheduled work on their own pools (same semantics as the
+    # async adapter's per-worker executors).
+    def _install_concurrent_global_timer_set_patch
+      return if @concurrent_global_timer_set_patched
+      @concurrent_global_timer_set_patched = true
+      _register_patch :concurrent_global_timer_set, "8.1"
+      return unless defined?(::Concurrent) && defined?(::Concurrent::TimerSet)
+
+      ::Concurrent.singleton_class.class_eval <<-RUBY, __FILE__, __LINE__ + 1
+        def global_timer_set
+          if ::Ractor.main?
+            super
+          else
+            ::RactorRailsShim.storage[:rrs_concurrent_timer_set] ||= ::Concurrent::TimerSet.new
+          end
+        end
+
+        def global_io_executor
+          if ::Ractor.main?
+            super
+          else
+            ::RactorRailsShim.storage[:rrs_concurrent_io_executor] ||= ::Concurrent::ThreadPoolExecutor.new
+          end
+        end
+
+        def global_fast_executor
+          if ::Ractor.main?
+            super
+          else
+            ::RactorRailsShim.storage[:rrs_concurrent_fast_executor] ||= ::Concurrent::ThreadPoolExecutor.new
+          end
+        end
+      RUBY
+    end
+
     # The freezer delegations (_freeze_active_record_class_ivars!,
     # _freeze_global_class_ivars!, _freeze_global_constants!,
     # _freeze_messages_constants!, _warm_active_record_class_caches!)

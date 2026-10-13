@@ -493,6 +493,35 @@ module RactorRailsShim
       end
     end
 
+    # Deterministic last-mile freeze for the model class state the app-graph
+    # make_shareable walk may otherwise MISS. By the time this runs, Proc
+    # replacement + Concurrent::Map replacement have cleaned the model graph,
+    # so explicit make_shareable calls succeed where the same call made during
+    # the earlier warm passes would raise on dirty ivars (and get swallowed by
+    # their rescues, leaving the value unfrozen for workers).
+    #
+    # HABTM join models resolve their table name through a lazy resolver
+    # lambda (the builder sets @table_name_resolver = -> { table_name }). If
+    # that lambda is left unfrozen, a worker reading it raises
+    #   IsolationError: can not get unshareable values ... (@table_name_resolver
+    #   from Post::HABTM_Tags)
+    # on the first HABTM write (assoc probes, dependent destroys). A shareable
+    # ivar value is readable from a worker, and the worker's ||= short-circuits.
+    def self.harden_ar_model_ivars!
+      return unless ::Ractor.main? && defined?(::ActiveRecord::Base)
+      (::ActiveRecord::Base.descendants rescue []).each do |klass|
+        next unless klass.name&.include?("HABTM")
+        begin
+          resolver = klass.instance_variable_get(:@table_name_resolver)
+          if resolver.is_a?(::Proc) && !Ractor.shareable?(resolver)
+            klass.instance_variable_set(:@table_name_resolver, Ractor.make_shareable(resolver))
+          end
+        rescue StandardError
+          nil
+        end
+      end
+    end
+
     def self.generate_ar_attribute_methods!
       return unless defined?(::ActiveRecord::Base)
       gen_attr_methods_map = {}

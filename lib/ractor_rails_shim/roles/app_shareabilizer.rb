@@ -202,9 +202,21 @@ module RactorRailsShim
       neutralize_logger_io.call(app)
       replace_unshareable_procs.call(app)
       replace_locks_and_concurrent_maps.call(app)
+      # Freeze the model state the graph walk may otherwise miss (HABTM
+      # join-model resolvers) BEFORE make_shareable — after Proc/Map
+      # replacement cleaned the graph, so the explicit freezes succeed.
+      RactorRailsShim::ShareabilityTraversal.harden_ar_model_ivars!
       make_shareable_fn.call(app)
       stash!(app)
       build_shareable_fallback.call
+      # Snapshot the mail gem's delivery hook registries (interceptors /
+      # observers registered in main during boot) so workers run them during
+      # deliver_now instead of the historical per-worker empty lists. Runs
+      # AFTER the graph freeze (still pre-spawn): a prepare-time or
+      # mid-pipeline placement perturbs the heap-layout-sensitive
+      # make_shareable walk and leaves HABTM join-model resolvers unfrozen
+      # (workers then hit IsolationError on @table_name_resolver).
+      RactorRailsShim.__send__(:_snapshot_mail_hooks!) if RactorRailsShim.respond_to?(:_snapshot_mail_hooks!, true)
       app
     end
 

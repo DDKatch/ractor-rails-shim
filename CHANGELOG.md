@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — worker-Ractor mail hooks + ActiveJob `set(wait:)` enqueue; deterministic HABTM shareability
+
+Surfaced by the test app's worker-Ractor audit of mail hooks (matrix rows
+113/116) and ActiveJob enqueue options (rows 107/108). Verified by
+`GET /stats/mail_hooks_probe` (interceptor + mailer-callback headers stamped on
+worker-delivered mail) and `GET /features/job_resilience_probe`
+(`set(queue:, wait:)` enqueue + rescue-handler config readable from a worker).
+
+- **Mail hook registry snapshot** (`patches/mail.rb` +
+  `AppShareabilizer.make_shareable!`): the mail gem's
+  `inform_interceptors` / `inform_observers` read raw class variables, and the
+  shim's worker branch historically returned a per-worker EMPTY list —
+  interceptors/observers registered in main during boot silently never ran in
+  workers. The registries are now snapshotted as a frozen list of hook NAMES
+  (`RactorRailsShim::MAIL_INTERCEPTORS` / `MAIL_OBSERVERS`) AFTER the app-graph
+  freeze; workers resolve the constants and run the same hook objects main
+  registered. Non-module hooks (stateful instances) are skipped with a warning.
+  Placement note: the snapshot deliberately runs post-freeze — earlier
+  placements perturbed the heap-layout-sensitive make_shareable walk.
+- **Deterministic HABTM join-model freeze**
+  (`ShareabilityTraversal.harden_ar_model_ivars!`, called right before the
+  graph freeze): HABTM join models resolve their table name through a lazy
+  resolver lambda (`@table_name_resolver = -> { table_name }`). Whether the
+  make_shareable walk reached it was heap-layout sensitive — some
+  configurations left it unfrozen and every worker-side HABTM write
+  (`post.tags << tag`, dependent destroys) died with
+  `IsolationError ... (@table_name_resolver from Post::HABTM_Tags)`. The
+  explicit freeze (run after Proc/Map replacement cleaned the graph, so it
+  succeeds) makes worker-side HABTM deterministic.
+- **Per-Ractor Concurrent global executors**
+  (`_install_concurrent_global_timer_set_patch`): a worker-side
+  `set(wait:)` enqueue schedules via `Concurrent::ScheduledTask`, whose default
+  timer/notification path reads the unshareable `GLOBAL_TIMER_SET` /
+  `GLOBAL_IO_EXECUTOR` / `GLOBAL_FAST_EXECUTOR` constants —
+  `IsolationError: can not access non-shareable objects in constant
+  Concurrent::GLOBAL_TIMER_SET by non-main ractor`. The readers now give each
+  worker its own TimerSet / ThreadPoolExecutor through IES; main keeps the
+  global instances.
+
 ### Fixed — Rails 8.1 `signed_id` / `find_signed` / `token_for` from a worker Ractor
 
 `User.find_signed(params[:token])` from a worker Ractor died with

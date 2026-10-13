@@ -201,15 +201,18 @@
       # --- Mail delivery observers / interceptors ---
       # `inform_interceptors` / `inform_observers` read `@@delivery_interceptors`
       # / `@@delivery_notification_observers` INLINE (not via the reader), so the
-      # readers alone don't help. Patch the call sites to read the per-Ractor IES
-      # slot. Workers have no registered observers/interceptors, so an empty array
-      # is correct.
+      # readers alone don't help. Workers resolve the hook NAMES snapshotted by
+      # _snapshot_mail_hooks! (frozen String array — no make_shareable needed)
+      # and call the same classes main registered, so boot-registered
+      # interceptors/observers fire in worker Ractors too. Falls back to an
+      # empty list when no snapshot exists.
       ::Mail.singleton_class.class_eval do
         def inform_interceptors(mail_obj)
           interceptors = if ::Ractor.main?
             @@delivery_interceptors
           else
-            ::RactorRailsShim.storage[:ractor_rails_shim_mail_interceptors] ||= []
+            names = ::RactorRailsShim.const_defined?(:MAIL_INTERCEPTORS, false) ? ::RactorRailsShim::MAIL_INTERCEPTORS : nil
+            names ? names.map { |n| ::Object.const_get(n) } : []
           end
           interceptors.each { |i| i.delivering_email(mail_obj) }
         end
@@ -218,7 +221,8 @@
           observers = if ::Ractor.main?
             @@delivery_notification_observers
           else
-            ::RactorRailsShim.storage[:ractor_rails_shim_mail_observers] ||= []
+            names = ::RactorRailsShim.const_defined?(:MAIL_OBSERVERS, false) ? ::RactorRailsShim::MAIL_OBSERVERS : nil
+            names ? names.map { |n| ::Object.const_get(n) } : []
           end
           observers.each { |o| o.delivered_email(mail_obj) }
         end
@@ -377,6 +381,36 @@
     # This clears the `mail` gem's many Regexp module constants (e.g.
     # Mail::Utilities::TO_CRLF_REGEX), which would otherwise raise IsolationError
     # when read from a worker Ractor.
+    # Capture the mail gem's delivery hook registries (registered in MAIN by
+    # app/engines boot code: audit interceptors, observers) as a frozen list of
+    # hook NAMES so workers run them during deliver_now instead of the
+    # historical per-worker EMPTY lists (hooks registered in main never fired
+    # in workers). Idempotent; runs in main only, from prepare_for_ractors!.
+    # Deliberately avoids Ractor.make_shareable: a make_shareable call inside
+    # the prepare pipeline perturbs boot-time model state downstream (HABTM
+    # join-model resolvers end up unshareable). Non-module hooks (stateful
+    # instances) cannot be referenced by name from workers — they are skipped
+    # with a warning and keep the historical empty-list behavior.
+    def _snapshot_mail_hooks!
+      return if !::Ractor.main? || !defined?(::Mail) || @mail_hooks_snapshotted
+      @mail_hooks_snapshotted = true
+
+      {
+        MAIL_INTERCEPTORS: ::Mail.class_variable_get(:@@delivery_interceptors),
+        MAIL_OBSERVERS: ::Mail.class_variable_get(:@@delivery_notification_observers),
+      }.each do |name, value|
+        next if ::RactorRailsShim.const_defined?(name, false)
+        names = value.map { |hook| hook.name if hook.is_a?(Module) }.compact
+        if names.size != value.size
+          warn(
+            "[ractor-rails-shim] mail #{name.to_s.downcase} contains non-module hooks; " \
+            "only module (class) hooks are shared with worker Ractors"
+          )
+        end
+        ::RactorRailsShim.const_set(name, names.freeze)
+      end
+    end
+
     def _make_mail_constants_shareable!
       root = ::Mail
       seen = {}
