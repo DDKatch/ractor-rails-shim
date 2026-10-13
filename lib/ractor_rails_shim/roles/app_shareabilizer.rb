@@ -131,6 +131,11 @@ module RactorRailsShim
       @freeze_declared_callbacks || RactorRailsShim::CallbackCapture.method(:freeze_declared_callbacks!)
     end
 
+    def self.snapshot_railtie_options
+      @snapshot_railtie_options ||
+        RactorRailsShim::ShareabilityTraversal.method(:snapshot_railtie_configuration_options)
+    end
+
     def self.freeze_shareable_class_ivars
       @freeze_shareable_class_ivars || RactorRailsShim::Freezers::ShareableClassIvarFreezer.method(:call)
     end
@@ -206,6 +211,14 @@ module RactorRailsShim
       # join-model resolvers) BEFORE make_shareable — after Proc/Map
       # replacement cleaned the graph, so the explicit freezes succeed.
       RactorRailsShim::ShareabilityTraversal.harden_ar_model_ivars!
+      # Snapshot Railtie::Configuration's @@options (the method_missing
+      # option store) into a frozen shareable constant on the class.
+      # Workers cannot read the class variable (Ruby 4 forbids class-
+      # variable access from non-main Ractors); they read this snapshot
+      # instead. Runs AFTER Proc/Map/Lock replacement so shareable-cleaned
+      # values make it into the snapshot; non-shareable leftovers are
+      # skipped per-value. See Patches::RailtieConfiguration.
+      snapshot_railtie_options.call if Ractor.main?
       make_shareable_fn.call(app)
       stash!(app)
       build_shareable_fallback.call

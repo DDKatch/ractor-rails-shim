@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — `config_for` / method_missing-backed config reads die in workers (`@@options` class variable)
+
+Surfaced by the test app's `GET /features/config_probe` (rows 115/134/138:
+read the production SMTP shape, `config.x`, and `config_for(:audit)` from a
+worker).
+
+- **`Rails::Railtie::Configuration` stores its method_missing option hash in
+  the class variable `@@options`**, and Ruby 4.0 forbids ANY class-variable
+  access from a non-main Ractor (`Ractor::IsolationError: can not access
+  class variables from non-main Ractors`) — so any worker-side read of an
+  option that is not an explicit method (e.g. `config.x`) died.
+- The patch is installed with `class_eval` (NOT prepend): Ruby forbids
+  class-variable access from a prepended module ("class variable @@options
+  ... is overtaken by <module>"), and even a non-accessing worker branch
+  would be compiled into the module. Methods defined via class_eval on the
+  class itself legally own the cvar, so the main branch delegates to the
+  aliased originals — 100% upstream semantics on main.
+- Workers read through a **frozen snapshot** of the main-side `@@options`,
+  taken by the AppShareabilizer freeze pipeline (after Proc/Map/Lock
+  replacement, before the final make_shareable) and stored as the frozen
+  constant `RRS_FROZEN_OPTIONS` on the class (constants are shareable; the
+  class variable is not). Per-value `make_shareable` with rescue:
+  non-shareable leftovers (lock objects) are skipped. A per-Ractor IES
+  overlay (keyed by the config object's identity) covers worker-local
+  writes. Unknown names raise NoMethodError in workers instead of falling
+  through to the original (whose @@options access is forbidden).
+
 ### Fixed — intermittent worker `NoMethodError: undefined method 'owned?'` on NoOpLock
 
 Observed ~1-in-7 kino runs on `GET /`: a worker hit

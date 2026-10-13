@@ -347,6 +347,23 @@ module RactorRailsShim
       Patches::HashComputeIfAbsent.install
     end
 
+    # Patch `Rails::Railtie::Configuration` so its method_missing-backed
+    # option store is reachable from worker Ractors. Upstream keeps the
+    # store in the CLASS VARIABLE @@options, and Ruby 4.0 forbids ANY
+    # class-variable access from a non-main Ractor
+    # (Ractor::IsolationError: can not access class variables from
+    # non-main Ractors) — so a worker-side `config_for(...)` (and any
+    # other method_missing-backed config read) dies without this patch.
+    # Main keeps the upstream @@options store (100% upstream semantics);
+    # workers get a per-instance worker-local Hash. See
+    # `Patches::RailtieConfiguration` for the semantics contract (the
+    # main/worker store split; options written main-side are not visible
+    # worker-side and vice versa — matching the shim's freeze philosophy
+    # that worker state is worker-local).
+    def _install_railtie_configuration_patch
+      Patches::RailtieConfiguration.install
+    end
+
     # Patch the `Concurrent` global executor readers (timer / io / fast).
     # The gem backs them with unshareable `GLOBAL_*` Delay constants; a worker
     # Ractor reading those constants dies with

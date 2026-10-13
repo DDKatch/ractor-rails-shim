@@ -468,6 +468,36 @@ module RactorRailsShim
       app.routes.helpers rescue nil
     end
 
+    # Snapshot Rails::Railtie::Configuration's @@options hash (the
+    # method_missing-backed option store) into a frozen constant on the
+    # class. Runs in the MAIN Ractor, post-boot, so every env config write
+    # is included. Workers cannot touch the class variable itself — Ruby 4
+    # forbids class-variable access from non-main Ractors (Ractor::
+    # IsolationError) — but constants are shareable, so the frozen snapshot
+    # travels and the worker branch of Patches::RailtieConfiguration reads
+    # main-boot options from it. Rescue-safe: without the snapshot the
+    # worker branch degrades to "unknown option" (NoMethodError) instead
+    # of IsolationError.
+    def self.snapshot_railtie_configuration_options
+      return unless defined?(::Ractor) && defined?(::Rails::Railtie::Configuration)
+      klass = ::Rails::Railtie::Configuration
+      return if klass.const_defined?(:RRS_FROZEN_OPTIONS)
+      options = klass.class_variable_get(:@@options)
+      return unless options.is_a?(::Hash)
+      # Per-value: deep-freeze each shareable value, skip the ones that
+      # cannot be made shareable (lock objects etc.) — those options are
+      # not readable in workers (as before this snapshot existed).
+      snapshot = {}
+      options.each do |key, value|
+        begin
+          snapshot[key] = ::Ractor.make_shareable(value)
+        rescue ::Ractor::Error, ::TypeError, ::FrozenError
+          next
+        end
+      end
+      klass.const_set(:RRS_FROZEN_OPTIONS, snapshot.freeze)
+    end
+
     # Force AR attribute-method generation for every loaded model in the
     # MAIN Ractor. See the call site in make_app_shareable! for why; without
     # this a worker Ractor dies with Ractor::IsolationError on the first
