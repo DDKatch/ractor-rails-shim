@@ -41,6 +41,45 @@ module RactorRailsShim
           end
         end
       RUBY
+
+      # The store's background job pool (`Execution#initialize`:
+      # `@background = Concurrent::FixedThreadPool.new(1, max_queue: 100,
+      # fallback_policy: :discard)`) is reachable from the frozen graph, so
+      # the freeze deep-freezes it (NoOpLocks + frozen @queue). A
+      # worker-side cache write that triggers expiry
+      # (`Expiry#track_writes` → `Expiry#expire_later` → `Execution#async`
+      # → `@background << lambda`) posts to the FROZEN pool —
+      #   FrozenError: can't modify frozen Concurrent::FixedThreadPool
+      # (@queue is frozen). Give workers their own 1-thread pool through
+      # Ractor.current (per-Ractor storage, same seam as the select_sql
+      # memo above): async expiry work is per-Ractor and main keeps the
+      # upstream pool verbatim. Prepend (no class-variable access, so no
+      # "overtaken" concern).
+      return unless defined?(::SolidCache::Store::Execution)
+
+      background_pool_module = Module.new do
+        private
+
+        def async(&block)
+          if ::Ractor.main?
+            super
+          else
+            pool = ::Ractor.current[:__rrs_solid_cache_background__] ||=
+              ::Concurrent::FixedThreadPool.new(1, max_queue: 100, fallback_policy: :discard)
+            current_shard = ::SolidCache::Entry.current_shard
+            pool << ->() do
+              __send__(:wrap_in_rails_executor) do
+                connections.with(current_shard) do
+                  __send__(:setup_instrumentation, &block)
+                end
+              end
+            rescue ::Exception => exception
+              error_handler&.call(method: :async, exception: exception, returning: nil)
+            end
+          end
+        end
+      end
+      ::SolidCache::Store::Execution.prepend(background_pool_module)
     end
   end
 end

@@ -180,6 +180,8 @@ class FrameworkPatchDispatchSpec < Minitest::Spec
     _install_railtie_configuration_patch
     _install_live_streaming_patch
     _install_dependencies_interlock_patch
+    _install_time_zone_lookup_patch
+    _install_tzinfo_data_source_patch
   ].freeze)
 
   it "dispatches exactly the same set of patches as the original hardcoded list" do

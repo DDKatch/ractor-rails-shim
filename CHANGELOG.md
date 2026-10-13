@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — worker time-zone creation dies on `TZInfo::DataSource`'s class variables
+
+Surfaced by the same durations probe (the layer under the
+`ActiveSupport::TimeZone.[]` fix): every `ActiveSupport::TimeZone`
+creation resolves its TZInfo data through `TZInfo::DataSource.get`, which
+memoizes into the class variables `@@instance` / `@@default_mutex`. Ruby
+4.0 forbids ANY class-variable access from non-main Ractors
+(`Ractor::IsolationError: can not access class variables from non-main
+Ractors`).
+
+- `get` is now Ractor-aware: main keeps the upstream body verbatim
+  (class-variable memoize + mutex); workers get a per-Ractor DataSource
+  from IsolatedExecutionState built by the upstream private
+  `create_default_data_source` (same ruby-data/zoneinfo choice; per-
+  instance lookup caches make per-Ractor caching semantically
+  equivalent). The upstream `set` (manual source selection) stays
+  main-only.
+
+### Fixed — worker `Time.zone` resolution dies on `TimeZone.[]`'s Concurrent::Map class ivar
+
+Surfaced by the test app's durations probe (row 131: `Time.zone` /
+`Time.use_zone` from a worker).
+
+- `Time.zone` (and `in_time_zone` / `use_zone`) resolves zones through
+  `ActiveSupport::TimeZone.[]`, whose String branch memoizes into the class
+  ivar `@lazy_zones_map` — a `Concurrent::Map` set at load time. Both
+  halves are forbidden in workers: reading the unshareable Concurrent::Map
+  class ivar raises `Ractor::IsolationError` (can not get unshareable
+  values from instance variables of classes/modules), and a worker-side
+  memoize would try to set it.
+- The patched `[]` keeps the upstream body verbatim on main; workers use a
+  per-Ractor Hash cache from IsolatedExecutionState. Zone instances are
+  plain data and TZInfo lookups are worker-safe, so worker-local caches are
+  semantically equivalent. The numeric-offset branch (`all.find`) stays
+  main-only (`all` also reads class ivars).
+
 ### Fixed — worker-side streaming (`ActionController::Live`) hangs / dies
 
 Surfaced by the test app's blob proxy dispatch (row 127:

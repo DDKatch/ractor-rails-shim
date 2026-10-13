@@ -30,6 +30,11 @@ module RactorRailsShim
       # a worker response that carries Cache-Control headers (the blob proxy
       # route sets expires_in) reads it. An unfrozen Set is unshareable.
       "ActionDispatch::Http::Cache::Response::SPECIAL_KEYS",
+      # Read by ActiveSupport::TimeZone.find_tzinfo on every zone creation —
+      # worker-side `Time.zone` / `use_zone` resolve zones through the
+      # patched TimeZone.[] (per-Ractor IES cache) whose `create` lands
+      # here. An unfrozen Hash is unshareable.
+      "ActiveSupport::TimeZone::MAPPING",
       ])
 
   # Source-location constants used by make_app_shareable!'s proc-replacement

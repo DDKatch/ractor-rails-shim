@@ -392,6 +392,33 @@ module RactorRailsShim
       Patches::DependenciesInterlock.install
     end
 
+    # Patch `ActiveSupport::TimeZone.[]` so worker Ractors can resolve time
+    # zones (`Time.zone`, `Time.use_zone`, `Time.find_zone!`). Upstream
+    # memoizes into the class ivar `@lazy_zones_map` — a Concurrent::Map
+    # set at load time. Both halves are forbidden in workers: reading the
+    # unshareable Concurrent::Map class ivar raises Ractor::IsolationError,
+    # and a worker-side memoize would try to set it. Main keeps the
+    # upstream body verbatim; workers use a per-Ractor Hash cache from
+    # IsolatedExecutionState (zone instances are plain data; TZInfo lookups
+    # are worker-safe). See `Patches::TimeZoneLookup`.
+    def _install_time_zone_lookup_patch
+      Patches::TimeZoneLookup.install
+    end
+
+    # Patch `TZInfo::DataSource.get` so worker Ractors can create time
+    # zones. Upstream memoizes into the class variables @@instance /
+    # @@default_mutex — Ruby 4.0 forbids ANY class-variable access from a
+    # non-main Ractor (Ractor::IsolationError), so a worker-side zone
+    # creation (reached via the patched `ActiveSupport::TimeZone.[]` from
+    # `Time.zone` / `use_zone` / `in_time_zone`) dies. Main keeps the
+    # upstream body verbatim; workers get a per-Ractor DataSource from
+    # IsolatedExecutionState built by the upstream
+    # `create_default_data_source` (per-instance lookup caches make this
+    # semantically equivalent). See `Patches::TzinfoDataSource`.
+    def _install_tzinfo_data_source_patch
+      Patches::TzinfoDataSource.install
+    end
+
     # Patch the `Concurrent` global executor readers (timer / io / fast).
     # The gem backs them with unshareable `GLOBAL_*` Delay constants; a worker
     # Ractor reading those constants dies with
