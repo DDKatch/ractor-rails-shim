@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — intermittent worker `NoMethodError: undefined method 'owned?'` on NoOpLock
+
+Observed ~1-in-7 kino runs on `GET /`: a worker hit
+`Concurrent::Synchronization::MutexLockableObject#synchronize`, which (since
+concurrent-ruby 1.3.8) checks `@__Lock__.owned?` before locking — and the
+shim's `NoOpLock` (the shareable stand-in swapped for `Mutex`/`Monitor`
+ivars during the graph freeze) didn't define `owned?`. Added
+`def owned?; true; end`: callers take the direct-yield path, which is the
+correct semantics for a never-contended post-boot lock.
+
 ### Fixed — `normalizes` breaks every User-touching worker route (DelegateClass types poison `instance_method` cross-Ractor)
 
 Surfaced by the test app's `GET /features/normalizes_probe` (TODO P2 #3,

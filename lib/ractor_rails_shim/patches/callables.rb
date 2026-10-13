@@ -199,6 +199,10 @@ module RactorRailsShim
       def lock; self; end
       def unlock; self; end
       def locked?; false; end
+      # concurrent-ruby's MutexLockableObject#synchronize checks
+      # `@__Lock__.owned?` before locking; report true so callers take the
+      # direct-yield path (the lock is never contended post-boot anyway).
+      def owned?; true; end
       def mon_enter; end
       def mon_exit; end
       def mon_locked?; false; end
