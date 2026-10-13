@@ -473,6 +473,26 @@ module RactorRailsShim
     # this a worker Ractor dies with Ractor::IsolationError on the first
     # model instantiation (GeneratedAttributeMethods::LOCK is a
     # non-shareable Monitor).
+    # Pre-warm lazily-built message-verifier codecs ("active_record/
+    # signed_id" etc.) in the MAIN Ractor, after the ActiveStorage prefix
+    # seed. Workers request these on the first `signed_id` / `find_signed`
+    # call, but they CANNOT build the codec themselves: the coordinator
+    # rotation Proc / secret generator became NoOpProcs during Proc
+    # replacement, and the graph is frozen — so `@codecs` must already
+    # carry the fully-built verifiers. Workers then hit the frozen cache.
+    #
+    # The salt list is METHOD-LOCAL on purpose: module-level allocations at
+    # shim-load time perturb the order-sensitive attribute-method
+    # generation downstream.
+    def self.prewarm_message_verifier_codecs!(app)
+      lazy_salts = ["active_record/signed_id", "active_record/token_for"].freeze
+      coordinator = app.message_verifiers rescue nil
+      return unless coordinator.is_a?(::ActiveSupport::Messages::RotationCoordinator)
+      lazy_salts.each do |salt|
+        funnel.call("prewarm message verifier codec #{salt}") { coordinator[salt] }
+      end
+    end
+
     def self.generate_ar_attribute_methods!
       return unless defined?(::ActiveRecord::Base)
       gen_attr_methods_map = {}

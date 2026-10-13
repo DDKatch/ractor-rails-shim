@@ -104,6 +104,7 @@ class FrameworkPatchDispatchSpec < Minitest::Spec
     _install_i18n_patch
     _install_i18n_backend_patch
     _install_i18n_interpolation_patch
+    _install_message_verifier_digest_memo_patch
     _install_messages_serializer_patch
     _install_template_handlers_patch
     _install_execution_context_patch

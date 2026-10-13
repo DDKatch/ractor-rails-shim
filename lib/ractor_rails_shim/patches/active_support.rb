@@ -528,7 +528,13 @@ module RactorRailsShim
       swf.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def serializer_for(format)
           if Ractor.main?
-            SERIALIZERS.fetch(format)
+            # NOTE: this method is defined on the SINGLETON class via a string
+            # eval — the cref is #<Class:SerializerWithFallback>, whose
+            # ancestors do NOT include SerializerWithFallback itself, so a
+            # bare `SERIALIZERS` reference raises NameError here. Use the
+            # fully-qualified path (observed: the verifier-codec prewarm was
+            # the first main-path caller and died on the bare reference).
+            ::ActiveSupport::Messages::SerializerWithFallback::SERIALIZERS.fetch(format)
           else
             (RactorRailsShim.storage[:ractor_rails_shim_serializers] ||= {
               marshal: ::ActiveSupport::Messages::SerializerWithFallback::MarshalWithFallback,
@@ -575,6 +581,27 @@ module RactorRailsShim
       ::ActiveSupport::Messages::SerializerWithFallback::MessagePackWithFallback.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def available?
           defined?(::ActiveSupport::MessagePack)
+        end
+      RUBY
+    end
+
+    # Patch ActiveSupport::MessageVerifier#digest_length_in_hex. The method
+    # lazily memoizes `@digest_length_in_hex ||=` on the verifier instance;
+    # the verifier objects are deep-frozen by make_app_shareable!, so the
+    # first worker-side generate/verify hits FrozenError ("can't modify
+    # frozen ActiveSupport::MessageVerifier"). Replace the memoization with
+    # a direct computation — one OpenSSL::Digest allocation per
+    # generate/verify is negligible next to the HMAC itself, and this works
+    # from every Ractor against a frozen verifier.
+    def _install_message_verifier_digest_memo_patch
+      return if @message_verifier_digest_memo_patched
+      @message_verifier_digest_memo_patched = true
+      _register_patch :message_verifier_digest_memo, "8.1"
+      return unless defined?(::ActiveSupport::MessageVerifier)
+
+      ::ActiveSupport::MessageVerifier.class_eval <<-RUBY, __FILE__, __LINE__ + 1
+        private def digest_length_in_hex
+          OpenSSL::Digest.new(@digest).digest_length * 2
         end
       RUBY
     end

@@ -45,6 +45,18 @@ module RactorRailsShim
       # runs. Deep-freeze the String so argument serialization works in
       # workers (shim TODO #5).
       ["GlobalID", :@app],
+      # Row 75 (signed_id): the legacy signed-id rotation passes
+      # `serializer: JSON` (stdlib) to the MessageVerifier, and JSON memoizes
+      # its default-option Hashes as class ivars. Worker Ractors cannot even
+      # READ those unfrozen ivars — verifier.generate/verify die with
+      # "IsolationError: can not get unshareable values ... (@dump_default_options
+      # from JSON)". Deep-freeze the two memo Hashes so the legacy JSON
+      # serializer path works from any Ractor.
+      ["JSON::Ext::Generator", :@skip],
+      ["JSON", :@dump_default_options],
+      ["JSON", :@load_default_options],
+      ["JSON", :@generate_default_options],
+      ["JSON", :@parse_default_options],
     ])
 
     # Public API: make Rails.application shareable across Ractors. Delegates

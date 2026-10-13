@@ -69,6 +69,15 @@ module RactorRailsShim
       end
 
       def _default_attributes # :nodoc:
+        # Main must NOT memoize through RactorRailsShim.storage: that memo has
+        # no invalidation path in main (reset_default_attributes! clears the
+        # class ivars, reset_column_information can't see the storage slots),
+        # so a value built before the model's schema/table name settles (e.g.
+        # ActiveStorage models loaded before _seed_active_storage_prefix!
+        # fixes their prefix) poisons attribute_names permanently in main.
+        # Main uses the upstream class-ivar memo, which every reset path
+        # clears. Workers need the IES memo (they cannot write class ivars).
+        return super if ::Ractor.main?
         key = :"rrs_default_attributes_#{object_id}"
         RactorRailsShim.storage[key] ||=
           ::ActiveModel::AttributeSet.new({}).tap do |attribute_set|
@@ -77,6 +86,7 @@ module RactorRailsShim
       end
 
       def attribute_types # :nodoc:
+        return super if ::Ractor.main?
         key = :"rrs_attribute_types_#{object_id}"
         RactorRailsShim.storage[key] ||= begin
           types = _default_attributes.cast_types

@@ -34,8 +34,28 @@ module RactorRailsShim
       end
       PreSpawnSteps.apply_shareable_constants
       PreSpawnSteps.freeze_shareable_class_ivars
-      PreSpawnSteps.install_framework_patches
+      # Seed the ActiveStorage table prefix BEFORE installing framework
+      # patches: the AR model-classes patch (_share_model_classes!) runs
+      # load_schema on every concrete model, and with the prefix unseeded
+      # ActiveStorage models compute table names like "attachments" — the
+      # resulting PG::UndefinedTable attempts poison memoized attribute
+      # state (@attribute_names / attribute_types) that later passes never
+      # fully invalidate, so generate_ar_attribute_methods! then generates
+      # attribute-method modules missing column writers (observed: workers
+      # lose ActiveStorage::Attachment#name= → DelegationError on
+      # Attachment.new). Seeding first closes that window.
       RactorRailsShim.__send__(:_seed_active_storage_prefix!) if RactorRailsShim.respond_to?(:_seed_active_storage_prefix!, true)
+      # Pre-warm lazily-built message-verifier codecs ("active_record/
+      # signed_id" etc.): workers read the frozen @codecs cache instead of
+      # rebuilding via the NoOpProc'd rotation/secret-generator closures.
+      # Runs AFTER the prefix seed, in the stable schema window. Guarded so
+      # unit specs (which stub Rails without an application) still pass.
+      if defined?(::Rails::Application) && ::Rails.application.is_a?(::Rails::Application)
+        if RactorRailsShim::ShareabilityTraversal.respond_to?(:prewarm_message_verifier_codecs!, true)
+          RactorRailsShim::ShareabilityTraversal.prewarm_message_verifier_codecs!(::Rails.application)
+        end
+      end
+      PreSpawnSteps.install_framework_patches
       RactorRailsShim.__send__(:_install_action_cable_worker_server_patch!) if RactorRailsShim.respond_to?(:_install_action_cable_worker_server_patch!, true)
       RactorRailsShim.__send__(:_install_solid_cable_configuration_patch!) if RactorRailsShim.respond_to?(:_install_solid_cable_configuration_patch!, true)
       RactorRailsShim.__send__(:_freeze_secure_random_alphabets!) if RactorRailsShim.respond_to?(:_freeze_secure_random_alphabets!, true)

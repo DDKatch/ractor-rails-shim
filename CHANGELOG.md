@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — Rails 8.1 `signed_id` / `find_signed` / `token_for` from a worker Ractor
+
+`User.find_signed(params[:token])` from a worker Ractor died with
+`NoMethodError: undefined method '[]' for ... NoOpProc`: the signed-id salt
+("active_record/signed_id") builds its verifier codec LAZILY on first use, and
+by the time a worker asks, the coordinator's rotation Proc / secret generator
+have become NoOpProcs (Proc replacement) on a frozen graph. Verified by the
+test app's `GET /features/signed_id_probe` → `generate` / `find_signed` round
+trip from a kino `:ractor` worker.
+
+- **Codec pre-warm** (`ShareabilityTraversal.prewarm_message_verifier_codecs!`,
+  called from `prepare_for_ractors!` right after the ActiveStorage prefix
+  seed): main builds the lazily-created codecs ("active_record/signed_id",
+  "active_record/token_for") up front so workers hit the frozen `@codecs`
+  cache. The salt list is deliberately method-local — load-time allocations in
+  the shim used to perturb the order-sensitive attribute-method generation
+  downstream.
+- **`SerializerWithFallback.serializer_for` NameError fix**
+  (`patches/active_support.rb`): the patch is string-eval'd on the singleton
+  class, where a bare `SERIALIZERS` reference raises NameError (cref ancestors
+  exclude the module). Now fully qualified:
+  `::ActiveSupport::Messages::SerializerWithFallback::SERIALIZERS.fetch(format)`.
+- **stdlib `JSON` default-option ivars** (`patches/make_shareable.rb`): the
+  legacy signed-id rotation passes `serializer: JSON` (stdlib), and JSON
+  memoizes `@dump_default_options` / `@load_default_options` / etc. as class
+  ivars — workers could not even read them (`IsolationError ... from JSON`).
+  Registered in `SHAREABLE_CLASS_IVARS` so they deep-freeze at prepare time.
+- **`MessageVerifier#digest_length_in_hex` memo patch**
+  (`patches/active_support.rb`): the lazily memoized `@digest_length_in_hex
+  ||=` writes to the deep-frozen verifier at first generate/verify —
+  `FrozenError: can't modify frozen ActiveSupport::MessageVerifier`. Replaced
+  with a direct `OpenSSL::Digest` computation (allocation is negligible next
+  to the HMAC itself).
+- **`ActiveRecord` attribute-state robustness** (`patches/active_model_attribute.rb`):
+  in MAIN, `attribute_types` / `_default_attributes` no longer memoize through
+  `RactorRailsShim.storage` — that memo had no invalidation path in main
+  (`reset_column_information` cannot see it), so an empty type-set built
+  before a model's schema settled poisoned `attribute_names` permanently.
+  Main now uses the upstream class-ivar memo (which every reset path clears);
+  workers keep the per-Ractor IES path.
+- **Prefix-seed ordering fix** (`roles/lifecycle.rb`): `_seed_active_storage_prefix!`
+  now runs BEFORE `install_framework_patches`. The AR model-classes patch runs
+  `load_schema` on every concrete model at install time; with the prefix
+  unseeded, ActiveStorage models computed table names like `"attachments"` and
+  the failing attempts poisoned memoized attribute state —
+  `generate_ar_attribute_methods!` then generated modules missing column
+  writers, and workers lost `ActiveStorage::Attachment#name=` (DelegationError
+  on `Attachment.new`). Seeding first closes that window.
+- Dispatch list updated in `spec/framework_patch_dispatch_spec.rb` for the new
+  `_install_message_verifier_digest_memo_patch`.
+
 ### Fixed — shim TODO #5: ActiveJob `perform_later` / `deliver_later` from a worker Ractor
 
 The last code-level ❌ in `FEATURES.md`. `WelcomeJob.perform_later(user)` from
