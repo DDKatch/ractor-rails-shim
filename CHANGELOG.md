@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — worker-side Solid Cache (:solid_cache_store) round-trip; connects_to pool fallback; broken `reset_table_name` super
+
+Surfaced by the test app's `GET /solid_cache_probe` (TODO #27: verify rows
+45–47 against the REAL production store instead of the kino's historical
+`:null_store` no-op path).
+
+- **Broken `super` in the `reset_table_name` patch** (`patches/activerecord.rb`):
+  the shim's ModelSchema patch was installed via
+  `ModelSchema::ClassMethods.module_eval`, which REPLACES the original
+  `reset_table_name` in place — so the override's `super` skipped past the
+  module and found nothing. Every lazy main-side `reset_table_name` after
+  patch install raised `NoMethodError: super: no superclass method
+  'reset_table_name'` (silently swallowed by the warm passes' rescues). The
+  visible victims were HABTM join models, whose table names resolve lazily
+  through the builder's `table_name_resolver` AFTER patch install: their
+  `@table_name` never materialized and the resolver lambda survived the
+  graph freeze unfrozen, so worker-side HABTM writes died with
+  `IsolationError ... (@table_name_resolver from Post::HABTM_Tags)` —
+  with a heap-layout-sensitive failure rate that made the kino flaky across
+  shim changes. The override now captures the original via `alias_method`
+  and calls it explicitly; `ShareabilityTraversal.harden_ar_model_ivars!`
+  (called right before the graph freeze) additionally materializes join-model
+  `@table_name` and freezes the resolver lambda, with loud warnings instead
+  of silent skips.
+
+- **connects_to pool fallback** (`patches/activerecord.rb`):
+  `init_worker_ar_connections!` + the patched `connection_pool` /
+  `retrieve_connection` / `connected?`. connects_to-style models (Solid
+  Cache / Solid Queue / Solid Cable) own their pool in the MAIN handler under
+  their CLASS name (`connects_to` sets `@connection_specification_name`) and
+  carry their own `default_shard` class_attribute (e.g. SolidCache::Record
+  gets `default_shard == :primary` from config/cache.yml `database: primary`),
+  while the worker handler only seeded Base-level (role, :default) pools —
+  workers querying such a model died with
+  `ConnectionNotDefined: No database connection defined for
+  SolidCache::Record with 'primary' shard`. Two fixes: (1) the worker seed
+  also registers each named env database config under its own name as a
+  shard key (the standard `connects_to database: <name>` convention), and
+  (2) the patched readers fall back to the Base-level pool for the same
+  role/shard when the class-owned pool is not present in the worker.
+- **Per-Ractor `SolidCache::Entry.select_sql` memo**
+  (`patches/solid_cache.rb`, new): the read path memoizes per-keys-count SQL
+  in the class ivar `@select_sql` — a worker cannot write class ivars
+  (IsolationError). The singleton method now routes the memo through
+  Ractor.current in workers; main keeps the original lazy-memo semantics.
+
 ### Fixed — worker-Ractor mail hooks + ActiveJob `set(wait:)` enqueue; deterministic HABTM shareability
 
 Surfaced by the test app's worker-Ractor audit of mail hooks (matrix rows

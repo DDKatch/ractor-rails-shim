@@ -154,6 +154,7 @@ class FrameworkPatchDispatchSpec < Minitest::Spec
     _install_marcel_patch
     _install_cgi_patch
     _install_concurrent_global_timer_set_patch
+    _install_solid_cache_patch
     _install_openssl_digest_patch
     _install_caching_key_generator_patch
     _install_active_model_conversion_patch

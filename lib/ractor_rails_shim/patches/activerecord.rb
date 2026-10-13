@@ -272,6 +272,30 @@ module RactorRailsShim
           end
         end
 
+        # connects_to-based models (Solid Cache / Solid Queue / Solid Cable
+        # style) register their pools under shard keys EQUAL TO THE DATABASE
+        # NAME (connects_to database: :primary → shards { primary: ... }) and
+        # carry their own default_shard class_attribute (e.g.
+        # SolidCache::Record.default_shard == :primary with config/cache.yml
+        # `database: primary`). The default-shard pool above does not cover
+        # those lookups — a worker querying such a model raises
+        #   ConnectionNotDefined: No database connection defined for
+        #   SolidCache::Record with 'primary' shard.
+        # Register each named env config under its own name as a shard key too
+        # (same db_config, so the lazy pools stay cheap).
+        env_configs.each do |name, config|
+          shard = name.to_sym
+          next if shard == :default
+          begin
+            handler.establish_connection(config,
+              owner_name: ::ActiveRecord::Base,
+              role: ::ActiveRecord::Base.current_role || :writing,
+              shard: shard)
+          rescue StandardError => e
+            # Best-effort: if one connection fails, continue with others.
+          end
+        end
+
         Ractor.current[key] = handler
       end
     end
@@ -1170,9 +1194,18 @@ module RactorRailsShim
           end
         end
 
+        # NOTE: module_eval REPLACES the original `reset_table_name` in place
+        # (same module), so a plain `super` from this override would skip past
+        # ModelSchema::ClassMethods and find nothing — "super: no superclass
+        # method 'reset_table_name'" on the first lazy call in main post-patch
+        # (observed on HABTM join models, whose table names resolve lazily via
+        # the builder's table_name_resolver). Capture the original first and
+        # call it explicitly.
+        alias_method :__rrs_original_reset_table_name, :reset_table_name
+
         def reset_table_name
           if Ractor.main?
-            super
+            __rrs_original_reset_table_name
           else
             table_name
           end
@@ -2166,6 +2199,18 @@ module RactorRailsShim
               "Ractor before serving requests."
           end
           handler.retrieve_connection_pool(connection_specification_name, role: current_role, shard: current_shard, strict: true)
+        rescue ::ActiveRecord::ConnectionNotDefined
+          # connects_to-style models (Solid Cache / Solid Queue / Solid Cable)
+          # own their pool in the MAIN handler — registered under their CLASS
+          # name (connects_to sets @connection_specification_name) — but
+          # init_worker_ar_connections! only seeds Base-level pools. Fall back
+          # to the Base pool for the same role/shard: for the standard pattern
+          # (shard key == database.yml name, e.g. SolidCache::Record's
+          # default_shard == :primary from config/cache.yml `database:
+          # primary`) the seed step registered exactly that (role, shard) pair
+          # under the Base manager, pointing at the same db_config as the
+          # class-owned pool in main.
+          handler.retrieve_connection_pool(::ActiveRecord::Base.name, role: current_role, shard: current_shard, strict: true)
         end
         def retrieve_connection
           handler = connection_handler
@@ -2176,11 +2221,16 @@ module RactorRailsShim
               "Ractor before serving requests."
           end
           handler.retrieve_connection(connection_specification_name, role: current_role, shard: current_shard)
+        rescue ::ActiveRecord::ConnectionNotDefined
+          # See connection_pool above: connects_to-owned models resolve to the
+          # Base-level pool for the same role/shard.
+          handler.retrieve_connection(::ActiveRecord::Base.name, role: current_role, shard: current_shard)
         end
         def connected?
           handler = connection_handler
           return false unless handler
-          handler.connected?(connection_specification_name, role: current_role, shard: current_shard)
+          handler.connected?(connection_specification_name, role: current_role, shard: current_shard) ||
+            handler.connected?(::ActiveRecord::Base.name, role: current_role, shard: current_shard)
         end
       RUBY
     end

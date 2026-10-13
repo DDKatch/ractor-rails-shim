@@ -509,17 +509,26 @@ module RactorRailsShim
     # ivar value is readable from a worker, and the worker's ||= short-circuits.
     def self.harden_ar_model_ivars!
       return unless ::Ractor.main? && defined?(::ActiveRecord::Base)
+      hard = 0
       (::ActiveRecord::Base.descendants rescue []).each do |klass|
         next unless klass.name&.include?("HABTM")
         begin
+          # Materialize the table name so workers never need the resolver at
+          # all (the worker's ||= short-circuits on the frozen string).
+          klass.table_name
           resolver = klass.instance_variable_get(:@table_name_resolver)
           if resolver.is_a?(::Proc) && !Ractor.shareable?(resolver)
             klass.instance_variable_set(:@table_name_resolver, Ractor.make_shareable(resolver))
           end
-        rescue StandardError
-          nil
+          unless Ractor.shareable?(klass.instance_variable_get(:@table_name_resolver))
+            warn "[ractor-rails-shim] harden_ar_model_ivars!: #{klass.name} @table_name_resolver still unshareable after freeze"
+          end
+          hard += 1
+        rescue StandardError => e
+          warn "[ractor-rails-shim] harden_ar_model_ivars!: could not harden #{klass.name} @table_name_resolver (#{e.class}: #{e.message})"
         end
       end
+      warn "[ractor-rails-shim] harden_ar_model_ivars!: processed #{hard} HABTM join model(s)" if ENV["RACTOR_SHIM_DEBUG"]
     end
 
     def self.generate_ar_attribute_methods!
