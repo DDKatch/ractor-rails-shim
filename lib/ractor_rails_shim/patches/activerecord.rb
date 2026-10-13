@@ -2262,7 +2262,22 @@ module RactorRailsShim
           key = :"ractor_rails_shim_scv_\#{name || object_id}"
           v = RactorRailsShim.storage[key]
           return v if RactorRailsShim.storage.key?(key)
-          result = ancestors.index(instance_method(:serialize_cast_value).owner) <= ancestors.index(instance_method(:serialize).owner)
+          result = begin
+            ancestors.index(instance_method(:serialize_cast_value).owner) <= ancestors.index(instance_method(:serialize).owner)
+          rescue ::RuntimeError, ::Ractor::Error
+            # DelegateClass-built type classes (e.g. ActiveModel::Attributes::
+            # Normalization::NormalizedValueType, used by `normalizes`) carry
+            # Proc-body delegator methods created in main; Ruby 4 refuses
+            # instance_method / instance_methods on such classes from a worker
+            # ("defined with an un-shareable Proc in a different Ractor").
+            # Recompute with own-table checks only — method_defined?(sym,
+            # false) is a safe table read: find the first ancestor owning
+            # serialize_cast_value vs the first owning serialize (same
+            # owner-position comparison as upstream, without Method objects).
+            scv_pos = ancestors.index { |m| (m.method_defined?(:serialize_cast_value, false) rescue false) }
+            ser_pos = ancestors.index { |m| (m.method_defined?(:serialize, false) rescue false) }
+            !scv_pos.nil? && (ser_pos.nil? || scv_pos <= ser_pos)
+          end
           RactorRailsShim.storage[key] = result
           result
         end

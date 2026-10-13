@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — `normalizes` breaks every User-touching worker route (DelegateClass types poison `instance_method` cross-Ractor)
+
+Surfaced by the test app's `GET /features/normalizes_probe` (TODO P2 #3,
+row 74: `User normalizes :email, with: ->(v) { v.strip.downcase }`).
+
+- **`SerializeCastValue::ClassMethods#serialize_cast_value_compatible?` is not
+  DelegateClass-safe in workers** (`patches/activerecord.rb`): adding
+  `normalizes` to User wraps the attribute type in
+  `ActiveModel::Attributes::Normalization::NormalizedValueType`, a
+  `DelegateClass` subclass. DelegateClass defines its delegator methods via
+  `define_method` with **Proc bodies created in the defining Ractor**, and
+  Ruby 4.0 refuses `instance_method` / `instance_methods` on such classes
+  from another Ractor (`RuntimeError: defined with an un-shareable Proc in
+  a different Ractor`) — even for plain `def` methods on the same class.
+  The shim's IES-backed patch of `serialize_cast_value_compatible?` calls
+  `instance_method(...)` for every type construction, so ANY worker touching
+  User attributes boomed (Devise before_actions, mail probes, attach probes,
+  the root page, POST /posts...). The patch now rescues the cross-Ractor
+  error and recomputes with table snapshots only —
+  `method_defined?(sym, false)` per ancestor (verified safe cross-Ractor) —
+  reproducing the same first-owner comparison as upstream without Method
+  objects. Per-class IES key unchanged.
+
 ### Fixed — worker-side Solid Cache (:solid_cache_store) round-trip; connects_to pool fallback; broken `reset_table_name` super
 
 Surfaced by the test app's `GET /solid_cache_probe` (TODO #27: verify rows
