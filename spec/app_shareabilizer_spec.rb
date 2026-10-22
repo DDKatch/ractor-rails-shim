@@ -40,6 +40,8 @@ class AppShareabilizerSpec < Minitest::Spec
     stub_facade_step(:_precompute_propshaft!) { |a| called << :precompute_propshaft }
     stub_facade_step(:_generate_ar_attribute_methods!) { called << :generate_ar_attrs }
     stub_facade_step(:_warm_attribute_method_patterns!) { called << :warm_attr_patterns }
+    stub_facade_step(:_prewarm_solid_queue!) { called << :prewarm_solid_queue }
+    stub_facade_step(:_freeze_json_coder_constants!) { called << :freeze_json_coder }
     stub_facade_step(:_freeze_declared_callbacks!) { called << :freeze_callbacks }
     stub_facade_step(:_freeze_shareable_class_ivars!) { called << :freeze_class_ivars }
     stub_facade_step(:_warm_journey_routes!) { called << :warm_routes }
@@ -59,7 +61,8 @@ class AppShareabilizerSpec < Minitest::Spec
 
     expected_order = %i[
       apply_constants install_patches precompute_lazy precompute_propshaft
-      generate_ar_attrs warm_attr_patterns freeze_callbacks freeze_class_ivars
+      generate_ar_attrs warm_attr_patterns prewarm_solid_queue freeze_json_coder
+      freeze_callbacks freeze_class_ivars
       warm_routes neutralize_logger replace_procs replace_locks make_shareable
       build_fallback
     ]
@@ -230,6 +233,8 @@ class AppShareabilizerSpec < Minitest::Spec
     _precompute_propshaft!: RactorRailsShim,
     _generate_ar_attribute_methods!: RactorRailsShim::ShareabilityTraversal,
     _warm_attribute_method_patterns!: RactorRailsShim::ShareabilityTraversal,
+    _prewarm_solid_queue!: RactorRailsShim::Patches::SolidQueuePatch,
+    _freeze_json_coder_constants!: RactorRailsShim::JsonCoderFreezer,
     _freeze_declared_callbacks!: RactorRailsShim::CallbackCapture,
     _freeze_shareable_class_ivars!: RactorRailsShim::Freezers::ShareableClassIvarFreezer,
     _warm_journey_routes!: RactorRailsShim,
@@ -247,6 +252,8 @@ class AppShareabilizerSpec < Minitest::Spec
     _precompute_propshaft!: :_precompute_propshaft!,
     _generate_ar_attribute_methods!: :generate_ar_attribute_methods!,
     _warm_attribute_method_patterns!: :warm_attribute_method_patterns!,
+    _prewarm_solid_queue!: :apply!,
+    _freeze_json_coder_constants!: :apply!,
     _freeze_declared_callbacks!: :freeze_declared_callbacks!,
     _freeze_shareable_class_ivars!: :call,
     _warm_journey_routes!: :_warm_journey_routes!,

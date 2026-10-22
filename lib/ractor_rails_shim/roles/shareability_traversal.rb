@@ -466,6 +466,29 @@ module RactorRailsShim
       app.routes.url_helpers rescue nil
       app.routes.named_routes rescue nil
       app.routes.helpers rescue nil
+      # Mounted/isolated engines: Rails::Engine#env_config lazily memoizes
+      # @env_config on the engine INSTANCE. The make_shareable walk reaches
+      # engine objects (via the app's railties), so they freeze — but the
+      # lazy ivar is still unset at freeze time, and the first worker hit
+      # dies with FrozenError ("can't modify frozen AuditEngine::Engine").
+      # Warm every engine's env_config + app_env_config in MAIN before the
+      # freeze so the memoized Hashes are in the frozen graph (covers the
+      # framework engines — ActionText, ActionMailbox, ActiveStorage, … —
+      # not just app-mounted ones).
+      if defined?(::Rails::Engine)
+        ::Rails::Engine.subclasses.each do |engine_class|
+          engine = engine_class.instance
+          next unless engine
+          engine.env_config rescue nil
+          engine.app_env_config rescue nil
+          # Build the engine's Rack app in MAIN (middleware stack + endpoint
+          # → routes). Rails::Engine#app lazily memoizes @app under a build
+          # lock and WRITES config.middleware on the frozen Configuration —
+          # a worker's first dispatch would FrozenError on that write.
+          # Warming here means workers take the plain `@app` fast path.
+          engine.app rescue nil
+        end
+      end
     end
 
     # Snapshot Rails::Railtie::Configuration's @@options hash (the

@@ -307,8 +307,16 @@ module RactorRailsShim
       return nil if attr_sym.end_with?("__callbacks") ||
                     attr_sym.end_with?("__validators") ||
                     attr_sym.end_with?("default_connection_handler") ||
-                    attr_sym.include?("default_connection_handler") ||
-                    attr_sym.end_with?("__class_attr__queue_adapter")
+                    attr_sym.include?("default_connection_handler")
+      # NOTE: `queue_adapter` is deliberately NOT in this skip list. Adapter
+      # instances differ wildly in shareability — AsyncAdapter holds an
+      # unshareable @scheduler (threads/Mutex) and correctly falls back to
+      # the declared default below — but stateless DB-write adapters (the
+      # production-relevant case: SolidQueueAdapter, whose `enqueue` is just
+      # `SolidQueue::Job.enqueue(active_job)`) freeze fine, and workers NEED
+      # the real adapter (row 110: perform_later from a worker must write a
+      # solid_queue_jobs row, not inline-execute on the async scheduler).
+      # Let try_make_shareable decide per value.
 
       # Try a plain deep-freeze FIRST. Several class attributes (notably
       # ActiveRecord's `_reflections`, a Hash of Reflection objects) ARE

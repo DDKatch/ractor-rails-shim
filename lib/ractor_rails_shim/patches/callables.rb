@@ -78,6 +78,30 @@ module RactorRailsShim
       end
     end
 
+    # Shareable stand-in for the serialization type-decoration Proc that
+    # ActiveRecord's `serialize :attr, coder: ...` macro queues via
+    # `decorate_attributes` (a closure over `column_serializer` and
+    # `comparable` — and Ruby refuses Ractor.make_shareable on it because the
+    # upstream `coder ||= default_column_serializer` reassignment makes the
+    # captured `coder` local "may be reassigned"). Mirrors the upstream
+    # decoration exactly: rebuilds a FRESH ActiveRecord::Type::Serialized per
+    # invocation (called during apply_pending_attribute_modifications, i.e.
+    # at most once per Ractor per attribute during the lazy attribute-set
+    # rebuild), unwrapping an existing Serialized type like upstream so
+    # re-decoration is idempotent. `column_serializer` is frozen shareable
+    # before this callable is built, so instances freeze+share cleanly.
+    class SerializedTypeDecorator
+      def initialize(column_serializer, comparable)
+        @column_serializer = column_serializer
+        @comparable = comparable
+      end
+
+      def call(_attribute_name, cast_type)
+        cast_type = cast_type.subtype if ::ActiveRecord::Type::Serialized === cast_type
+        ::ActiveRecord::Type::Serialized.new(cast_type, @column_serializer, comparable: @comparable)
+      end
+    end
+
     # Shareable snapshot of a Devise::Mapping. The real Mapping holds an
     # unshareable lambda (failure_app) plus a default-proc Hash (controllers),
     # so it can't be Ractor.make_shareable'd. Request-time code only reads a

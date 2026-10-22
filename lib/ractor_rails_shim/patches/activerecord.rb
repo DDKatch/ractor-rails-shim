@@ -3176,39 +3176,98 @@ module RactorRailsShim
                 begin
                   Ractor.make_shareable(val)
                 rescue StandardError, Ractor::Error
-                  # Ruby refuses make_shareable on the enum decoration Proc
-                  # ("the outer variable 'validate' may be reassigned" in
-                  # ActiveRecord::Enum#enum). Reconstruct the decoration as a
-                  # shareable callable: read the closure's captured locals
-                  # via Proc#binding (main Ractor, pre-freeze) and bake them
-                  # into RactorRailsShim::EnumTypeDecorator, which rebuilds a
-                  # fresh EnumType per apply.
-                  replacement = nil
-                  loc = (val.source_location rescue nil)
-                  srcs = loc.is_a?(::Array) ? loc : [loc]
-                  if srcs.any? { |s| s.is_a?(::String) && s.end_with?("enum.rb") } && defined?(::ActiveRecord::Enum::EnumType)
-                    begin
-                      bnd = val.binding
-                      enum_name = bnd.local_variable_get(:name)
-                      enum_values = bnd.local_variable_get(:enum_values)
-                      validate = bnd.local_variable_get(:validate)
-                      replacement = RactorRailsShim.singleton_class.const_get(:EnumTypeDecorator)
-                                           .new(enum_name, enum_values, validate)
-                      Ractor.make_shareable(replacement)
-                    rescue StandardError, Ractor::Error
-                      replacement = nil
+                  # RETRY PASS: a decoration Proc whose captured binding LOCALS
+                  # are simple unfrozen value objects (e.g. the
+                  # `serialize :arguments, coder: JSON` decorator captures an
+                  # unfrozen `ActiveRecord::Coders::JSON` instance) fails
+                  # make_shareable with "it can refer unshareable object
+                  # <X> from variable '<name>'". Freeze each local VALUE in
+                  # place (main Ractor, pre-freeze), then retry. If the retry
+                  # succeeds the decorator replays in workers.
+                  shared_after_retry = false
+                  begin
+                    bnd = val.binding
+                    bnd.local_variables.each do |lv|
+                      lval = (bnd.local_variable_get(lv) rescue next)
+                      next if lval.nil? || (Ractor.shareable?(lval) rescue true)
+                      begin
+                        Ractor.make_shareable(lval)
+                      rescue StandardError, Ractor::Error
+                        nil
+                      end
                     end
+                    shared_after_retry = (Ractor.make_shareable(val) rescue false) ? true : false
+                  rescue StandardError, Ractor::Error
+                    shared_after_retry = false
                   end
-                  replacement ||
-                    begin
-                      # Undecorable Proc (binding self or locals unshareable):
-                      # swap a no-op in so the Struct stays shareable.
-                      # PendingDecorator#apply_to ignores a nil return, so the
-                      # attribute keeps its prior type.
-                      noop_builder ||= RactorRailsShim.singleton_class.const_get(:NoOpProc)
-                      noop_builder.new
+                  val if shared_after_retry
+                end ||
+                  begin
+                    # Ruby refuses make_shareable on the enum decoration Proc
+                    # ("the outer variable 'validate' may be reassigned" in
+                    # ActiveRecord::Enum#enum). Reconstruct the decoration as a
+                    # shareable callable: read the closure's captured locals
+                    # via Proc#binding (main Ractor, pre-freeze) and bake them
+                    # into a shareable decorator callable that rebuilds the
+                    # fresh type per apply.
+                    replacement = nil
+                    loc = (val.source_location rescue nil)
+                    srcs = loc.is_a?(::Array) ? loc : [loc]
+                    if srcs.any? { |s| s.is_a?(::String) && s.end_with?("enum.rb") } && defined?(::ActiveRecord::Enum::EnumType)
+                      begin
+                        bnd = val.binding
+                        enum_name = bnd.local_variable_get(:name)
+                        enum_values = bnd.local_variable_get(:enum_values)
+                        validate = bnd.local_variable_get(:validate)
+                        replacement = RactorRailsShim.singleton_class.const_get(:EnumTypeDecorator)
+                                             .new(enum_name, enum_values, validate)
+                        Ractor.make_shareable(replacement)
+                      rescue StandardError, Ractor::Error
+                        replacement = nil
+                      end
                     end
-                end
+                    # `serialize :attr, coder: ...` decorations (the
+                    # serialization.rb closure over `column_serializer` —
+                    # unshareable because the upstream `coder ||=` reassignment
+                    # taints the proc): rebuild as a shareable callable. The
+                    # binding-locals freeze pass above already froze
+                    # `column_serializer` (a Coders::JSON instance) in place.
+                    #
+                    # SCOPE GUARD: only VALUE-OBJECT coders (the
+                    # ActiveRecord::Coders::* instances — mechanical
+                    # JSON/YAML round-trips). Coder CLASSES (e.g.
+                    # ActionText::Content for rich-text bodies) carry domain
+                    # semantics whose load path needs Nokogiri — a permanent
+                    # worker wall — so those keep the pre-fix behavior (the
+                    # decoration no-ops; the attribute keeps its column type
+                    # and the body round-trips as stored HTML, which is what
+                    # the app's rich-text probes are built on — row 120).
+                    if replacement.nil? && srcs.any? { |s| s.is_a?(::String) && s.end_with?("serialization.rb") } &&
+                       defined?(::ActiveRecord::Type::Serialized)
+                      begin
+                        bnd = val.binding
+                        column_serializer = bnd.local_variable_get(:column_serializer)
+                        comparable = bnd.local_variable_get(:comparable)
+                        unless column_serializer.is_a?(::Class) || column_serializer.is_a?(::Module)
+                          Ractor.make_shareable(column_serializer) rescue nil
+                          replacement = RactorRailsShim.singleton_class.const_get(:SerializedTypeDecorator)
+                                               .new(column_serializer, comparable)
+                          Ractor.make_shareable(replacement)
+                        end
+                      rescue StandardError, Ractor::Error
+                        replacement = nil
+                      end
+                    end
+                    replacement ||
+                      begin
+                        # Undecorable Proc (binding self or locals unshareable):
+                        # swap a no-op in so the Struct stays shareable.
+                        # PendingDecorator#apply_to ignores a nil return, so the
+                        # attribute keeps its prior type.
+                        noop_builder ||= RactorRailsShim.singleton_class.const_get(:NoOpProc)
+                        noop_builder.new
+                      end
+                  end
               end
               e2 = entry.class.new(*vals)
               begin

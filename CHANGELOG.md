@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — worker-side `serialize :arguments, coder: JSON` (Solid Queue enqueue from a worker, row 110)
+
+Four coordinated fixes, all proven by the test app's `:ractor` suite plus an
+end-to-end kino + `bin/jobs` dispatcher run (worker enqueues; the separate
+dispatcher performs):
+
+- `patches/solid_queue.rb` (new): prewarms `SolidQueue::Batch.migrated?`
+  (a lazily-memoized boolean class ivar on a frozen engine-model class —
+  the first worker enqueue died on the `||=` write) and re-registers the
+  execution models' `before_create -> { assume_attributes_from_job }`
+  BLOCK callback symbolically (`before_create :assume_attributes_from_job`
+  via a string-eval'd redefinition of the `JobAttributes` macro). Without
+  the latter, SolidQueue's `ScheduledExecution` INSERT died with
+  PG::NotNullViolation (null `queue_name`) because SymbolicTransport
+  fail-safe skips block filters. Each execution model's current assumable
+  list is re-applied (ReadyExecution none/default, ScheduledExecution
+  `:scheduled_at`, BlockedExecution `:concurrency_key`).
+- `FallbackBuilder.try_make_shareable` no longer blanket-skips
+  `__class_attr__queue_adapter`: stateless DB-write adapters (SolidQueueAdapter)
+  freeze into the worker fallback so workers enqueue through the REAL
+  adapter; unshareable ones (AsyncAdapter's live scheduler) still fall back
+  to the declared default.
+- `_share_ar_pending_attribute_modifications!` gains a binding-locals
+  retry pass + `SerializedTypeDecorator` (callables.rb): decoration Procs
+  whose captured locals are unfrozen value objects (e.g. the `serialize`
+  macro's `ActiveRecord::Coders::JSON` instance) now freeze those locals in
+  place and retry; serialization.rb-sourced decorations that can never be
+  shared (`coder ||=` reassignment taints the proc) are reconstructed as a
+  shareable callable that rebuilds `Type::Serialized` per apply. WITHOUT
+  this, workers rebuilt the `arguments` attribute as a plain Text type and
+  stored Ruby hash-inspect instead of JSON (the dispatcher then died with
+  JSON::ParserError). SCOPE GUARD: only value-object coders
+  (ActiveRecord::Coders::* instances) are reconstructed — coder CLASSES
+  (ActionText::Content, whose load path needs Nokogiri — the permanent
+  worker wall) keep the pre-fix no-op behavior, preserving row 120's
+  raw-HTML round-trip.
+- `JsonCoderFreezer` (in patches/active_job.rb): freezes the
+  `JSONGemCoderEncoder::CODER` constant's value in main at prepare time so
+  the worker-side encode path (called by `ActiveRecord::Coders::JSON#dump`
+  through `Type::Serialized#serialize`) can read the constant legally.
+- `prepare_for_ractors!` pipeline gains two steps (wired through
+  `AppShareabilizer`'s configure seam): `prewarm_solid_queue` and
+  `freeze_json_coder`.
+
 ### Added — worker-side `around_action` / `:around` callback replay (wrap-style)
 
 Symbolic method-name `:around` filters (`around_action :method`,

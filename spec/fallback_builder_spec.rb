@@ -81,10 +81,26 @@ class FallbackBuilderSpec < Minitest::Spec
     assert_nil RactorRailsShim::FallbackBuilder.try_make_shareable(val, nil, :__ractor_rails_shim_ar_default_connection_handler__)
   end
 
-  it "try_make_shareable returns nil for queue_adapter (known unshareable)" do
-    val = Object.new
-    assert_nil RactorRailsShim::FallbackBuilder.try_make_shareable(val, "ActiveJob::Base", :__class_attr__queue_adapter)
+  # queue_adapter was once blanket-skipped (AsyncAdapter holds an
+  # unshareable @scheduler). Now the skip list no longer covers it: the
+  # attempt runs per value, so stateless DB-write adapters (SolidQueueAdapter
+  # — row 110) freeze into the fallback while unshareable ones still fall
+  # back to the declared default. A shareable stand-in round-trips.
+  it "try_make_shareable shares a shareable queue_adapter value" do
+    adapter = Object.new
+    out = capture_stderr do
+      result = RactorRailsShim::FallbackBuilder.try_make_shareable(adapter, "ActiveJob::Base", :__class_attr__queue_adapter)
+      assert_same adapter, result, "a shareable adapter value must be captured"
+    end
+    refute_includes out, "ractor-rails-shim", "shareable queue_adapter must not warn"
   end
+
+  # NOTE: no "unshareable adapter" unit case — the proc/lock replacement
+  # traversal makes almost every stand-in shareable (verified interactively),
+  # so the realistic negative case is the real AsyncAdapter (@scheduler's
+  # live thread pool) which is app-level behavior: it falls back to the
+  # declared default in workers. The positive case above is the row-110
+  # regression guard.
 
   # reflections holds a Hash of Reflection objects that is genuinely
   # shareable as-is (its Procs are self-contained). try_make_shareable must
