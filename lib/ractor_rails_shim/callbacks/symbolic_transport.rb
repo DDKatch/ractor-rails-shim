@@ -33,9 +33,16 @@ require "set"
 #   - context.action_name      -> Symbol or nil (only meaningful for controllers)
 #   - context.respond_to?(filter, true) + context.public_send(filter)
 #
-# `:around` symbolic filters are NOT transported (they must wrap the yield, and
-# the Registry owns the single yield). Rails `:around` callbacks are almost
-# always lambdas anyway; documented as a known limitation in ARCHITECTURE.md §5c.
+# `:around` symbolic filters ARE transported (wrap-style): `around(context,
+# kind, inner)` collects the matching `:around`-phase Symbol filters and
+# returns a callable that invokes each filter method with the rest of the
+# chain (`inner.call`) as the block — reproducing ActiveSupport's native
+# around semantics (first-declared filter outermost; the method's `yield`
+# descends into `inner`). Filters whose method is missing or whose body is an
+# un-shareable Proc are skipped fail-safe (the chain continues without them).
+# Block-based `:around` filters (lambdas/Procs) are NOT captured at all
+# (un-shareable Procs) and are therefore never replayed — same policy as for
+# every other Proc filter.
 
 module RactorRailsShim
   module Callbacks
@@ -127,7 +134,79 @@ module RactorRailsShim
         end
       end
 
+      # Wrap-style :around replay. `inner` is the rest of the chain as a
+      # callable; the return value is `inner` unchanged when no :around filter
+      # applies, otherwise a callable that descends through the filters.
+      #
+      # Nesting matches ActiveSupport (verified against the real compiled
+      # chain): the FIRST-declared :around filter is OUTERMOST — it is entered
+      # first and wraps every later layer behind its `yield`. So the entries
+      # are collected in chain order (superclass-first, declaration order) and
+      # folded INNER-first (reverse iteration).
+      #
+      # Each wrapper sends the filter method with the descending callable as
+      # its block (`context.send(:filter) { inner.call }`); a filter method
+      # that never yields therefore suppresses the rest of the chain, and a
+      # filter method whose body is an un-shareable Proc (define_method with a
+      # main-Ractor block) is skipped fail-safe — the inner chain runs without
+      # the wrapper. `respond_to?` guards stale captures (a method removed
+      # since declaration), matching #invoke_filter.
+      #
+      # Halting NOTE: an around filter's return value is NOT treated as a halt
+      # signal (the wrapper cannot observe it without wrapping the send, and
+      # real around-filter methods virtually always return nil). Halting stays
+      # a :before-phase concern, as in the compiled chain.
+      def around(context, kind, inner)
+        collected = []
+        each_applicable_filter(context, kind, :around) do |entry|
+          next unless entry[:filter].is_a?(::Symbol)
+          next unless condition_allows?(context, entry)
+          next unless validation_context_allows?(context, entry)
+          collected << entry
+        rescue RuntimeError => e
+          raise e unless unshareable_proc_error?(e)
+          # Skip the unshareable-Proc filter; the chain continues.
+        end
+        # Fold inner-first: entries arrive chain-order (superclass-first,
+        # declaration order) and first-declared must end up OUTERMOST, so
+        # wrap from the last entry backwards.
+        collected.reverse_each do |entry|
+          inner = around_wrapper(context, entry, inner)
+        end
+        inner
+      end
+
       private
+
+      # Build one wrap layer for `entry` around `inner`. The lambda closes
+      # over `context`, the filter Symbol, and the inner callable — all
+      # worker-side values, so the layer itself is Ractor-safe.
+      #
+      # Return-value semantics (verified against the real compiled chain):
+      # run_callbacks NEVER propagates an around filter's return value. If
+      # the filter yielded, the chain evaluates to the INNER callable's
+      # result; if it never yielded (render/redirect-and-stop), the chain
+      # evaluates to nil. The wrapper distinguishes "yielded" from "skipped":
+      # a missing method or an un-shareable-Proc RuntimeError falls through
+      # to `inner.call` (fail-safe skip), propagating the inner result.
+      def around_wrapper(context, entry, inner)
+        filter = entry[:filter]
+        lambda {
+          begin
+            if context.respond_to?(filter, true)
+              yielded = false
+              yielded_value = nil
+              context.send(filter) { yielded = true; yielded_value = inner.call }
+              yielded ? yielded_value : nil
+            else
+              inner.call
+            end
+          rescue RuntimeError => e
+            raise e unless unshareable_proc_error?(e)
+            inner.call
+          end
+        }
+      end
 
       # Walk the context's class hierarchy, collecting every entry whose
       # chain_kind + phase match, then yield them in Rails' accumulation order:

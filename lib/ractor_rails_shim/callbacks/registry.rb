@@ -11,6 +11,21 @@
 # (e.g. on `:destroy` both the symbolic `before_destroy` filters AND the
 # `dependent:` cascade run) without any transport owning the block.
 #
+# Transports may additionally implement wrap-style callback phases via
+#   around(context, kind, inner) -> inner or a new callable
+# `inner` is the rest of the chain as a callable; the transport returns a
+# callable that invokes its own `:around` filters and (each calibration point)
+# calls `inner` in turn. A transport that does not implement `around` simply
+# does not wrap (duck-typing, Open/Closed).
+#
+# Real Rails around-chain semantics (verified against ActiveSupport): the
+# FIRST-declared `:around` filter is OUTERMOST (`a { b { block } }`), the
+# after-half runs INSIDE the innermost around's `yield` (block → after → the
+# arounds' post-yield code unwinds), and an around filter that never calls
+# yield suppresses the block AND the after-half. `replay` reproduces exactly
+# that: the after-work lives inside the innermost callable, not outside the
+# around chain.
+#
 # A transport duck-types to:
 #   applies_to?(kind)   -> bool
 #   before(context, kind) -> runs before-filter work for that chain kind (no-op ok)
@@ -47,10 +62,24 @@ module RactorRailsShim
       # every applicable transport's after-work. Returns the block's result.
       # If nothing applies, just yields (matching the original empty-chain path).
       #
+      # Wrap-style phases: if any applicable transport implements `around`,
+      # its wrap layers replace the plain yield-position. The callable chain
+      # is built inside-out: the innermost callable runs the block and the
+      # transports' after-work (so the after-half sits INSIDE the around
+      # yield, matching ActiveSupport), then each `around`-ing transport
+      # wraps that. An outermost around filter that never invokes `inner`
+      # therefore suppresses the block AND the after-work, exactly like a
+      # real chain.
+      #
+      # With multiple around-capable transports the FIRST-registered one's
+      # filters sit outermost (reverse traversal) — mirrors chain order since
+      # transports are registered chain-segment-first. Today only
+      # SymbolicTransport implements `around`.
+      #
       # Halting (Rails semantics): a :before filter that returns exactly
       # `false` halts the chain — the block does NOT run and NO after-work
-      # runs. `replay` returns `false`, which propagates out of
-      # `run_callbacks` exactly like a halted real chain. Transports signal
+      # or around-layer runs. `replay` returns `false`, which propagates out
+      # of `run_callbacks` exactly like a halted real chain. Transports signal
       # this by returning `false` from `before` (a transport that only runs
       # work and has no halt signal returns nil).
       def replay(context, kind, &block)
@@ -60,9 +89,15 @@ module RactorRailsShim
           halted = t.before(context, kind)
           return false if halted == false
         end
-        result = yield
-        applicable.each { |t| t.after(context, kind) }
-        result
+        body = lambda {
+          result = block ? block.call : nil
+          applicable.each { |t| t.after(context, kind) }
+          result
+        }
+        applicable.reverse_each do |t|
+          body = t.around(context, kind, body) if t.respond_to?(:around)
+        end
+        body.call
       end
 
       # Forward the optional framework-hooking phase to every transport that

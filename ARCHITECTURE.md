@@ -210,6 +210,21 @@ Dev-only testing had masked this entirely; the bug was real in production.
   `define_method(&block)` with an un-shareable Proc (e.g. AR's autosave
   callbacks) are rescued and skipped so app `def` callbacks still run (see below).
 
+  **Wrap-style phases: `:around` filters ARE replayed.** Symbolic
+  `around_action :method` / `around_save :method` filters are captured like any
+  other Symbolic filter (`phase: :around` is recorded at declaration time) and
+  replayed by `SymbolicTransport#around(context, kind, inner)`, which the
+  `Registry#replay` loop applies as wrap layers around the yield: each layer
+  `send`s the filter method with the remaining chain (`inner.call`) as its
+  block. Nesting matches ActiveSupport exactly (pinned against the real
+  compiled chain): the FIRST-declared `:around` filter is OUTERMOST, the
+  after-half runs INSIDE the innermost `yield`, a filter that never yields
+  suppresses the block and the after-half, and `run_callbacks` evaluates to
+  the block result (a yielding filter's own return value is discarded; a
+  non-yielding one evaluates the chain to nil). Block-based `:around`
+  filters (lambdas/Procs) are NOT captured — un-shareable Procs — and remain
+  fail-safe skipped, like every other Proc filter.
+
   **Transport B — lambda filters that reduce to a declarative spec
   (`DependentAssociationTransport`).** Used for `dependent:` association
   cascades. The `dependent: <type>` option registers a **lambda** `before_destroy`

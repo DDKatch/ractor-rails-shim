@@ -14,7 +14,7 @@ Status legend:
 | GET/POST/PATCH/DELETE dispatch | ✅ | yes | full CRUD over pg |
 | `before_action` / `after_action` (symbolic) | ✅ | yes | captured + replayed per controller |
 | `only:` / `except:` scoping + halt-on-perform | ✅ | yes | set_post/set_comment ordering fixed |
-| `around_action` | ❌ | no | `:around` filters are recorded but never replayed (SymbolicTransport skips them by design) |
+| `around_action` | ✅ | yes | symbolic (`around_action :method`) filters replay wrap-style via SymbolicTransport#around — first-declared outermost, after-half inside the yield, non-yielding suppresses block + after. Block/lambda around filters are NOT captured (un-shareable Procs, fail-safe skip) |
 | `redirect_to @record` (full URL) | ✅ | yes | url_helpers worker fallback |
 | `render html:` / ERB templates | ✅ | yes | with_empty_template_cache built in main |
 | `render plain:` | ✅ | yes | used by StatsController |
@@ -109,7 +109,7 @@ Status legend:
 ## Known limitations
 | Limitation | Status | Notes |
 |---|---|---|
-| `around_action` / `around_*` callbacks | ❌ (by design) | SymbolicTransport records `:around` filters but doesn't replay them (they must wrap the yield). |
+| `around_action` / `around_*` callbacks | ✅ (symbolic only) | Symbolic method-name around filters replay wrap-style (first-declared outermost; after-half inside the yield; non-yielding suppresses block + after). Lambda/Proc around filters stay skipped (un-shareable Procs). |
 | `sanitize` / `simple_format` (Nokogiri) | ❌ | ractor-unsafe C ext — main-Ractor only in workers. |
 | ActiveJob `perform_later` / `deliver_later` | ✅ (fixed) | TODO #5 resolved (2026-10-05): `GlobalID.app` deep-frozen via `SHAREABLE_CLASS_IVARS`; CGI `@@accept_charset` class-variable default args patched out (`patches/cgi.rb` — class variables are unreadable from workers even when shareable); `queue_adapter` needs no shim (lazy per-worker instantiation via the class_attribute IES writer). Probe: `GET /job_enqueue_probe` → 200 `{enqueued: true}`. |
 | `has_one_attached` block `after_save` callback | ⚠️ (workaround) | `has_one_attached` registers `after_save { ... }` (lambda), which can't cross Ractor boundary. Probe manually creates Blob + Attachment via `insert!`. |

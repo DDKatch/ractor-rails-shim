@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — worker-side `around_action` / `:around` callback replay (wrap-style)
+
+Symbolic method-name `:around` filters (`around_action :method`,
+`around_save :method`, …) now replay in worker Ractors. `SymbolicTransport`
+gains `around(context, kind, inner)` and `Registry#replay` builds a wrap
+chain around the single yield. Nesting is pinned against the real
+ActiveSupport compiled chain: first-declared `:around` filter outermost, the
+after-half runs inside the innermost `yield`, a filter that never yields
+suppresses the block and the after-half, and the chain evaluates to the
+block's result (a yielding filter's own return value is discarded; a
+non-yielding one evaluates to nil). Lambda/Proc around filters remain
+fail-safe skipped (un-shareable Procs — same policy as every other Proc
+filter). Specs: `spec/callbacks/around_transport_spec.rb`. This resolves the
+test-app TODO #90 decision (`around_action`) in favor of shim support.
+
 ## [0.4.2]
 
 ### Fixed — worker time-zone creation dies on `TZInfo::DataSource`'s class variables
