@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — multi-database (`connects_to` / `connected_to`) in worker Ractors
+
+Test-app row 81 now runs a real second database, which exposed three gaps in
+the worker connection setup:
+
+- `init_worker_ar_connections!` established EVERY configured database on the
+  `:default` shard, so in a multi-database app the LAST config won — workers
+  queried the secondary database and raised `PG::UndefinedTable` for every
+  primary table. The config named `primary` (Rails' convention) now owns the
+  default shard; single-database apps fall back to the first entry.
+- Each named database is registered for the writing AND the reading role;
+  `connected_to(role: :reading)` otherwise raised "calling `connected_to` is
+  not allowed when there is no connection defined for that role".
+- New `_capture_ar_connection_classes!` (main, prepare time) records every
+  model that owns a pool via `connects_to` (Solid Cache/Queue/Cable records,
+  app multi-database models) together with the db config main resolved.
+  Workers re-establish those pools from the snapshot under the model's own
+  `connection_specification_name` — a lazily autoloaded class re-resolved
+  `connects_to` to the PRIMARY config (observed: `AuditEntry` queried the
+  primary database and its table was "missing").
+
+Evidence: test app `/multi_db_probe` in a worker — secondary write + re-read,
+a primary read in the same request, and
+`SecondaryRecord.connected_to(role: :reading)`. Suite: 830 runs, 0 failures.
+
 ### Added — turbo-rails worker support (test-app rows 105 + 121)
 
 Adopting turbo-rails and exercising ActiveStorage direct uploads in worker

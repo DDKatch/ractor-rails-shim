@@ -45,6 +45,10 @@ module RactorRailsShim
       # lose ActiveStorage::Attachment#name= → DelegationError on
       # Attachment.new). Seeding first closes that window.
       RactorRailsShim.__send__(:_seed_active_storage_prefix!) if RactorRailsShim.respond_to?(:_seed_active_storage_prefix!, true)
+      # Multi-database support: capture each `connects_to` model's resolved
+      # db config so workers can re-establish its pool (they cannot re-resolve
+      # `connects_to` correctly once the class is lazily autoloaded).
+      RactorRailsShim.__send__(:_capture_ar_connection_classes!) if RactorRailsShim.respond_to?(:_capture_ar_connection_classes!, true)
       # Pre-warm lazily-built message-verifier codecs ("active_record/
       # signed_id" etc.): workers read the frozen @codecs cache instead of
       # rebuilding via the NoOpProc'd rotation/secret-generator closures.

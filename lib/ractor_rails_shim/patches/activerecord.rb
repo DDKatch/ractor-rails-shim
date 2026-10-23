@@ -152,6 +152,15 @@ module RactorRailsShim
   # non-main Ractor cannot access.
   AR_CONFIGURATIONS_SHAREABLE = nil
 
+  # Shareable snapshot of every model that owns its own pool (`connects_to`
+  # — Solid Cache/Queue/Cable records and app multi-database models), keyed
+  # by class name: { "SecondaryRecord" => { config: {...}, shard: :default } }.
+  # Captured in main at prepare. Workers cannot re-resolve `connects_to`
+  # reliably (a lazily autoloaded class resolved the PRIMARY config), so the
+  # worker handler re-establishes these pools from this snapshot under the
+  # model's own connection_specification_name.
+  AR_CONNECTION_CLASSES_SNAPSHOT = nil
+
   # Shareable (deep-frozen) copy of DatabaseConfigurations.db_config_handlers
   # (an Array of shareable handler Procs) captured at prepare time. Workers
   # read this instead of the per-Ractor class instance variable.
@@ -233,6 +242,38 @@ module RactorRailsShim
     # Idempotent: safe to call multiple times (subsequent calls are no-ops
     # once the handler is established). Uses Ractor.store_if_absent semantics
     # via IES.
+    # Capture (main Ractor, prepare time) every model that owns a pool via
+    # `connects_to`, together with the db config main resolved for it. The
+    # worker handler re-establishes those pools from this snapshot — see the
+    # AR_CONNECTION_CLASSES_SNAPSHOT comment.
+    def _capture_ar_connection_classes!
+      return if @_ar_conn_classes_captured
+      @_ar_conn_classes_captured = true
+      return unless defined?(::ActiveRecord::Base) && ::ActiveRecord::Base.respond_to?(:descendants)
+
+      snapshot = {}
+      ::ActiveRecord::Base.descendants.each do |klass|
+        next unless klass.respond_to?(:connection_class?) && klass.connection_class?
+        next if klass.name.nil?
+        begin
+          db_config = klass.connection_db_config
+          next unless db_config
+          hash = db_config.configuration_hash.reject { |_k, v| v.nil? }
+          next if hash.empty?
+          snapshot[klass.name.to_s] = {
+            config: hash,
+            shard: (klass.default_shard || :default)
+          }
+        rescue StandardError
+          nil
+        end
+      end
+      return if snapshot.empty?
+
+      Ractor.make_shareable(snapshot)
+      _reassign_shareable_const(:AR_CONNECTION_CLASSES_SNAPSHOT, snapshot)
+    end
+
     def init_worker_ar_connections!
       return if Ractor.main?
       return unless defined?(::ActiveRecord::Base)
@@ -261,14 +302,21 @@ module RactorRailsShim
         env_configs = snapshot[env] || snapshot.values.first || {}
 
         handler = ::ActiveRecord::ConnectionAdapters::ConnectionHandler.new
-        env_configs.each do |_name, config|
+        # The DEFAULT shard must be the app's primary database. In a
+        # multi-database app (database.yml with primary/secondary) iterating
+        # every config under :default made the LAST one win — workers then
+        # queried the secondary database and raised PG::UndefinedTable for
+        # every primary table. Pick the config named "primary" (Rails'
+        # convention) and fall back to the first entry for single-db apps.
+        default_config = env_configs["primary"] || env_configs.values.first
+        if default_config
           begin
-            handler.establish_connection(config,
+            handler.establish_connection(default_config,
               owner_name: ::ActiveRecord::Base,
               role: ::ActiveRecord::Base.current_role || :writing,
               shard: ::ActiveRecord::Base.current_shard || :default)
-          rescue StandardError => e
-            # Best-effort: if one connection fails, continue with others.
+          rescue StandardError
+            # Best-effort: if the connection fails, continue with others.
           end
         end
 
@@ -283,16 +331,52 @@ module RactorRailsShim
         #   SolidCache::Record with 'primary' shard.
         # Register each named env config under its own name as a shard key too
         # (same db_config, so the lazy pools stay cheap).
+        #
+        # Each named pool is registered for the writing role AND the reading
+        # role: `connects_to database: { writing: :secondary, reading:
+        # :secondary }` + `connected_to(role: :reading)` otherwise raises
+        # "calling `connected_to` is not allowed when there is no connection
+        # defined for that role". Both pools point at the same config, so the
+        # extra pools are cheap (connections are opened lazily).
+        writing_role = (::ActiveRecord::Base.respond_to?(:writing_role) ? ::ActiveRecord::Base.writing_role : :writing)
+        reading_role = (::ActiveRecord::Base.respond_to?(:reading_role) ? ::ActiveRecord::Base.reading_role : :reading)
         env_configs.each do |name, config|
           shard = name.to_sym
-          next if shard == :default
-          begin
-            handler.establish_connection(config,
-              owner_name: ::ActiveRecord::Base,
-              role: ::ActiveRecord::Base.current_role || :writing,
-              shard: shard)
-          rescue StandardError => e
-            # Best-effort: if one connection fails, continue with others.
+          [writing_role, reading_role].uniq.each do |role|
+            begin
+              handler.establish_connection(config,
+                owner_name: ::ActiveRecord::Base,
+                role: role,
+                shard: shard)
+            rescue StandardError
+              # Best-effort: if one connection fails, continue with others.
+            end
+          end
+        end
+
+        # Models that call `connects_to` own a pool under their own
+        # connection_specification_name. A lazily autoloaded class inside a
+        # worker re-resolves `connects_to` and picked the PRIMARY config
+        # (observed: AuditEntry read the primary database -> PG::UndefinedTable
+        # for its own table). Re-establish those pools from the main-captured
+        # snapshot, keyed by the model's spec name, for both roles.
+        connection_classes = AR_CONNECTION_CLASSES_SNAPSHOT
+        if connection_classes && !connection_classes.empty?
+          connection_classes.each do |class_name, entry|
+            klass = (Object.const_get(class_name) rescue nil)
+            next unless klass.is_a?(::Class)
+            config = entry[:config]
+            next unless config.is_a?(::Hash)
+            [writing_role, reading_role].uniq.each do |role|
+              begin
+                handler.establish_connection(config,
+                  owner_name: klass,
+                  role: role,
+                  shard: (entry[:shard] || :default))
+              rescue StandardError
+                # Best-effort: continue with the other pools.
+              end
+            end
           end
         end
 
