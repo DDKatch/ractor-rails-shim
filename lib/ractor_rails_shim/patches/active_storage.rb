@@ -30,6 +30,11 @@ module RactorRailsShim
   # un-shareable `mattr_accessor` readers. Reassigned (not mutated) in main.
   ACTIVE_STORAGE_PREFIX = "".freeze
   ACTIVE_STORAGE_SUFFIX = "".freeze
+  # Default service NAME (String) captured in main at prepare time. Workers
+  # cannot read the `ActiveStorage::Blob.service` class_attribute (a live
+  # Service instance with unshareable config), so the symbolic service-name
+  # callback falls back to this constant.
+  ACTIVE_STORAGE_DEFAULT_SERVICE = "".freeze
 
   module ActiveStorageAttachedPatch
     # Frozen, shareable host used as the defining `self` of attachment scope
@@ -92,8 +97,24 @@ module RactorRailsShim
     # frozen graph carries the correct `Type::Serialized` from the start. The
     # `attribute_types` / `type_for_attribute` overrides are fallbacks for the
     # case where the class is freshly autoloaded in a worker (separate process).
-    module BlobMetadataTypePatch
-      def type_for_attribute(name = :__none__)
+    # The direct-upload endpoint builds a blob with
+    # `ActiveStorage::Blob.create_before_direct_upload!(service_name: nil, ...)`
+    # — an EXPLICIT nil, which the upstream `after_initialize` block normally
+    # fills with `self.class.service&.name`. Block callbacks do not replay in
+    # workers (and `Blob.service` is a live Service instance workers cannot
+    # read), so a worker-created blob INSERTed with a NULL `service_name`
+    # (PG::NotNullViolation, row 121). Inject the main-seeded default name
+    # when the caller passed none. Main semantics are unchanged: the value is
+    # exactly what the block callback would have written.
+    module BlobDirectUploadServicePatch
+      def create_before_direct_upload!(service_name: nil, **options)
+        service_name ||= ::RactorRailsShim::ACTIVE_STORAGE_DEFAULT_SERVICE
+        service_name = nil if service_name.to_s.empty?
+        super(service_name: service_name, **options)
+      end
+    end
+
+    module BlobMetadataTypePatch      def type_for_attribute(name = :__none__)
         return super if name != :metadata
         t = super(name)
         return t if defined?(::ActiveRecord::Type::Serialized) && t.is_a?(::ActiveRecord::Type::Serialized)
@@ -383,7 +404,31 @@ module RactorRailsShim
       # works in the worker regardless of load-order.
       ::ActiveStorage::Blob.singleton_class.prepend(ActiveStorageAttachedPatch::BlobMetadataTypePatch)
       ::ActiveStorage::Blob.prepend(ActiveStorageAttachedPatch::ActiveStorageServicePatch)
+      ::ActiveStorage::Blob.singleton_class.prepend(ActiveStorageAttachedPatch::BlobDirectUploadServicePatch)
+      _register_blob_service_name_callback!
       @_as_patched_blob = true
+    end
+
+    # `ActiveStorage::Blob` sets the service name in an `after_initialize` BLOCK
+    # callback (`self.service_name ||= self.class.service&.name`). Block
+    # callbacks are main-compiled Procs — SymbolicTransport skips them in
+    # workers, so a worker-created blob INSERTed with a NULL `service_name`
+    # (observed: the direct-upload endpoint, row 121, NotNullViolation). Register
+    # an equivalent Symbol callback: main runs the block first and the symbolic
+    # one skips via `||=`; workers run only the symbolic one.
+    def _register_blob_service_name_callback!
+      return if @_blob_service_name_callback_registered
+      return unless defined?(::ActiveStorage::Blob)
+      ::ActiveStorage::Blob.class_eval <<-'RUBY', __FILE__, __LINE__ + 1
+        def __ractors_default_service_name
+          return if self.service_name
+          default = ::RactorRailsShim::ACTIVE_STORAGE_DEFAULT_SERVICE
+          self.service_name = default if default && !default.empty?
+        end
+        private :__ractors_default_service_name
+      RUBY
+      ::ActiveStorage::Blob.set_callback(:initialize, :after, :__ractors_default_service_name)
+      @_blob_service_name_callback_registered = true
     end
 
     # `ActiveStorage::Blob#metadata` is declared via `store :metadata, coder:
@@ -431,8 +476,62 @@ module RactorRailsShim
       else
         ""
       end
+      # `ActiveStorage::SetCurrent` sets `ActiveStorage::Current.url_options`
+      # in a BLOCK before_action — skipped in workers, so URL generation in
+      # the direct-upload endpoint raised "Missing host to link to!".
+      # Register an equivalent Symbol filter on every controller that
+      # includes the concern (the before_action is captured + replayed like
+      # any other symbolic filter).
+      if defined?(::ActiveStorage::SetCurrent) && defined?(::ActionController::Base)
+        begin
+          ::ActiveStorage::SetCurrent.module_eval <<-'RUBY'
+            def __ractors_set_current_url_options
+              ::ActiveStorage::Current.url_options = {
+                protocol: request.protocol,
+                host: request.host,
+                port: request.optional_port
+              }
+            end
+          RUBY
+          ::ActionController::Base.descendants.each do |klass|
+            next unless klass.ancestors.include?(::ActiveStorage::SetCurrent)
+            klass.before_action(:__ractors_set_current_url_options) rescue nil
+          end
+        rescue StandardError
+          nil
+        end
+      end
       RactorRailsShim.const_set(:ACTIVE_STORAGE_PREFIX, prefix.freeze)
       RactorRailsShim.const_set(:ACTIVE_STORAGE_SUFFIX, suffix.freeze)
+      # Prebuild EVERY configured service in main: `Registry#fetch` memoizes
+      # into a Hash that the freeze pipeline makes shareable, so a worker
+      # asking for a not-yet-built service hits the write branch and raises
+      # FrozenError (observed with legacy blobs whose service_name is a
+      # service that no probe had touched yet, e.g. :test).
+      if defined?(::ActiveStorage::Blob) && ::ActiveStorage::Blob.respond_to?(:services)
+        begin
+          registry = ::ActiveStorage::Blob.services
+          configurations = (registry.instance_variable_get(:@configurations) rescue {})
+          configurations.each_key do |service_key|
+            registry.fetch(service_key) rescue nil
+          end
+          # Warm each service's memoized url_helpers in main: DiskService#url
+          # (the direct-upload URL, row 121) does `@url_helpers ||= Rails
+          # .application.routes.url_helpers` — a write on the frozen service
+          # instance -> FrozenError in workers.
+          services = (registry.instance_variable_get(:@services) rescue {})
+          services.each_value do |svc|
+            svc.__send__(:url_helpers) rescue nil
+          end
+        rescue StandardError
+          nil
+        end
+      end
+      default_service = if defined?(::ActiveStorage::Blob)
+        (::ActiveStorage::Blob.service&.name rescue nil)
+      end
+      default_service ||= (::Rails.application.config.active_storage.service rescue nil)
+      RactorRailsShim.const_set(:ACTIVE_STORAGE_DEFAULT_SERVICE, default_service.to_s.freeze)
       # Reset the cached `table_name` on ActiveStorage models so they recompute
       # with the correct prefix/suffix. Without this, `ActiveStorage::Blob`'s
       # `table_name` stays `"blobs"` (computed at eager-load with the empty

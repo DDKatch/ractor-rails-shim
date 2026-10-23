@@ -44,6 +44,15 @@ module RactorRailsShim
   # Proc-backed decorator) are simply omitted, degrading to [] in workers.
   SHAREABLE_PENDING_ATTR_MODS = {}.freeze
 
+  # Layout-proc registry (turbo-rails, RAILS_FEATURES.md #105): controller
+  # classes whose `layout` is a Proc (Turbo's conditional frame layout) get
+  # their proc captured here by the patched `_write_layout_method`, and a
+  # real string-eval'd `def _layout_from_proc` reads it through. Mutable
+  # while the app boots/eager-loads (main Ractor only); reassigned to a
+  # filtered, frozen, shareable Hash before the final graph freeze — a
+  # worker reading a dropped key gets nil -> Rails' default layout.
+  PROC_LAYOUT_PROCS = {}
+
   # Shareable map of { model_object_id => Module } capturing each AR model's
   # @generated_attribute_methods module (populated by define_attribute_methods
   # in main). Worker Ractors read this to reuse the pre-built attribute methods

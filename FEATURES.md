@@ -64,7 +64,12 @@ Status legend:
 | Inflector | ✅ | yes | |
 | pg driver | ✅ | yes | sqlite3/mysql2 ractor-unsafe |
 | ActionCable | ➖ | no | |
-| Fragment caching | ➖ | no | |
+| `Rails.cache` — `:solid_cache_store` | ✅ | yes | Shared by reference (DB-backed). Worker fetch miss→hit verified by `GET /solid_cache_probe`. |
+| `Rails.cache` — `:file_store` | ✅ | no | Shared by reference. Writes are atomic; the instance holds no mutable hot-path state. |
+| `Rails.cache` — `:memory_store` | ✅ | no | One store per Ractor via `PerRactorCache`. Entries are NOT shared between workers. |
+| `Rails.cache` — `:null_store` | ✅ | no | Per-Ractor proxy. NullStore memoizes LocalCache state on the instance. |
+| `Rails.cache` — `:redis_cache_store` | ⚠️ | no | Connection config is not reconstructible from the instance. Boot warning; not proof-tested. |
+| Fragment caching | ✅ | yes | Fragment / Russian-doll / low-level caching verified from real kino `:ractor` workers. |
 
 ## Unsupported app-used features — implementation queue (TDD, one by one)
 1. ✅ `render json:` — ActionController JSON renderer in worker Ractor (fixed: `_install_json_renderer_patch`)

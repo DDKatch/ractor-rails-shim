@@ -14,6 +14,11 @@ module RactorRailsShim
     # Strong-parameters scalar allow-list, read by permitted_scalar? on every
     # permit/require. An Array of classes -> not shareable by default.
     "ActionController::Parameters::PERMITTED_SCALAR_TYPES",
+    # Empty-array sentinel used by Parameters#slice/merge bookkeeping —
+    # unfrozen, read on paths that build Parameters from raw input
+    # (observed: ActiveStorage::DirectUploadsController parsing blob[...]).
+    "ActionController::Parameters::EMPTY_ARRAY",
+    "ActionController::Parameters::EMPTY_HASH",
   ])
 
   # Captured at prepare_for_ractors! time: the main Ractor's resolved

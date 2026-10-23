@@ -129,7 +129,14 @@ module RactorRailsShim
           v = RactorRailsShim.storage[#{k[:cache].inspect}]
           return v if RactorRailsShim.storage.key?(#{k[:cache].inspect})
           return super if Ractor.main?
-          RactorRailsShim::SHAREABLE_FALLBACK[#{k[:cache].inspect}]
+          # Process-local stores (MemoryStore, NullStore) are swapped for a
+          # shareable proxy at prepare time; the proxy delegates to a
+          # per-Ractor instance. Read the shareable constant, never a module
+          # ivar (workers cannot read those). Falls back to the shareable
+          # fallback for stores that are safe to share by reference
+          # (Solid Cache, FileStore).
+          proxy = RactorRailsShim::PerRactorCache::PROXY
+          proxy || RactorRailsShim::SHAREABLE_FALLBACK[#{k[:cache].inspect}]
         end
         def cache=(val)
           RactorRailsShim.storage[#{k[:cache].inspect}] = val

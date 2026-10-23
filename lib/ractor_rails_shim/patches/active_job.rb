@@ -1,6 +1,15 @@
 # frozen_string_literal: true
 
 module RactorRailsShim
+  # ActiveJob::Arguments constants read on every argument (de)serialization —
+  # RESERVED_KEYS is an unfrozen Array of Symbols that workers read on every
+  # enqueue/perform, so a worker dies with
+  #   Ractor::IsolationError: can not access non-shareable objects in
+  #   constant ActiveJob::Arguments::RESERVED_KEYS by non-main ractor.
+  SHAREABLE_CONSTANTS.concat([
+    "ActiveJob::Arguments::RESERVED_KEYS",
+  ])
+
   # ActiveJob::Serializers keeps its serializer registry in TWO class ivars:
   #   @serializers       → a Set of singleton serializer instances
   #   @serializers_index → a Hash (argument class → serializer instance)

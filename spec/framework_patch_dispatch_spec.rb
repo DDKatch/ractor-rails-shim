@@ -156,6 +156,7 @@ class FrameworkPatchDispatchSpec < Minitest::Spec
     _install_concurrent_global_timer_set_patch
     _install_solid_cache_patch
     _install_openssl_digest_patch
+    _install_cache_store_cattr_patch
     _install_caching_key_generator_patch
     _install_active_model_conversion_patch
     _install_activerecord_find_by_cache_patch
@@ -183,6 +184,9 @@ class FrameworkPatchDispatchSpec < Minitest::Spec
     _install_time_zone_lookup_patch
     _install_tzinfo_data_source_patch
     _install_active_job_serializers_patch
+    _install_thread_mattr_patch
+    _install_turbo_patch
+    _install_secure_token_patch
   ].freeze)
 
   it "dispatches exactly the same set of patches as the original hardcoded list" do

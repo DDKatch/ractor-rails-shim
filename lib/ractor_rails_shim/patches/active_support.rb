@@ -46,6 +46,12 @@ module RactorRailsShim
     "ActiveSupport::Cache::Coder::PACKED_VERSION_LENGTH_TEMPLATE",
     "ActiveSupport::Cache::Coder::STRING_DESERIALIZERS",
     "ActiveSupport::Cache::Coder::STRING_ENCODINGS",
+    # SerializerWithFallback::SERIALIZERS (format symbol -> fallback module)
+    # is read by Store#initialize -> default_serializer. Stores built INSIDE
+    # a worker Ractor (PerRactorCache's per-Ractor MemoryStore/NullStore)
+    # take this path, and the unfrozen Hash raises IsolationError. Read-only
+    # after definition — deep-freeze is safe.
+    "ActiveSupport::Cache::SerializerWithFallback::SERIALIZERS",
     # ActiveSupport::NumberHelper converter constants: DEFAULTS (the nested
     # number-format defaults Hash) is read via `options.dup`/lookups on EVERY
     # number_with_delimiter / number_to_currency / etc. call — unfrozen, so
@@ -73,6 +79,36 @@ module RactorRailsShim
   ])
 
   class << self
+    # ActiveSupport::Cache::Store declares its log/expiry settings with
+    # `cattr_accessor`, which stores them in CLASS VARIABLES. Ruby forbids
+    # reading class variables from a non-main Ractor at all — even shareable
+    # ones — so `Store#_instrument` dies on `@@logger` in every worker cache
+    # call when active_support/cache was loaded BEFORE the shim's
+    # mattr_accessor rewrite (e.g. a late `RactorRailsShim.install`, or a test
+    # process that required the cache early).
+    #
+    # Re-declare the two accessors through the patched mattr_accessor now,
+    # preserving the current main-Ractor value as the default. In the normal
+    # Rails boot the rewrite already applied at declaration time; this is a
+    # no-op-equivalent idempotent re-route.
+    def _install_cache_store_cattr_patch
+      return if @cache_store_cattr_patched
+      return unless defined?(::ActiveSupport::Cache::Store)
+      @cache_store_cattr_patched = true
+      _register_patch :cache_store_cattr, "8.1"
+
+      store = ::ActiveSupport::Cache::Store
+      logger = (store.logger rescue nil)
+      raise_on_invalid = (store.raise_on_invalid_cache_expiration_time rescue false)
+
+      store.mattr_accessor :logger, instance_writer: true, default: logger
+      store.mattr_accessor :raise_on_invalid_cache_expiration_time,
+                           default: raise_on_invalid
+    rescue StandardError => e
+      warn "ractor-rails-shim: cache store cattr patch failed " \
+           "(#{e.class}: #{e.message[0, 120]})"
+    end
+
     # Warm ActiveSupport::Cache::SerializerWithFallback subclasses'
     # `available?` class ivars in the MAIN Ractor, BEFORE the app graph is
     # frozen (called from AppShareabilizer.make_shareable!). The subclasses

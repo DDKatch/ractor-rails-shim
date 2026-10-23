@@ -56,6 +56,12 @@ module RactorRailsShim
         end
       end
       PreSpawnSteps.install_framework_patches
+      # Swap process-local cache stores (MemoryStore, NullStore) for a
+      # shareable proxy BEFORE the app graph is frozen. Shares the frozen
+      # store today raises FrozenError on the first cache call in every
+      # Ractor (MemoryStore refreshes LRU order on reads). Solid Cache and
+      # FileStore are left alone (shared by reference).
+      RactorRailsShim::PerRactorCache.swap!
       RactorRailsShim.__send__(:_install_action_cable_worker_server_patch!) if RactorRailsShim.respond_to?(:_install_action_cable_worker_server_patch!, true)
       RactorRailsShim.__send__(:_install_solid_cable_configuration_patch!) if RactorRailsShim.respond_to?(:_install_solid_cable_configuration_patch!, true)
       RactorRailsShim.__send__(:_freeze_secure_random_alphabets!) if RactorRailsShim.respond_to?(:_freeze_secure_random_alphabets!, true)

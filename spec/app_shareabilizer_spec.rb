@@ -48,6 +48,14 @@ class AppShareabilizerSpec < Minitest::Spec
     stub_facade_step(:_neutralize_logger_io!) { |a| called << :neutralize_logger }
     stub_facade_step(:_replace_unshareable_procs!) { |a| called << :replace_procs }
     stub_facade_step(:_replace_locks_and_concurrent_maps!) { |a| called << :replace_locks }
+    # These three run after the lock pass and before/around the freeze.
+    # stubbing them keeps the assertion hermetic: the real
+    # _reemit_proc_layouts! / _freeze_proc_layout_registry! call
+    # Ractor.make_shareable directly, which would be recorded as a stray
+    # :make_shareable by the stub below.
+    stub_facade_step(:_reemit_proc_layouts!) { called << :reemit_proc_layouts }
+    stub_facade_step(:_snapshot_railtie_options!) { called << :snapshot_railtie_options }
+    stub_facade_step(:_freeze_proc_layout_registry!) { called << :freeze_proc_layout_registry }
     stub_facade_step(:_build_shareable_fallback!) { called << :build_fallback }
     # Stub the @applied flag so _apply_shareable_constants!
     # fires once.
@@ -63,8 +71,9 @@ class AppShareabilizerSpec < Minitest::Spec
       apply_constants install_patches precompute_lazy precompute_propshaft
       generate_ar_attrs warm_attr_patterns prewarm_solid_queue freeze_json_coder
       freeze_callbacks freeze_class_ivars
-      warm_routes neutralize_logger replace_procs replace_locks make_shareable
-      build_fallback
+      warm_routes neutralize_logger replace_procs replace_locks
+      reemit_proc_layouts snapshot_railtie_options freeze_proc_layout_registry
+      make_shareable build_fallback
     ]
     assert_equal expected_order, called,
                  "orchestration steps must fire in the documented order"
@@ -241,6 +250,9 @@ class AppShareabilizerSpec < Minitest::Spec
     _neutralize_logger_io!: RactorRailsShim::LoggerIONeutralizer,
     _replace_unshareable_procs!: RactorRailsShim::ShareabilityTraversal,
     _replace_locks_and_concurrent_maps!: RactorRailsShim::ShareabilityTraversal,
+    _reemit_proc_layouts!: RactorRailsShim,
+    _snapshot_railtie_options!: RactorRailsShim::ShareabilityTraversal,
+    _freeze_proc_layout_registry!: RactorRailsShim,
     _build_shareable_fallback!: RactorRailsShim::FallbackBuilder
   }.freeze
 
@@ -260,6 +272,9 @@ class AppShareabilizerSpec < Minitest::Spec
     _neutralize_logger_io!: :call,
     _replace_unshareable_procs!: :replace_unshareable_procs!,
     _replace_locks_and_concurrent_maps!: :replace_locks_and_concurrent_maps!,
+    _reemit_proc_layouts!: :_reemit_proc_layouts!,
+    _snapshot_railtie_options!: :snapshot_railtie_configuration_options,
+    _freeze_proc_layout_registry!: :_freeze_proc_layout_registry!,
     _build_shareable_fallback!: :build!
   }.freeze
 

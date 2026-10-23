@@ -7,6 +7,87 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — turbo-rails worker support (test-app rows 105 + 121)
+
+Adopting turbo-rails and exercising ActiveStorage direct uploads in worker
+Ractors surfaced five framework-level walls, all fixed here:
+
+- `patches/thread_mattr.rb` (new, install-time): `Module#thread_mattr_reader/
+  writer` generate methods that memoize their IES key in a class/module ivar
+  (`@__thread_mattr_#{sym} ||=`) — a write that raises IsolationError in
+  workers. turbo-rails' `Turbo.current_request_id` (around_action on EVERY
+  request) and `ActiveRecord::Base.suppressed_turbo_broadcasts` hit this, so
+  every worker request died with a 500. The patched macros emit the
+  deterministic key without the ivar memo (same per-class isolation).
+- `patches/turbo.rb` (new, prepare-time): re-emits turbo's
+  `_render_with_renderer_turbo_stream` renderer as a string-eval'd `def`
+  (upstream `define_method`s a main-compiled Proc), and routes PROC layouts
+  (`Turbo::Frames::FrameRequest`'s conditional frame layout — re-emitted per
+  controller by the Layouts `inherited` hook) through a frozen
+  `PROC_LAYOUT_PROCS` registry read by a real `def _layout_from_proc`
+  (`instance_exec` preserves the define_method self-rebinding contract).
+- `patches/secure_token.rb` (new, install-time): `has_secure_token` registers
+  a BLOCK callback — skipped in workers, so worker-created rows had NULL
+  tokens (`ActiveStorage::Blob#key` → direct uploads died with
+  PG::NotNullViolation). The macro wrapper appends an equivalent Symbol
+  callback (and re-applies it to models loaded before the patch, e.g.
+  ActiveStorage::Blob).
+- `SymbolicTransport::DEFAULT_KINDS` now includes `:initialize` (Rails 8.1's
+  `generate_secure_token_on` default) — declared symbolic after_initialize
+  filters replay in workers.
+- `patches/active_storage.rb`: prebuilds every configured service +
+  warms each service's memoized `url_helpers` in main (DiskService#url wrote
+  to a frozen instance), registers the blob `service_name` default
+  symbolically (seeded `ACTIVE_STORAGE_DEFAULT_SERVICE`), injects that default
+  in `create_before_direct_upload!` (the endpoint passes an explicit nil),
+  and re-registers `ActiveStorage::SetCurrent` as a Symbol before_action
+  (the upstream block never replays → "Missing host to link to!").
+- `patches/active_controller.rb`-adjacent constants:
+  `ActionController::Parameters::EMPTY_ARRAY/EMPTY_HASH` registered shareable.
+
+Evidence: test app rows 105 (turbo stream responses, `.turbo_stream.erb`
+templates, model broadcast enqueued from a worker + performed by `bin/jobs`
+with a solid_cable message) and 121 (rich_text_area; full direct-upload
+endpoint cycle: POST → signed id/URL → disk PUT → blob redirect → service
+URL bytes). Embed parsing remains the documented Nokogiri wall (row 50).
+
+### Fixed — worker-side `:memory_store` / `:null_store` (`Rails.cache` raised FrozenError on the first call)
+
+`Rails.cache` is captured into `CLASS_ATTRIBUTES`. `FallbackBuilder` therefore
+deep-froze the store at prepare time.
+
+- `MemoryStore` refreshes LRU order with `@data.delete` / `@data[key] =` on
+  every read.
+- `NullStore` memoizes `@local_cache_key` on the instance.
+
+Both raised `FrozenError` on the first cache call in every Ractor. The failed
+`make_shareable` also froze the live main-Ractor store, so main broke too.
+Solid Cache and FileStore were unaffected: they hold no mutable hot-path state.
+
+- `roles/per_ractor_cache.rb` (new): process-local stores are swapped for a
+  same-class shareable proxy. `klass.allocate` plus a singleton delegator keeps
+  `class` and `is_a?` exact. The proxy holds only a shareable spec (class name
+  plus option values that survive `Ractor.make_shareable`). Every store method
+  delegates to a `Ractor.current`-memoized instance, so each Ractor gets its own
+  `MemoryStore` — the same shape as forked processes. The main Ractor keeps the
+  original instance and its boot-warmed entries. `Rails.cache` and
+  `ActionController::Base.config.cache_store` are re-pointed at the proxy from
+  both `prepare_for_ractors!` and `make_app_shareable!`.
+- `patches/active_support.rb`: `SerializerWithFallback::SERIALIZERS` added to
+  `SHAREABLE_CONSTANTS`. Worker-side store construction reads it through
+  `Store#initialize`. New `_install_cache_store_cattr_patch` re-routes
+  `Store.logger` / `raise_on_invalid_cache_expiration_time` through
+  `mattr_accessor` when `active_support/cache` loaded before the shim. Workers
+  cannot read `@@logger` at all.
+- `patches/rails_module.rb`: the worker `Rails.cache` reader returns the proxy
+  constant first, then the shareable fallback.
+- Redis/MemCache stores are not wrapped. Their connection config is not
+  reconstructible from `store.options`. A boot warning tells the operator to
+  use `:solid_cache_store` or `:file_store`.
+- Spec: `spec/per_ractor_cache_spec.rb` (7 cases: classification, same-class
+  shareable proxy, main keeps the original, worker write/read/fetch, per-Ractor
+  isolation, NullStore, FileStore unwrapped).
+
 ### Fixed — worker-side `serialize :arguments, coder: JSON` (Solid Queue enqueue from a worker, row 110)
 
 Four coordinated fixes, all proven by the test app's `:ractor` suite plus an

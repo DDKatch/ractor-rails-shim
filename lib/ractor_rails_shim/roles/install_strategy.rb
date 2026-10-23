@@ -20,6 +20,22 @@ module RactorRailsShim
     module Ractor
       def self.install
         RactorRailsShim.install_mattr_accessor
+        # Patch Module#thread_mattr_reader/writer BEFORE any gem loads:
+        # the generated methods memoize their IsolatedExecutionState key in
+        # a class/module ivar (`@__thread_mattr_#{sym} ||=`), and that
+        # write raises IsolationError from a worker Ractor — every request,
+        # once a gem like turbo-rails (current_request_id,
+        # suppressed_turbo_broadcasts) defines a thread_mattr. The patched
+        # macros emit the key without the ivar memo; gem-defined accessors
+        # are then generated worker-safe automatically.
+        RactorRailsShim.__send__(:_install_thread_mattr_patch)
+        # Patch ActiveRecord::SecureToken's `has_secure_token` macro BEFORE any
+        # model calls it: upstream registers a BLOCK callback, which
+        # SymbolicTransport skips in workers — worker-created rows got a NULL
+        # token column (ActiveStorage::Blob#key -> direct uploads died with a
+        # NotNullViolation). The patched macro adds an equivalent Symbol
+        # callback, so workers generate tokens exactly like main.
+        RactorRailsShim.__send__(:_install_secure_token_patch)
         RactorRailsShim.install_class_attribute
         RactorRailsShim.install_zeitwerk_registry
         RactorRailsShim.install_rubygems

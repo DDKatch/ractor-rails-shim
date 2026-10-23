@@ -57,6 +57,7 @@ module RactorRailsShim
       DEFAULT_KINDS = [
         :process_action,
         :save, :create, :update, :destroy,
+        :initialize,
         :validate, :validation, :commit, :rollback
       ].freeze
 

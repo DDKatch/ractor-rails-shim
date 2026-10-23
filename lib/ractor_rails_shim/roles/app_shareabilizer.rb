@@ -45,6 +45,8 @@ module RactorRailsShim
     @warm_cache_serializer_fallbacks = nil
     @prewarm_solid_queue = nil
     @freeze_json_coder = nil
+    @reemit_proc_layouts = nil
+    @freeze_proc_layout_registry = nil
     @freeze_declared_callbacks = nil
     @freeze_shareable_class_ivars = nil
     @warm_journey_routes = nil
@@ -58,7 +60,7 @@ module RactorRailsShim
     def self.configure(apply_shareable_constants: nil, install_all_framework_patches: nil,
                        precompute_lazy_ivars: nil, precompute_propshaft: nil,
                        generate_ar_attribute_methods: nil, warm_attribute_method_patterns: nil,
-                       warm_cache_serializer_fallbacks: nil, prewarm_solid_queue: nil, freeze_json_coder: nil,
+                       warm_cache_serializer_fallbacks: nil, prewarm_solid_queue: nil, freeze_json_coder: nil, reemit_proc_layouts: nil, freeze_proc_layout_registry: nil,
                        freeze_declared_callbacks: nil, freeze_shareable_class_ivars: nil,
                        warm_journey_routes: nil, neutralize_logger_io: nil,
                        replace_unshareable_procs: nil, replace_locks_and_concurrent_maps: nil,
@@ -73,6 +75,8 @@ module RactorRailsShim
       @warm_cache_serializer_fallbacks = warm_cache_serializer_fallbacks
       @prewarm_solid_queue = prewarm_solid_queue
       @freeze_json_coder = freeze_json_coder
+      @reemit_proc_layouts = reemit_proc_layouts
+      @freeze_proc_layout_registry = freeze_proc_layout_registry
       @freeze_declared_callbacks = freeze_declared_callbacks
       @freeze_shareable_class_ivars = freeze_shareable_class_ivars
       @warm_journey_routes = warm_journey_routes
@@ -94,6 +98,8 @@ module RactorRailsShim
       @warm_cache_serializer_fallbacks = nil
       @prewarm_solid_queue = nil
       @freeze_json_coder = nil
+      @reemit_proc_layouts = nil
+      @freeze_proc_layout_registry = nil
       @freeze_declared_callbacks = nil
       @freeze_shareable_class_ivars = nil
       @warm_journey_routes = nil
@@ -139,6 +145,14 @@ module RactorRailsShim
 
     def self.freeze_json_coder
       @freeze_json_coder || RactorRailsShim.method(:_freeze_json_coder_constants!)
+    end
+
+    def self.reemit_proc_layouts
+      @reemit_proc_layouts || RactorRailsShim.method(:_reemit_proc_layouts!)
+    end
+
+    def self.freeze_proc_layout_registry
+      @freeze_proc_layout_registry || RactorRailsShim.method(:_freeze_proc_layout_registry!)
     end
 
     def self.freeze_declared_callbacks
@@ -188,6 +202,11 @@ module RactorRailsShim
     def self.make_shareable!(app)
       apply_shareable_constants.call unless RactorRailsShim::ConstantShareabilizer.applied?
       install_all_framework_patches.call
+      # Swap process-local cache stores for a per-Ractor proxy before the
+      # graph freeze (MemoryStore/NullStore cannot survive being shared; see
+      # roles/per_ractor_cache.rb). Idempotent; prepare_for_ractors! does the
+      # same for callers that never reach make_app_shareable!.
+      RactorRailsShim::PerRactorCache.swap! if Ractor.main?
       precompute_lazy_ivars.call(app)
       precompute_propshaft.call(app)
       generate_ar_attribute_methods.call
@@ -223,6 +242,7 @@ module RactorRailsShim
       neutralize_logger_io.call(app)
       replace_unshareable_procs.call(app)
       replace_locks_and_concurrent_maps.call(app)
+      reemit_proc_layouts.call if Ractor.main?
       # Freeze the model state the graph walk may otherwise miss (HABTM
       # join-model resolvers) BEFORE make_shareable — after Proc/Map
       # replacement cleaned the graph, so the explicit freezes succeed.
@@ -235,6 +255,7 @@ module RactorRailsShim
       # values make it into the snapshot; non-shareable leftovers are
       # skipped per-value. See Patches::RailtieConfiguration.
       snapshot_railtie_options.call if Ractor.main?
+      freeze_proc_layout_registry.call if Ractor.main?
       make_shareable_fn.call(app)
       stash!(app)
       build_shareable_fallback.call
