@@ -75,9 +75,15 @@ module RactorRailsShim
       class << self
         # Exact-key 3-tier passthrough (IES → SHAREABLE_FALLBACK →
         # CLASS_ATTR_VALUES[main]). Contract: `key` IS the storage key.
+        #
+        # Hot path is the non-nil IES hit: ONE storage probe (the old body
+        # always paid a second `storage.key?` probe to distinguish a stored
+        # nil from an absent key — that second probe now runs only on the
+        # nil path). Semantics unchanged: a stored nil is still a hit.
         def lookup(owner, key, missing_default)
           v = RactorRailsShim.storage[key]
-          return v if RactorRailsShim.storage.key?(key)
+          return v unless v.nil?
+          return nil if RactorRailsShim.storage.key?(key)
           fb = RactorRailsShim::Registry.shareable_fallback[key]
           return fb unless fb.nil?
           RactorRailsShim::Registry.class_attr_values[key] if ::Ractor.main?
@@ -113,10 +119,15 @@ module RactorRailsShim
         #                               `__callbacks`) are missed.
         def lookup_by_attr(owner, attr_sym, missing_default)
           klass = owner.is_a?(Module) ? owner : owner.class
+          storage = RactorRailsShim.storage
           klass.ancestors.each do |anc|
             kkey = RactorRailsShim::StorageStrategy.ca_key(anc, attr_sym)
-            v = RactorRailsShim.storage[kkey]
-            return v if RactorRailsShim.storage.key?(kkey)
+            v = storage[kkey]
+            # Non-nil IES hit: one probe (see Ractor#lookup for the nil path).
+            unless v.nil?
+              return v
+            end
+            return nil if storage.key?(kkey)
             fb = RactorRailsShim::Registry.shareable_fallback[kkey]
             return fb unless fb.nil?
             if ::Ractor.main?
@@ -144,7 +155,13 @@ module RactorRailsShim
           klass = owner.is_a?(Module) ? owner : owner.class
           oid = klass.object_id
           cache = RactorRailsShim.storage[resolved_key]
-          return cache[oid] if cache && cache.key?(oid)
+          # Hot hit path: non-nil cached value returns after one hash probe
+          # (stored nil is disambiguated via the rare `key?` check).
+          unless cache.nil?
+            v = cache[oid]
+            return v unless v.nil?
+            return nil if cache.key?(oid)
+          end
           v = lookup_by_attr(owner, attr_sym, missing_default)
           cache = RactorRailsShim.storage[resolved_key]
           cache ||= (RactorRailsShim.storage[resolved_key] = {})
@@ -232,12 +249,18 @@ module RactorRailsShim
         end
 
         # Zero-allocation hot reader (see Ractor#lookup_resolved). Uses the
-        # Thread backend (CLASS_ATTR_VALUES) for the resolved cache.
+        # Thread backend (CLASS_ATTR_VALUES) for the resolved cache. Same
+        # one-probe hit path: the `key?` disambiguation runs only when the
+        # cached value is nil (a stored nil is still a hit).
         def lookup_resolved(owner, attr_sym, missing_default, resolved_key)
           klass = owner.is_a?(Module) ? owner : owner.class
           oid = klass.object_id
           cache = RactorRailsShim::Registry.class_attr_values[resolved_key]
-          return cache[oid] if cache && cache.key?(oid)
+          unless cache.nil?
+            v = cache[oid]
+            return v unless v.nil?
+            return nil if cache.key?(oid)
+          end
           v = lookup_by_attr(owner, attr_sym, missing_default)
           cache = RactorRailsShim::Registry.class_attr_values[resolved_key]
           cache ||= (RactorRailsShim::Registry.class_attr_values[resolved_key] = {})
