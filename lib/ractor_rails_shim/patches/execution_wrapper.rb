@@ -42,7 +42,8 @@ module RactorRailsShim
       ew.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def active_key
           v = RactorRailsShim.storage[#{key_str}]
-          return v if RactorRailsShim.storage.key?(#{key_str})
+          return v unless v.nil?
+          return nil if RactorRailsShim.storage.key?(#{key_str})
           sym = :"active_execution_wrapper_\#{object_id}"
           RactorRailsShim.storage[#{key_str}] = sym
           sym

@@ -206,7 +206,8 @@ module RactorRailsShim
       notif.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def notifier
           v = RactorRailsShim.storage[#{nkey_str}]
-          return v if RactorRailsShim.storage.key?(#{nkey_str})
+          return v unless v.nil?
+          return nil if RactorRailsShim.storage.key?(#{nkey_str})
           if Ractor.main? && instance_variable_defined?(:@notifier)
             @notifier
           else
@@ -232,7 +233,8 @@ module RactorRailsShim
         def instance(locale = :en)
           if locale == :en
             v = RactorRailsShim.storage[#{en_key_str}]
-            return v if RactorRailsShim.storage.key?(#{en_key_str})
+            return v unless v.nil?
+            return nil if RactorRailsShim.storage.key?(#{en_key_str})
             if Ractor.main?
               existing = instance_variable_get(:@__en_instance__) if instance_variable_defined?(:@__en_instance__)
               RactorRailsShim.storage[#{en_key_str}] = existing
@@ -322,7 +324,8 @@ module RactorRailsShim
       ::ActiveSupport.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def error_reporter
           v = RactorRailsShim.storage[#{er_key_str}]
-          return v if RactorRailsShim.storage.key?(#{er_key_str})
+          return v unless v.nil?
+          return nil if RactorRailsShim.storage.key?(#{er_key_str})
           if Ractor.main? && instance_variable_defined?(:@error_reporter)
             @error_reporter
           else
@@ -352,7 +355,8 @@ module RactorRailsShim
       ec.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def after_change_callbacks
           v = RactorRailsShim.storage[#{acb_key_str}]
-          return v if RactorRailsShim.storage.key?(#{acb_key_str})
+          return v unless v.nil?
+          return nil if RactorRailsShim.storage.key?(#{acb_key_str})
           if Ractor.main? && instance_variable_defined?(:@after_change_callbacks)
             v = @after_change_callbacks
             RactorRailsShim.storage[#{acb_key_str}] = v
@@ -368,7 +372,8 @@ module RactorRailsShim
         end
         def nestable
           v = RactorRailsShim.storage[#{nest_key_str}]
-          return v if RactorRailsShim.storage.key?(#{nest_key_str})
+          return v unless v.nil?
+          return nil if RactorRailsShim.storage.key?(#{nest_key_str})
           if Ractor.main? && instance_variable_defined?(:@nestable)
             v = @nestable
             RactorRailsShim.storage[#{nest_key_str}] = v
@@ -454,7 +459,8 @@ module RactorRailsShim
       ls.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def logger
           v = RactorRailsShim.storage[#{key_str}]
-          return v if RactorRailsShim.storage.key?(#{key_str})
+          return v unless v.nil?
+          return nil if RactorRailsShim.storage.key?(#{key_str})
           if Ractor.main? && instance_variable_defined?(:@logger)
             @logger
           elsif defined?(::Rails) && ::Rails.respond_to?(:logger)
@@ -489,7 +495,8 @@ module RactorRailsShim
       rl.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def check!
           v = RactorRailsShim.storage[#{key_str}]
-          return v if RactorRailsShim.storage.key?(#{key_str})
+          return v unless v.nil?
+          return nil if RactorRailsShim.storage.key?(#{key_str})
           result = check.call
           RactorRailsShim.storage[#{key_str}] = result
           result

@@ -66,7 +66,8 @@ module RactorRailsShim
             singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
               def #{sym}
                 v = RactorRailsShim.storage[#{key_str}]
-                return v if RactorRailsShim.storage.key?(#{key_str})
+                return v unless v.nil?
+                return nil if RactorRailsShim.storage.key?(#{key_str})
 
                 if #{!!shareable}
                   if class_variable_defined?(#{cv_str})
@@ -110,7 +111,8 @@ module RactorRailsShim
               module_eval <<-RUBY, __FILE__, __LINE__ + 1
                 def #{sym}
                   v = RactorRailsShim.storage[#{key_str}]
-                  return v if RactorRailsShim.storage.key?(#{key_str})
+                  return v unless v.nil?
+                  return nil if RactorRailsShim.storage.key?(#{key_str})
                   if Ractor.main?
                     self.class.class_variable_defined?(#{cv_str}) ? self.class.class_variable_get(#{cv_str}) : nil
                   else
@@ -159,7 +161,8 @@ module RactorRailsShim
             singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
               def #{sym}
                 v = RactorRailsShim.storage[#{key_str}]
-                return v if RactorRailsShim.storage.key?(#{key_str})
+                return v unless v.nil?
+                return nil if RactorRailsShim.storage.key?(#{key_str})
                 if Ractor.main?
                   if class_variable_defined?(#{cv_str})
                     class_variable_get(#{cv_str})
@@ -178,7 +181,8 @@ module RactorRailsShim
               module_eval <<-RUBY, __FILE__, __LINE__ + 1
                 def #{sym}
                   v = RactorRailsShim.storage[#{key_str}]
-                  return v if RactorRailsShim.storage.key?(#{key_str})
+                  return v unless v.nil?
+                  return nil if RactorRailsShim.storage.key?(#{key_str})
                   if Ractor.main?
                     self.class.class_variable_defined?(#{cv_str}) ? self.class.class_variable_get(#{cv_str}) : nil
                   else

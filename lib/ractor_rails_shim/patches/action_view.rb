@@ -85,7 +85,8 @@ module RactorRailsShim
       lc.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def registered_details
           v = RactorRailsShim.storage[#{key_str}]
-          return v if RactorRailsShim.storage.key?(#{key_str})
+          return v unless v.nil?
+          return nil if RactorRailsShim.storage.key?(#{key_str})
           if Ractor.main? && instance_variable_defined?(:@registered_details)
             @registered_details
           else
@@ -257,7 +258,8 @@ module RactorRailsShim
       dk.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def view_context_class
           v = RactorRailsShim.storage[#{vcc_key_str2}]
-          return v if RactorRailsShim.storage.key?(#{vcc_key_str2})
+          return v unless v.nil?
+          return nil if RactorRailsShim.storage.key?(#{vcc_key_str2})
           if Ractor.main? && instance_variable_defined?(:@view_context_class)
             v = @view_context_class
             RactorRailsShim.storage[#{vcc_key_str2}] = v

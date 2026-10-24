@@ -21,7 +21,8 @@ module RactorRailsShim
         def to_adapter
           key = :"ractor_rails_shim_orm_adapter_\#{object_id}"
           v = RactorRailsShim.storage[key]
-          return v if RactorRailsShim.storage.key?(key)
+          return v unless v.nil?
+          return nil if RactorRailsShim.storage.key?(key)
           adapter = self::OrmAdapter.new(self)
           RactorRailsShim.storage[key] = adapter
           adapter

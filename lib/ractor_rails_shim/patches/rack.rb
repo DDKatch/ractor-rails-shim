@@ -56,7 +56,8 @@ module RactorRailsShim
       req.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def forwarded_priority
           v = RactorRailsShim.storage[#{fp_key_str}]
-          return v if RactorRailsShim.storage.key?(#{fp_key_str})
+          return v unless v.nil?
+          return nil if RactorRailsShim.storage.key?(#{fp_key_str})
           if Ractor.main? && instance_variable_defined?(:@forwarded_priority)
             @forwarded_priority
           else
@@ -70,7 +71,8 @@ module RactorRailsShim
         end
         def x_forwarded_proto_priority
           v = RactorRailsShim.storage[#{xp_key_str}]
-          return v if RactorRailsShim.storage.key?(#{xp_key_str})
+          return v unless v.nil?
+          return nil if RactorRailsShim.storage.key?(#{xp_key_str})
           if Ractor.main? && instance_variable_defined?(:@x_forwarded_proto_priority)
             @x_forwarded_proto_priority
           else
@@ -105,7 +107,8 @@ module RactorRailsShim
       u.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def default_query_parser
           v = RactorRailsShim.storage[#{dqp_key_str}]
-          return v if RactorRailsShim.storage.key?(#{dqp_key_str})
+          return v unless v.nil?
+          return nil if RactorRailsShim.storage.key?(#{dqp_key_str})
           if Ractor.main? && instance_variable_defined?(:@default_query_parser)
             v = @default_query_parser
             RactorRailsShim.storage[#{dqp_key_str}] = v
@@ -116,7 +119,8 @@ module RactorRailsShim
         end
         def multipart_total_part_limit
           v = RactorRailsShim.storage[#{mtp_key_str}]
-          return v if RactorRailsShim.storage.key?(#{mtp_key_str})
+          return v unless v.nil?
+          return nil if RactorRailsShim.storage.key?(#{mtp_key_str})
           if Ractor.main? && instance_variable_defined?(:@multipart_total_part_limit)
             v = @multipart_total_part_limit
             RactorRailsShim.storage[#{mtp_key_str}] = v
@@ -127,7 +131,8 @@ module RactorRailsShim
         end
         def multipart_file_limit
           v = RactorRailsShim.storage[#{mfl_key_str}]
-          return v if RactorRailsShim.storage.key?(#{mfl_key_str})
+          return v unless v.nil?
+          return nil if RactorRailsShim.storage.key?(#{mfl_key_str})
           if Ractor.main? && instance_variable_defined?(:@multipart_file_limit)
             v = @multipart_file_limit
             RactorRailsShim.storage[#{mfl_key_str}] = v

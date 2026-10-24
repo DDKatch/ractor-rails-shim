@@ -96,7 +96,8 @@ module RactorRailsShim
         # slot is empty until they boot their own app).
         def application
           v = RactorRailsShim.storage[#{k[:application].inspect}]
-          return v if RactorRailsShim.storage.key?(#{k[:application].inspect})
+          return v unless v.nil?
+          return nil if RactorRailsShim.storage.key?(#{k[:application].inspect})
           if Ractor.main?
             super
           else
@@ -115,7 +116,8 @@ module RactorRailsShim
         # value at make_app_shareable! time) when their own IES slot is empty.
         def app_class
           v = RactorRailsShim.storage[#{k[:app_class].inspect}]
-          return v if RactorRailsShim.storage.key?(#{k[:app_class].inspect})
+          return v unless v.nil?
+          return nil if RactorRailsShim.storage.key?(#{k[:app_class].inspect})
           return super if Ractor.main?
           RactorRailsShim::SHAREABLE_FALLBACK[#{k[:app_class].inspect}]
         end
@@ -127,7 +129,8 @@ module RactorRailsShim
 
         def cache
           v = RactorRailsShim.storage[#{k[:cache].inspect}]
-          return v if RactorRailsShim.storage.key?(#{k[:cache].inspect})
+          return v unless v.nil?
+          return nil if RactorRailsShim.storage.key?(#{k[:cache].inspect})
           return super if Ractor.main?
           # Process-local stores (MemoryStore, NullStore) are swapped for a
           # shareable proxy at prepare time; the proxy delegates to a
@@ -146,7 +149,8 @@ module RactorRailsShim
 
         def logger
           v = RactorRailsShim.storage[#{k[:logger].inspect}]
-          return v if RactorRailsShim.storage.key?(#{k[:logger].inspect})
+          return v unless v.nil?
+          return nil if RactorRailsShim.storage.key?(#{k[:logger].inspect})
           return super if Ractor.main?
           # Loggers are intrinsically mutable (formatters hold tag stacks,
           # logdevs hold IO + Mutex) and can't be shared read-only. Build a
@@ -166,7 +170,8 @@ module RactorRailsShim
 
         def backtrace_cleaner
           v = RactorRailsShim.storage[#{k[:backtrace_cleaner].inspect}]
-          return v if RactorRailsShim.storage.key?(#{k[:backtrace_cleaner].inspect})
+          return v unless v.nil?
+          return nil if RactorRailsShim.storage.key?(#{k[:backtrace_cleaner].inspect})
           return super if Ractor.main?
           RactorRailsShim::SHAREABLE_FALLBACK[#{k[:backtrace_cleaner].inspect}]
         end
@@ -181,7 +186,8 @@ module RactorRailsShim
         # lazily builds and caches in @_env.
         def env
           v = RactorRailsShim.storage[#{k[:env].inspect}]
-          return v if RactorRailsShim.storage.key?(#{k[:env].inspect})
+          return v unless v.nil?
+          return nil if RactorRailsShim.storage.key?(#{k[:env].inspect})
           if Ractor.main?
             super
           else

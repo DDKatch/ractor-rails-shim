@@ -76,7 +76,8 @@ module RactorRailsShim
         reader_patch.module_eval <<-RUBY, __FILE__, __LINE__ + 1
           def #{ivar}
             v = RactorRailsShim.storage[#{key_str}]
-            return v if RactorRailsShim.storage.key?(#{key_str})
+            return v unless v.nil?
+            return nil if RactorRailsShim.storage.key?(#{key_str})
             if Ractor.main?
               existing = instance_variable_get(#{ivar_str}) if instance_variable_defined?(#{ivar_str})
               if existing

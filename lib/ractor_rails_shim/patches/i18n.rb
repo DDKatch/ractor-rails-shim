@@ -31,7 +31,8 @@ module RactorRailsShim
       cfg.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def default_locale
           v = RactorRailsShim.storage[#{dl_key_str}]
-          return v if RactorRailsShim.storage.key?(#{dl_key_str})
+          return v unless v.nil?
+          return nil if RactorRailsShim.storage.key?(#{dl_key_str})
           if Ractor.main? && defined?(@@default_locale)
             cv = @@default_locale
             RactorRailsShim.storage[#{dl_key_str}] = cv
@@ -48,7 +49,8 @@ module RactorRailsShim
         end
         def locale
           v = RactorRailsShim.storage[#{l_key_str}]
-          return v if RactorRailsShim.storage.key?(#{l_key_str})
+          return v unless v.nil?
+          return nil if RactorRailsShim.storage.key?(#{l_key_str})
           default_locale
         end
         def locale=(locale)
@@ -68,7 +70,8 @@ module RactorRailsShim
         # set config.i18n.available_locales explicitly.
         def available_locales
           v = RactorRailsShim.storage[#{av_key_str}]
-          return v if RactorRailsShim.storage.key?(#{av_key_str})
+          return v unless v.nil?
+          return nil if RactorRailsShim.storage.key?(#{av_key_str})
           if Ractor.main?
             if defined?(@@available_locales) && (cv = @@available_locales)
               RactorRailsShim.storage[#{av_key_str}] = cv
@@ -92,7 +95,8 @@ module RactorRailsShim
         end
         def available_locales_set
           v = RactorRailsShim.storage[#{avs_key_str}]
-          return v if RactorRailsShim.storage.key?(#{avs_key_str})
+          return v unless v.nil?
+          return nil if RactorRailsShim.storage.key?(#{avs_key_str})
           if Ractor.main? && defined?(@@available_locales_set) && (cv = @@available_locales_set)
             RactorRailsShim.storage[#{avs_key_str}] = cv
             return cv
@@ -112,7 +116,8 @@ module RactorRailsShim
         # documented I18n default).
         def enforce_available_locales
           v = RactorRailsShim.storage[:ractor_rails_shim_i18n_enforce]
-          return v if RactorRailsShim.storage.key?(:ractor_rails_shim_i18n_enforce)
+          return v unless v.nil?
+          return nil if RactorRailsShim.storage.key?(:ractor_rails_shim_i18n_enforce)
           if Ractor.main? && defined?(@@enforce_available_locales)
             cv = @@enforce_available_locales
             RactorRailsShim.storage[:ractor_rails_shim_i18n_enforce] = cv
@@ -157,7 +162,8 @@ module RactorRailsShim
         # main; workers reload translations from disk via these paths.
         def load_path
           v = RactorRailsShim.storage[:ractor_rails_shim_i18n_load_path]
-          return v if RactorRailsShim.storage.key?(:ractor_rails_shim_i18n_load_path)
+          return v unless v.nil?
+          return nil if RactorRailsShim.storage.key?(:ractor_rails_shim_i18n_load_path)
           if Ractor.main?
             lp = (defined?(@@load_path) && @@load_path) || []
             lp = lp.dup.freeze if lp.respond_to?(:freeze) && !lp.frozen?
@@ -181,7 +187,8 @@ module RactorRailsShim
         # DEFAULT_INTERPOLATION_PATTERNS constant).
         def default_separator
           v = RactorRailsShim.storage[:ractor_rails_shim_i18n_sep]
-          return v if RactorRailsShim.storage.key?(:ractor_rails_shim_i18n_sep)
+          return v unless v.nil?
+          return nil if RactorRailsShim.storage.key?(:ractor_rails_shim_i18n_sep)
           if Ractor.main?
             cv = defined?(@@default_separator) ? @@default_separator : "."
             RactorRailsShim.storage[:ractor_rails_shim_i18n_sep] = cv
@@ -197,7 +204,8 @@ module RactorRailsShim
         end
         def exception_handler
           v = RactorRailsShim.storage[:ractor_rails_shim_i18n_exc]
-          return v if RactorRailsShim.storage.key?(:ractor_rails_shim_i18n_exc)
+          return v unless v.nil?
+          return nil if RactorRailsShim.storage.key?(:ractor_rails_shim_i18n_exc)
           if Ractor.main?
             cv = defined?(@@exception_handler) ? @@exception_handler : ::I18n::ExceptionHandler.new
             RactorRailsShim.storage[:ractor_rails_shim_i18n_exc] = cv
@@ -213,7 +221,8 @@ module RactorRailsShim
         end
         def missing_interpolation_argument_handler
           v = RactorRailsShim.storage[:ractor_rails_shim_i18n_miss]
-          return v if RactorRailsShim.storage.key?(:ractor_rails_shim_i18n_miss)
+          return v unless v.nil?
+          return nil if RactorRailsShim.storage.key?(:ractor_rails_shim_i18n_miss)
           if Ractor.main?
             cv = defined?(@@missing_interpolation_argument_handler) ? @@missing_interpolation_argument_handler : lambda do |missing_key, provided_hash, string|
                 raise ::I18n::MissingInterpolationArgument.new(missing_key, provided_hash, string)
@@ -233,7 +242,8 @@ module RactorRailsShim
         end
         def interpolation_patterns
           v = RactorRailsShim.storage[:ractor_rails_shim_i18n_ip]
-          return v if RactorRailsShim.storage.key?(:ractor_rails_shim_i18n_ip)
+          return v unless v.nil?
+          return nil if RactorRailsShim.storage.key?(:ractor_rails_shim_i18n_ip)
           if Ractor.main?
             cv = defined?(@@interpolation_patterns) ? @@interpolation_patterns : ::I18n::DEFAULT_INTERPOLATION_PATTERNS.dup
             RactorRailsShim.storage[:ractor_rails_shim_i18n_ip] = cv
@@ -287,7 +297,8 @@ module RactorRailsShim
         i18n.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
           def fallbacks
             v = RactorRailsShim.storage[#{fb_key_str}]
-            return v if RactorRailsShim.storage.key?(#{fb_key_str})
+            return v unless v.nil?
+            return nil if RactorRailsShim.storage.key?(#{fb_key_str})
             if Ractor.main? && defined?(@@fallbacks)
               cv = @@fallbacks
               if cv
@@ -310,7 +321,8 @@ module RactorRailsShim
           tag.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
             def implementation
               v = RactorRailsShim.storage[#{tag_key_str}]
-              return v if RactorRailsShim.storage.key?(#{tag_key_str})
+              return v unless v.nil?
+              return nil if RactorRailsShim.storage.key?(#{tag_key_str})
               if Ractor.main? && defined?(@@implementation)
                 cv = @@implementation
                 RactorRailsShim.storage[#{tag_key_str}] = cv

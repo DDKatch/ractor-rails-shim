@@ -110,7 +110,8 @@ module RactorRailsShim
       req.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def parameter_parsers
           v = RactorRailsShim.storage[#{pp_key_str}]
-          return v if RactorRailsShim.storage.key?(#{pp_key_str})
+          return v unless v.nil?
+          return nil if RactorRailsShim.storage.key?(#{pp_key_str})
           if Ractor.main? && instance_variable_defined?(:@parameter_parsers)
             v = @parameter_parsers
             RactorRailsShim.storage[#{pp_key_str}] = v

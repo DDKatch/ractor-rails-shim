@@ -1772,7 +1772,8 @@ module RactorRailsShim
       ::ActiveRecord::Base.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def configurations
           v = RactorRailsShim.storage[#{key_str}]
-          return v if RactorRailsShim.storage.key?(#{key_str})
+          return v unless v.nil?
+          return nil if RactorRailsShim.storage.key?(#{key_str})
           if Ractor.main?
             ActiveRecord::Core.class_variable_get(:@@configurations)
           else
@@ -1823,7 +1824,8 @@ module RactorRailsShim
       ::ActiveRecord::DatabaseConfigurations.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def db_config_handlers
           v = RactorRailsShim.storage[#{key_str}]
-          return v if RactorRailsShim.storage.key?(#{key_str})
+          return v unless v.nil?
+          return nil if RactorRailsShim.storage.key?(#{key_str})
           if Ractor.main?
             @db_config_handlers
           else
@@ -1872,7 +1874,8 @@ module RactorRailsShim
       ::ActiveRecord.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def query_transformers
           v = RactorRailsShim.storage[#{key_str}]
-          return v if RactorRailsShim.storage.key?(#{key_str})
+          return v unless v.nil?
+          return nil if RactorRailsShim.storage.key?(#{key_str})
           if Ractor.main?
             @query_transformers
           else
@@ -1920,7 +1923,8 @@ module RactorRailsShim
         ::ActiveRecord.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
           def #{method_name}
             v = RactorRailsShim.storage[#{key_str}]
-            return v if RactorRailsShim.storage.key?(#{key_str})
+            return v unless v.nil?
+            return nil if RactorRailsShim.storage.key?(#{key_str})
             if Ractor.main?
               @#{method_name}
             else
@@ -1952,7 +1956,8 @@ module RactorRailsShim
         def registry
           key = :"ractor_rails_shim_dedup_registry_\#{name || object_id}"
           v = RactorRailsShim.storage[key]
-          return v if RactorRailsShim.storage.key?(key)
+          return v unless v.nil?
+          return nil if RactorRailsShim.storage.key?(key)
           h = {}
           RactorRailsShim.storage[key] = h
           h
@@ -1975,7 +1980,8 @@ module RactorRailsShim
         def query_constraints_list
           key = :"ractor_rails_shim_qcl_\#{name || object_id}"
           v = RactorRailsShim.storage[key]
-          return v if RactorRailsShim.storage.key?(key)
+          return v unless v.nil?
+          return nil if RactorRailsShim.storage.key?(key)
           result = if base_class? || primary_key != base_class.primary_key
             primary_key if primary_key.is_a?(::Array)
           else
@@ -2230,7 +2236,8 @@ module RactorRailsShim
       ::ActiveRecord::Base.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def default_connection_handler
           v = RactorRailsShim.storage[#{dch_key_str}]
-          return v if RactorRailsShim.storage.key?(#{dch_key_str})
+          return v unless v.nil?
+          return nil if RactorRailsShim.storage.key?(#{dch_key_str})
           if Ractor.main?
             cv = RactorRailsShim::CLASS_ATTR_VALUES[:__ractor_rails_shim_ar_default_connection_handler__]
             return cv if cv
@@ -2345,7 +2352,8 @@ module RactorRailsShim
         def serialize_cast_value_compatible?
           key = :"ractor_rails_shim_scv_\#{name || object_id}"
           v = RactorRailsShim.storage[key]
-          return v if RactorRailsShim.storage.key?(key)
+          return v unless v.nil?
+          return nil if RactorRailsShim.storage.key?(key)
           result = begin
             ancestors.index(instance_method(:serialize_cast_value).owner) <= ancestors.index(instance_method(:serialize).owner)
           rescue ::RuntimeError, ::Ractor::Error
@@ -2393,7 +2401,8 @@ module RactorRailsShim
         def uncacheable_methods
           key = :ractor_rails_shim_ar_uncacheable_methods
           v = RactorRailsShim.storage[key]
-          return v if RactorRailsShim.storage.key?(key)
+          return v unless v.nil?
+          return nil if RactorRailsShim.storage.key?(key)
           result = (
             delegated_classes.flat_map(&:public_instance_methods) - ActiveRecord::Relation.public_instance_methods
           ).to_set.freeze
@@ -2429,7 +2438,8 @@ module RactorRailsShim
         def primary_key
           key = :"ractor_rails_shim_pk_\#{name || object_id}"
           v = RactorRailsShim.storage[key]
-          return v if RactorRailsShim.storage.key?(key)
+          return v unless v.nil?
+          return nil if RactorRailsShim.storage.key?(key)
           if Ractor.main?
             reset_primary_key if PRIMARY_KEY_NOT_SET.equal?(@primary_key)
             v = @primary_key
@@ -2647,7 +2657,8 @@ module RactorRailsShim
       mig.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def migrations_paths
           v = RactorRailsShim.storage[#{mp_key_str}]
-          return v if RactorRailsShim.storage.key?(#{mp_key_str})
+          return v unless v.nil?
+          return nil if RactorRailsShim.storage.key?(#{mp_key_str})
           if Ractor.main? && instance_variable_defined?(:@migrations_paths)
             v = @migrations_paths
             RactorRailsShim.storage[#{mp_key_str}] = v
