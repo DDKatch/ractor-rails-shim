@@ -62,6 +62,12 @@ both are Ractor-mode-only (see the Install section's two tracks).
 **Benchmarks:** throughput/latency/memory of this shim + the test app under
 kino `:ractor` vs Puma vs Falcon are documented in
 [ractor-rails-shim-test-app/BENCHMARKS.md](https://github.com/DDKatch/ractor-rails-shim-test-app/blob/main/BENCHMARKS.md).
+Latest (0.4.2, Ruby 4.0.7, YJIT on): with 4.0.7 shipping the YJIT/Ractor
+VM-lock fix ([ruby#22224](https://bugs.ruby-lang.org/issues/22224) /
+[ruby/ruby#18176](https://github.com/ruby/ruby/pull/18176)), kino `:ractor`
+(-w5 -t1) reaches 14,094 rps on the no-DB path (was 2,148 on 4.0.6) at
+~3.5× lower memory than puma/falcon forked — no `BENCH_YJIT_OFF` workaround
+needed anymore.
 
 ## Repository layout
 
