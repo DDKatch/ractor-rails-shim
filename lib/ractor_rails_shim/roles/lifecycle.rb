@@ -78,6 +78,26 @@ module RactorRailsShim
       Freezers::GlobalClassIvarFreezer.call
       Freezers::GlobalConstantFreezer.call
       Freezers::MessagesConstantsFreezer.call
+      compact_after_prepare!
+    end
+
+    # One boot-time GC.compact after the shareabilization passes. The
+    # traversal + deep-freeze work churns the heap (free slots scattered
+    # across pages); compacting once — while still in the main Ractor,
+    # BEFORE any worker Ractor exists — hands every worker a tighter heap
+    # for the process lifetime. This is a boot-time one-shot, NOT
+    # GC.auto_compact: auto-compaction during live kino :ractor load is
+    # known to hang (see the test app's bench/bench.rb compaction notes)
+    # and is NOT enabled here.
+    #
+    # Opt-outs: RRAILS_SHIM_DISABLE_BOOT_COMPACT=1 (shim-specific) or
+    # RUBY_GC_DISABLE_COMPACTION=1 (the interpreter-level switch — respect
+    # it as a blanket "no compaction" directive).
+    def self.compact_after_prepare!
+      return false if ENV["RRAILS_SHIM_DISABLE_BOOT_COMPACT"]
+      return false if ENV["RUBY_GC_DISABLE_COMPACTION"] == "1"
+      GC.compact
+      true
     end
   end
 end
