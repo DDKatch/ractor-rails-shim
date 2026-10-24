@@ -177,7 +177,11 @@ class WorkerAppSpec < Minitest::Spec
     assert_equal "prefilled", observed[0], "fallback value should be visible in worker IES after setup_once!"
     assert observed[1], "prefilled key should be present (a hit, not a miss)"
   ensure
-    RactorRailsShim::Registry.reassign_shareable_fallback(Ractor.make_shareable({}))
+    # Restore the load-time constant — a fresh empty hash here would leave
+    # Registry.shareable_fallback pointing at a different object than
+    # RactorRailsShim::SHAREABLE_FALLBACK for the rest of the suite
+    # (assert_same in registry_spec fails on the wrong seed order).
+    RactorRailsShim::Registry.reassign_shareable_fallback(RactorRailsShim::SHAREABLE_FALLBACK)
   end
 
   it "prefill does not overwrite values the worker already set" do
@@ -198,6 +202,10 @@ class WorkerAppSpec < Minitest::Spec
     observed = r.value
     assert_equal "worker_override", observed, "prefill must not clobber an existing per-ractor value"
   ensure
-    RactorRailsShim::Registry.reassign_shareable_fallback(Ractor.make_shareable({}))
+    # Restore the load-time constant — a fresh empty hash here would leave
+    # Registry.shareable_fallback pointing at a different object than
+    # RactorRailsShim::SHAREABLE_FALLBACK for the rest of the suite
+    # (assert_same in registry_spec fails on the wrong seed order).
+    RactorRailsShim::Registry.reassign_shareable_fallback(RactorRailsShim::SHAREABLE_FALLBACK)
   end
 end

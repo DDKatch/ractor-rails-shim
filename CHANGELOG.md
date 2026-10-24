@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-10-24
+
 ### Performance — read-path hot-loop optimization (measured)
 
 Four changes targeting the per-request class-attribute/config read path,
