@@ -155,4 +155,49 @@ class WorkerAppSpec < Minitest::Spec
   ensure
     RactorRailsShim::WorkerAppFactory.define_singleton_method(:capture_constants!, original)
   end
+
+  # --- IES prefill from the shareable fallback table ---
+
+  it "prefill copies non-nil fallback values into the worker's IES" do
+    key = :"rrs_worker_app_prefill_spec_key"
+    RactorRailsShim::Registry.reassign_shareable_fallback(
+      Ractor.make_shareable({ key => "prefilled", gone_key_missing: nil }.freeze)
+    )
+    app = FrozenApp.new
+    Ractor.make_shareable(app)
+    worker_app = RactorRailsShim.worker_app!(app)
+
+    observed = nil
+    r = Ractor.new(worker_app) do |wa|
+      wa.call({ "PATH_INFO" => "/up", "REQUEST_METHOD" => "GET" })
+      storage = RactorRailsShim.storage
+      [storage[:rrs_worker_app_prefill_spec_key], storage.key?(:rrs_worker_app_prefill_spec_key)]
+    end
+    observed = r.value
+    assert_equal "prefilled", observed[0], "fallback value should be visible in worker IES after setup_once!"
+    assert observed[1], "prefilled key should be present (a hit, not a miss)"
+  ensure
+    RactorRailsShim::Registry.reassign_shareable_fallback(Ractor.make_shareable({}))
+  end
+
+  it "prefill does not overwrite values the worker already set" do
+    key = :"rrs_worker_app_prefill_keep_spec_key"
+    RactorRailsShim::Registry.reassign_shareable_fallback(
+      Ractor.make_shareable({ key => "fallback_value" }.freeze)
+    )
+    app = FrozenApp.new
+    Ractor.make_shareable(app)
+    worker_app = RactorRailsShim.worker_app!(app)
+
+    observed = nil
+    r = Ractor.new(worker_app) do |wa|
+      RactorRailsShim.storage[:rrs_worker_app_prefill_keep_spec_key] = "worker_override"
+      wa.call({ "PATH_INFO" => "/up", "REQUEST_METHOD" => "GET" })
+      RactorRailsShim.storage[:rrs_worker_app_prefill_keep_spec_key]
+    end
+    observed = r.value
+    assert_equal "worker_override", observed, "prefill must not clobber an existing per-ractor value"
+  ensure
+    RactorRailsShim::Registry.reassign_shareable_fallback(Ractor.make_shareable({}))
+  end
 end

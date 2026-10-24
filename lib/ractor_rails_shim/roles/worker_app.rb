@@ -51,8 +51,29 @@ module RactorRailsShim
         return if Ractor.current[:rrs_worker_ready]
         rebind_constants
         RactorRailsShim.init_worker_ar_connections! if defined?(RactorRailsShim)
+        prefill_ies_from_fallback!
         Ractor.current[:rrs_worker_ready] = true
       end
+    end
+
+    # Prefill this worker's IES from the shareable fallback table so every
+    # patched reader's first-tier probe hits immediately. Without this, each
+    # reader pays a full IES miss + key? probe + SHAREABLE_FALLBACK probe on
+    # every read (the fallback table is frozen and never changes in a
+    # worker, so copying its key->value slots into the worker-local IES is
+    # semantically transparent: same values, one tier sooner). Per-ractor
+    # writes that happen later still override — the key? guard keeps any
+    # value the worker already set for itself. Only non-nil fallback values
+    # are copied (a nil fallback slot means "no fallback" by lookup
+    # contract, and storing nil would fake a hit).
+    def prefill_ies_from_fallback!
+      fallback = RactorRailsShim::Registry.shareable_fallback
+      storage = RactorRailsShim.storage
+      fallback.each do |key, value|
+        next if value.nil?
+        storage[key] = value unless storage.key?(key)
+      end
+      nil
     end
 
     def rebind_constants
