@@ -71,6 +71,13 @@ module RactorRailsShim
       def initialize(source:, kinds: DEFAULT_KINDS)
         @source = source
         @kinds = kinds.is_a?(::Set) ? kinds : ::Set.new(kinds.to_a)
+        # Compiled-chain cache, keyed [class_object_id, kind]. Lives on the
+        # transport INSTANCE, and transports are built per Ractor (see
+        # Callbacks.registry), so this never crosses a Ractor boundary and
+        # plain ivars are safe. Validated against the source table's
+        # identity on every slow-path build (see compiled_chain).
+        @compiled = {}
+        @compiled_source_id = nil
       end
 
       def source
@@ -107,9 +114,17 @@ module RactorRailsShim
       # `send`-ed in a worker. ActiveRecord generates such methods for autosave
       # associations (e.g. `autosave_associated_records_for_*`). We SKIP those
       # filters and continue the chain so app-defined `def` callbacks still run.
+      #
+      # The entry set comes from the compiled chain (one ancestor walk per
+      # class+kind, cached on this per-Ractor transport) instead of re-walking
+      # the ancestors on every replay.
       def before(context, kind)
+        entries = compiled_chain(context, kind).before
+        return nil if entries.empty?
         halted = false
-        each_applicable_filter(context, kind, :before) do |entry|
+        action = action_name_of(context)
+        entries.each do |entry|
+          next unless action_constraint_allows?(entry, action)
           next unless condition_allows?(context, entry)
           next unless validation_context_allows?(context, entry)
           result = invoke_filter(context, entry)
@@ -124,9 +139,14 @@ module RactorRailsShim
         false if halted
       end
 
-      # Run the matching :after filters for `kind`, ancestor-first.
+      # Run the matching :after filters for `kind`, ancestor-first (compiled;
+      # see #before).
       def after(context, kind)
-        each_applicable_filter(context, kind, :after) do |entry|
+        entries = compiled_chain(context, kind).after
+        return nil if entries.empty?
+        action = action_name_of(context)
+        entries.each do |entry|
+          next unless action_constraint_allows?(entry, action)
           next unless condition_allows?(context, entry)
           next unless validation_context_allows?(context, entry)
           invoke_filter(context, entry)
@@ -141,9 +161,10 @@ module RactorRailsShim
       #
       # Nesting matches ActiveSupport (verified against the real compiled
       # chain): the FIRST-declared :around filter is OUTERMOST — it is entered
-      # first and wraps every later layer behind its `yield`. So the entries
-      # are collected in chain order (superclass-first, declaration order) and
-      # folded INNER-first (reverse iteration).
+      # first and wraps every later layer behind its `yield`. The compiled
+      # chain's :around entries arrive in chain order (superclass-first,
+      # declaration order, non-Symbol filters dropped at compile time — they
+      # could never be wrapped), and are folded INNER-first here.
       #
       # Each wrapper sends the filter method with the descending callable as
       # its block (`context.send(:filter) { inner.call }`); a filter method
@@ -158,9 +179,12 @@ module RactorRailsShim
       # real around-filter methods virtually always return nil). Halting stays
       # a :before-phase concern, as in the compiled chain.
       def around(context, kind, inner)
+        entries = compiled_chain(context, kind).around
+        return inner if entries.empty?
+        action = action_name_of(context)
         collected = []
-        each_applicable_filter(context, kind, :around) do |entry|
-          next unless entry[:filter].is_a?(::Symbol)
+        entries.each do |entry|
+          next unless action_constraint_allows?(entry, action)
           next unless condition_allows?(context, entry)
           next unless validation_context_allows?(context, entry)
           collected << entry
@@ -209,32 +233,81 @@ module RactorRailsShim
         }
       end
 
-      # Walk the context's class hierarchy, collecting every entry whose
-      # chain_kind + phase match, then yield them in Rails' accumulation order:
-      # superclass filters BEFORE subclass filters, declaration order preserved
-      # within each class. `only`/`except` gate each entry against the context's
-      # `action_name` when present.
-      def each_applicable_filter(context, kind, phase)
-        action = action_name_of(context)
-        ancestors = ancestors_of(context)
-        # ancestors is instance-class-first; we want superclass-first so
-        # superclass filters run before subclass filters (Rails order), but
-        # declaration order is preserved within each class (no reversal).
-        collected = []
+      # Frozen empty chain shared by every miss (no captured table, no
+      # matching entries).
+      EMPTY_CHAIN = Struct.new(:before, :after, :around)
+                         .new([].freeze, [].freeze, [].freeze).freeze
+
+      # The chain for (context's class, kind): three frozen, chain-ordered
+      # entry arrays — superclass filters before subclass filters, declaration
+      # order preserved within each class (Rails accumulation order).
+      #
+      # Built ONCE per (class, kind) by a single ancestor walk over the source
+      # table and cached on this per-Ractor transport instance. Per-request
+      # replays iterate the compiled arrays directly instead of re-walking
+      # `ancestors` + hash-probing the table three times (before/after/around)
+      # per replay.
+      #
+      # Compile-time-safe reductions (inputs that can never vary per request):
+      #   - `chain_kind` / `phase` equality — the bucketing itself.
+      #   - non-Symbol :around filters are dropped (around_wrapper can only
+      #     wrap method-name filters).
+      # Everything request-dependent (only/except vs action_name, on:/except_on:
+      # vs validation_context, if:/unless: symbols, respond_to? staleness,
+      # un-shareable-Proc failures) stays a replay-time check, exactly as
+      # before.
+      #
+      # Cache invalidation: the source table is resolved lazily (const_get on
+      # the constant name) only on a cache miss, and the cache is dropped when
+      # the resolved table's object_id changes (re-prepare assigns a fresh
+      # frozen constant). Entries are frozen Hashes from capture, so compiled
+      # arrays hold stable references. A nil table (constant not yet assigned)
+      # is NOT cached, so a table that appears later is picked up on the next
+      # replay; replacing an already-compiled table on a LIVE transport is not
+      # detected — re-prepare must rebuild the registry (Callbacks.reset_registry),
+      # which is already its contract.
+      def compiled_chain(context, kind)
+        klass = context.class
+        cid = class_id_of(klass)
+        per_class = @compiled[cid]
+        chain = per_class && per_class[kind]
+        return chain unless chain.nil?
+
         table = source
-        return unless table # no captured table yet → nothing to replay
-        ancestors.reverse_each do |klass|
-          entries = table[class_id_of(klass)]
+        return EMPTY_CHAIN if table.nil?
+
+        table_id = table.object_id
+        if table_id != @compiled_source_id
+          @compiled.clear
+          @compiled_source_id = table_id
+        end
+        before_entries = []
+        after_entries = []
+        around_entries = []
+        ancestors = klass.respond_to?(:ancestors) ? klass.ancestors : [klass]
+        ancestors.reverse_each do |anc|
+          entries = table[class_id_of(anc)]
           next unless entries
           entries.each do |entry|
-            next unless entry[:chain_kind] == kind
-            next unless entry[:phase] == phase
-            next unless action_constraint_allows?(entry, action)
-            collected << entry
+            case entry[:phase]
+            when :before
+              before_entries << entry if entry[:chain_kind] == kind
+            when :after
+              after_entries << entry if entry[:chain_kind] == kind
+            when :around
+              around_entries << entry if entry[:chain_kind] == kind &&
+                                         entry[:filter].is_a?(::Symbol)
+            end
           end
         end
-        collected.each { |e| yield e }
+        chain = CompiledChain.new(before_entries.freeze, after_entries.freeze,
+                                  around_entries.freeze).freeze
+        (@compiled[cid] ||= {})[kind] = chain
+        chain
       end
+
+      # One compiled chain (three frozen phase arrays).
+      CompiledChain = Struct.new(:before, :after, :around)
 
       def action_name_of(context)
         action = context.action_name if context.respond_to?(:action_name)

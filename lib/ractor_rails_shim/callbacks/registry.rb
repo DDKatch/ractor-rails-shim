@@ -43,18 +43,27 @@ module RactorRailsShim
       # to empty so callers can `register` incrementally.
       def initialize(transports = [])
         @transports = transports.is_a?(Enumerable) ? transports.to_a : Array(transports)
+        @applicable_cache = {}
       end
 
       # Register one transport. Returns self for chaining.
       def register(transport)
         @transports << transport
+        @applicable_cache.clear
         self
       end
 
-      # The subset of transports that apply to `kind`. Public so tests (and a
-      # future "is anything replayable for this kind?" check) can introspect.
+      # The subset of transports that apply to `kind`. Memoized per kind —
+      # `replay` asks on every callback run and the transport set is fixed
+      # between `register` calls, so the per-call `select` + Array allocation
+      # was pure overhead on the hot path. Public so tests (and a future "is
+      # anything replayable for this kind?" check) can introspect.
       def applicable(kind)
-        @transports.select { |t| t.applies_to?(kind) }
+        applicable = @applicable_cache[kind]
+        return applicable if applicable
+        applicable = @transports.select { |t| t.applies_to?(kind) }.freeze
+        @applicable_cache[kind] = applicable
+        applicable
       end
 
       # Replay the empty callback chain for `context` and `kind`. Runs every

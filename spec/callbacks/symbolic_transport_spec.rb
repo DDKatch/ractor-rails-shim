@@ -530,4 +530,73 @@ class SymbolicTransportSpec < Minitest::Spec
     t.before(update_ctx, :validate)
     refute_includes update_ctx.invoked, :custom_check
   end
+
+  # --- compiled-chain cache ---
+
+  it "compiles the chain once per (class, kind) and replays identically on repeated calls" do
+    source = {
+      10 => [
+        { chain_kind: :save, phase: :before, filter: :b1, only: nil, except: nil, on: nil, except_on: nil },
+        { chain_kind: :save, phase: :after, filter: :a1, only: nil, except: nil, on: nil, except_on: nil }
+      ]
+    }
+    t = RactorRailsShim::Callbacks::SymbolicTransport.new(source: source, kinds: [:save])
+
+    ctx1 = build_context([10], source)
+    ctx2 = build_context([10], source)
+    t.before(ctx1, :save)
+    t.after(ctx1, :save)
+    t.before(ctx2, :save)
+    t.after(ctx2, :save)
+
+    assert_equal %i[b1], ctx1.invoked.grep(:b1), "before filter replayed"
+    assert_equal %i[a1], ctx1.invoked.grep(:a1), "after filter replayed"
+    assert_equal ctx1.invoked, ctx2.invoked, "compiled cache must not change replay results"
+
+    compiled = t.instance_variable_get(:@compiled)
+    assert_equal 1, compiled.size, "one class entry"
+    assert_equal 1, compiled[10].size, "one kind entry (reused, not rebuilt per call)"
+  end
+
+  it "still gates only:/except: per request on a compiled chain" do
+    source = {
+      10 => [
+        { chain_kind: :process_action, phase: :before, filter: :guard_show, only: [:show].freeze, except: nil, on: nil, except_on: nil }
+      ]
+    }
+    t = RactorRailsShim::Callbacks::SymbolicTransport.new(source: source, kinds: [:process_action])
+
+    index_ctx = build_context([10], source)
+    def index_ctx.action_name; :index; end
+    show_ctx = build_context([10], source)
+    def show_ctx.action_name; :show; end
+
+    2.times do
+      t.before(index_ctx, :process_action)
+      t.before(show_ctx, :process_action)
+    end
+    refute_includes index_ctx.invoked, :guard_show, "only: [:show] must not run for :index"
+    assert_includes show_ctx.invoked, :guard_show, "only: [:show] must run for :show"
+  end
+
+  it "picks up a source table that appears after an empty compile" do
+    # A nil table is not cached: the capture constant is assigned before
+    # workers spawn in production, but a transport that compiled against nil
+    # (or whose constant resolves later) must see the table on the next
+    # replay. Replacing an already-compiled table on a LIVE transport is
+    # deliberately not detected — re-prepare rebuilds the registry
+    # (Callbacks.reset_registry).
+    table = { 10 => [{ chain_kind: :save, phase: :before, filter: :late_capture, only: nil, except: nil, on: nil, except_on: nil }] }
+    current = nil
+    t = RactorRailsShim::Callbacks::SymbolicTransport.new(source: -> { current }, kinds: [:save])
+
+    ctx = build_context([10], table)
+    t.before(ctx, :save)
+    assert_empty ctx.invoked, "no table yet: nothing to replay"
+
+    current = table
+    ctx2 = build_context([10], table)
+    t.before(ctx2, :save)
+    assert_includes ctx2.invoked, :late_capture, "a table that appears later must be picked up"
+  end
 end
