@@ -28,6 +28,11 @@ Ruby 4.0.7, ab c=64):
   Opt-outs: `RRAILS_SHIM_DISABLE_BOOT_COMPACT=1` / `RUBY_GC_DISABLE_COMPACTION=1`.
 - New `bench/accessor_read_bench.rb` micro-benchmark (raw ivar floor vs
   each lookup shape).
+- **Compiled callback chains** (`SymbolicTransport` + `Registry`): chains
+  compile once per (class, kind) into frozen phase arrays — one ancestor
+  walk instead of three per replay, no per-replay `const_get` or
+  transport select. Micro-bench: 0.07 → 0.21 Mops/s (3×). E2E POST /posts
+  3,000 → 3,445 rps on top of the other changes; `/up` 14,991 → 16,031.
 
 End-to-end (req/s, baseline → full stack; two independent full-stack runs
 agreed within noise): `/up` 13,986 → ~15,400 (+7-13%), `/posts_plain`
