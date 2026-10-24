@@ -80,7 +80,7 @@ raise "resolved_hot" unless resolved_reader(WALK) == "fallback_value"
 if defined?(Benchmark::IPS)
   Benchmark.ips do |x|
     x.report("ivar")           { WARM.plain }
-    x.report("exact_ies")      { WARM.shim_reader }
+    x.report("exact_ies")      { Ies[KEY] = "ies_value"; WARM.shim_reader }
     x.report("exact_fallback") { Ies.delete(KEY); WARM.shim_reader }
     x.report("resolved_hot")   { resolved_reader(WALK) }
     x.report("by_attr_walk")   do
@@ -90,18 +90,23 @@ if defined?(Benchmark::IPS)
   end
 else
   ITERS = 2_000_000
-  puts format("%-16s %10s", "shape", "Mops/s")
+  REPS = 3
+  puts format("%-16s %10s", "shape", "Mops/s (best of #{REPS})")
   {
     "ivar"           => -> { WARM.plain },
-    "exact_ies"      => -> { WARM.shim_reader },
-    "exact_fallback" => -> { WARM.shim_reader },
+    "exact_ies"      => -> { Ies[KEY] = "ies_value"; WARM.shim_reader },
+    "exact_fallback" => -> { Ies.delete(KEY); WARM.shim_reader },
     "resolved_hot"   => -> { resolved_reader(WALK) },
     "by_attr_walk"   => -> { RactorRailsShim::StorageStrategy::Ractor.lookup_by_attr(WALK, :bench_attr, nil) }
   }.each do |name, fn|
     fn.call # warm
-    t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-    ITERS.times { fn.call }
-    dt = Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0
-    puts format("%-16s %10.2f", name, ITERS / dt / 1e6)
+    best = 0.0
+    REPS.times do
+      t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      ITERS.times { fn.call }
+      dt = Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0
+      best = [best, ITERS / dt / 1e6].max
+    end
+    puts format("%-16s %10.2f", name, best)
   end
 end
