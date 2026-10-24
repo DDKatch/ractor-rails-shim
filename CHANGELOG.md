@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Performance — read-path hot-loop optimization (measured)
+
+Four changes targeting the per-request class-attribute/config read path,
+benchmarked after each against the test app under kino `:ractor` (-w5 -t1,
+Ruby 4.0.7, ab c=64):
+
+- **Single-probe IES hit** (`StorageStrategy::Ractor` and all ~53 inline
+  eval'd readers): the non-nil IES hit no longer pays a second
+  `storage.key?` probe — the stored-nil disambiguation moved to the nil
+  path. Semantics identical (a stored nil is still a hit). Micro-bench
+  exact-key reader 2.51 → 3.52 Mops/s.
+- **Worker IES prefill** (`WorkerApp#setup_once!`): each worker copies the
+  frozen shareable fallback table's non-nil slots into its own IES on
+  first request, so every later read of fallback-backed config is a
+  single first-tier hit. Per-ractor overrides are preserved (key? guard).
+- **Boot-time GC.compact** (`prepare_for_ractors!`): one compaction in
+  main after the shareabilization passes, before workers spawn.
+  Explicitly NOT `GC.auto_compact` (which hangs kino :ractor under load).
+  Opt-outs: `RRAILS_SHIM_DISABLE_BOOT_COMPACT=1` / `RUBY_GC_DISABLE_COMPACTION=1`.
+- New `bench/accessor_read_bench.rb` micro-benchmark (raw ivar floor vs
+  each lookup shape).
+
+End-to-end (req/s, baseline → full stack; two independent full-stack runs
+agreed within noise): `/up` 13,986 → ~15,400 (+7-13%), `/posts_plain`
+4,245 → 4,743-4,900 (+12-15%), `POST /posts` 2,442 → 2,728-3,000
+(+12-23%), `/posts` (Kaminari, DB-bound) 527 → 548-574 (+4-9%). Memory
+flat (~270 MB cold). All 832 unit specs + strategy_proc + integration
+spec green.
+
 ### Added — multi-database (`connects_to` / `connected_to`) in worker Ractors
 
 Test-app row 81 now runs a real second database, which exposed three gaps in
