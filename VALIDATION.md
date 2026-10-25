@@ -1,5 +1,10 @@
 # Validation against a real Rails app (Phase 1)
 
+> Historical record (Ruby 4.0.6 era). Current validation status lives in the
+> test app's `RAILS_FEATURES.md` (143/144 audited features) and
+> `BENCHMARKS.md` (load/latency/memory matrices). Kept because it documents
+> how the validation methodology was built and the first real-app bugs found.
+
 Results of validating `ractor-rails-shim` against a minimal Rails 8.1.3 app
 (`rails new test_app --minimal`) on Ruby 4.0.6.
 

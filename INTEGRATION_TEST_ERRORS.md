@@ -1,5 +1,10 @@
 # Integration Test Errors — `ractor-rails-shim-test-app`
 
+> **Historical record.** The errors below are fixed; the doc's "updated
+> whenever the tests are run" promise no longer holds — the test app suite
+> is green (0 failures) as of 2026-10-25, and its current run counts live in
+> the test app's `RAILS_FEATURES.md`. Kept for the diagnosis patterns.
+
 > Collected by running the dummy app's test suite. Updated whenever the
 > integration tests are run. Companion to `README.md` (RESUME HERE →
 > "Route-coverage integration test").

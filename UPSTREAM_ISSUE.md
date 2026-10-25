@@ -5,6 +5,13 @@
 > submission-ready Rails issue. When the maintainer is ready to engage
 > upstream, paste the body below into a `rails/rails` issue and link the
 > `ractor-rails-shim` repo as the reference implementation.
+>
+> **Refresh before posting (2026-10-25):** the body's evidence cites Ruby
+> 4.0.6 / shim 0.2.5 / 61 specs; the current baseline is Ruby 4.0.7, shim
+> 0.5.1, 835 unit specs. Blocker framing update: the shim now *replaces*
+> the app graph's self-capturing Procs with callable objects at boot
+> (`make_app_shareable!`), so blocker 4 is demonstrated shim-fixable —
+> frame it as "shim proves the fix, upstream should do it properly".
 
 **Title:** Ractor support: migrate class-level instance variables to IsolatedExecutionState, and restructure self-capturing Procs
 

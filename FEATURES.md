@@ -29,7 +29,7 @@ Status legend:
 | `dependent: :destroy` cascade | ✅ | yes (Post→Comments) | DependentAssociationTransport |
 | `belongs_to` / `has_many` | ✅ | yes | |
 | lambda `scope` (`scope :recent`) | ✅ | yes | `_install_activerecord_scope_patch` re-evals the lambda source |
-| `has_one_attached` (ActiveStorage) | ✅ | yes (`User#avatar`) | verified via `GET /attach_probe` → 200 (blob created, file uploaded, `identified=` persists) and `GET /attach_read_probe` → 200 (cross-worker read-back: attached, filename, byte_size, checksum). See TODO #4 for the full list of patched layers. **TODO #4** |
+| `has_one_attached` (ActiveStorage) | ✅ | yes (`User#avatar`) | verified via `GET /attach_probe` → 200 (blob created, file uploaded, `identified=` persists) and `GET /attach_read_probe` → 200 (cross-worker read-back: attached, filename, byte_size, checksum). The full list of patched layers is in implementation-queue entry #4 below |
 | `:counter_cache` | ✅ | no | per-worker memo cache in activerecord_reflection.rb |
 | `after_create_commit` (DB-write trigger) | ✅ | yes | fires in worker after INSERT |
 
@@ -53,9 +53,9 @@ Status legend:
 | Feature | Status | App-used | Notes |
 |---|---|---|---|
 | `mail` gem inside a worker Ractor (parsing/encoding/building) | ✅ | yes | `_install_mail_patch`: cvars→IES, `Mail::Configuration.instance` per-worker, `Mail::Parsers::*Parser` + `Mail::Utilities` module ivars captured, `Mail::TestMailer.deliveries` per-Ractor, `Mail::PartsList`/`AttachmentsList` (`DelegateClass`) delegating methods redefined as shareable `def` |
-| ActionMailer `deliver_now` from a worker Ractor | ✅ | yes (`UserMailer.welcome_email`) | full render + build + deliver works in a worker Ractor (verified via `GET /mail_probe` → 200 and `GET /mail_deliver_probe` → 200 with delivered_count, subject, body content). See TODO #3 for the full list of fixed layers. **TODO #3** |
-| ActionMailer `deliver_later` (ActiveJob) | ✅ | yes (`WelcomeJob`) | enqueue path fixed (see TODO #5): `GlobalID.app` captured + CGI class-variable defaults patched; argument serialization + adapter enqueue work in a worker |
-| ActiveJob `perform_later` (enqueue from worker) | ✅ | yes (`WelcomeJob`) | TODO #5 fixed (2026-10-05): `GlobalID.app` deep-frozen via `SHAREABLE_CLASS_IVARS`; CGI `@@accept_charset` class-variable defaults patched (`patches/cgi.rb`); `queue_adapter` lazily instantiates per-worker via the class_attribute IES writer. Verified: `GET /job_enqueue_probe` → 200 `{enqueued: true}` |
+| ActionMailer `deliver_now` from a worker Ractor | ✅ | yes (`UserMailer.welcome_email`) | full render + build + deliver works in a worker Ractor (verified via `GET /mail_probe` → 200 and `GET /mail_deliver_probe` → 200 with delivered_count, subject, body content). The full list of fixed layers is in implementation-queue entry #3 below |
+| ActionMailer `deliver_later` (ActiveJob) | ✅ | yes (`WelcomeJob`) | enqueue path fixed (implementation-queue entry #5): `GlobalID.app` captured + CGI class-variable defaults patched; argument serialization + adapter enqueue work in a worker |
+| ActiveJob `perform_later` (enqueue from worker) | ✅ | yes (`WelcomeJob`) | fixed (2026-10-05, implementation-queue entry #5): `GlobalID.app` deep-frozen via `SHAREABLE_CLASS_IVARS`; CGI `@@accept_charset` class-variable defaults patched (`patches/cgi.rb`); `queue_adapter` lazily instantiates per-worker via the class_attribute IES writer. Verified: `GET /job_enqueue_probe` → 200 `{enqueued: true}` |
 
 ## Misc
 | Feature | Status | App-used | Notes |
@@ -71,7 +71,8 @@ Status legend:
 | `Rails.cache` — `:redis_cache_store` | ⚠️ | no | Connection config is not reconstructible from the instance. Boot warning; not proof-tested. |
 | Fragment caching | ✅ | yes | Fragment / Russian-doll / low-level caching verified from real kino `:ractor` workers. |
 
-## Unsupported app-used features — implementation queue (TDD, one by one)
+## Implementation queue (complete — all entries done; kept as the patch-detail record)
+
 1. ✅ `render json:` — ActionController JSON renderer in worker Ractor (fixed: `_install_json_renderer_patch`)
 2. ✅ `scope` lambda invocation in worker Ractor (already supported by `_install_activerecord_scope_patch`; verified with probe)
 3. ✅ ActionMailer `deliver_now` in worker Ractor — **DONE** (verified: `GET /mail_probe` → 200)
@@ -116,6 +117,6 @@ Status legend:
 |---|---|---|
 | `around_action` / `around_*` callbacks | ✅ (symbolic only) | Symbolic method-name around filters replay wrap-style (first-declared outermost; after-half inside the yield; non-yielding suppresses block + after). Lambda/Proc around filters stay skipped (un-shareable Procs). |
 | `sanitize` / `simple_format` (Nokogiri) | ❌ | ractor-unsafe C ext — main-Ractor only in workers. |
-| ActiveJob `perform_later` / `deliver_later` | ✅ (fixed) | TODO #5 resolved (2026-10-05): `GlobalID.app` deep-frozen via `SHAREABLE_CLASS_IVARS`; CGI `@@accept_charset` class-variable default args patched out (`patches/cgi.rb` — class variables are unreadable from workers even when shareable); `queue_adapter` needs no shim (lazy per-worker instantiation via the class_attribute IES writer). Probe: `GET /job_enqueue_probe` → 200 `{enqueued: true}`. |
+| ActiveJob `perform_later` / `deliver_later` | ✅ (fixed) | resolved 2026-10-05 (implementation-queue entry #5): `GlobalID.app` deep-frozen via `SHAREABLE_CLASS_IVARS`; CGI `@@accept_charset` class-variable default args patched out (`patches/cgi.rb` — class variables are unreadable from workers even when shareable); `queue_adapter` needs no shim (lazy per-worker instantiation via the class_attribute IES writer). Probe: `GET /job_enqueue_probe` → 200 `{enqueued: true}`. |
 | `has_one_attached` block `after_save` callback | ⚠️ (workaround) | `has_one_attached` registers `after_save { ... }` (lambda), which can't cross Ractor boundary. Probe manually creates Blob + Attachment via `insert!`. |
 | `ActiveStorage::Attachment` `after_create_commit` callbacks | ⚠️ (workaround) | Callbacks (`mirror_blob_later`, `analyze_blob_later`, `transform_variants_later`) enqueue ActiveJobs via GlobalID, whose `@app` class ivar is not captured by the shim (nil in workers). Probe uses `insert!` to bypass callbacks. |

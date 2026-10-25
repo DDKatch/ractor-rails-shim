@@ -1,52 +1,66 @@
 # ractor-rails-shim
 
-A monkey-patch shim that reroutes Rails' class-level instance variable accessors through `ActiveSupport::IsolatedExecutionState`, which is Ractor-safe. Lets a Rails app run in Ractor mode without forking Rails itself.
+A monkey-patch shim that reroutes Rails' class-level instance variable accessors
+through `ActiveSupport::IsolatedExecutionState`, which is Ractor-safe. Lets a
+Rails app run in Ractor mode without forking Rails itself.
 
-**Status:** proof-of-concept / stopgap. The goal is for Rails to do this upstream, at which point this gem becomes a no-op and can be removed.
+**Status:** proof-of-concept / stopgap, currently **v0.5.1**. The goal is for
+Rails to do this upstream, at which point this gem becomes a no-op and can be
+removed (see [When to delete this gem](#when-to-delete-this-gem)).
 
-**Current status (v0.2.5):** on a full Rails 8.1 app (Devise 5, Propshaft,
-Kaminari, PG) under **official Ruby 4.0.6**, worker Ractors serve **every**
-routable action — `GET /up`, full ERB view rendering, Devise sign-in/sign-out
-(CSRF issuance **and** validation), and authenticated Devise **writes**
-(`POST /posts` → 302, row persisted). A worker Ractor dispatches `GET /up` →
-**HTTP 200** via `RactorRailsShim.make_app_shareable!`. The shim builds a
-shareable fallback table for framework class config (`class_attribute` /
-`mattr_accessor` values) and patches the raw class-ivar accessors Rails reads
-per-request (`ExecutionWrapper.active_key`, `Notifications.notifier`,
-`Inflections`, `PathRegistry`, `I18n`, `AbstractController` lazy ivars,
-`Rack::Request`/`Utils`, `ExecutionContext`, etc.). 61 unit specs across 7
-spec files pass (no Rails dependency); an integration spec dispatches `GET /up`
-→ 200 in a worker Ractor.
+**Verified as of 2026-10-25** on a full Rails 8.1.3.1 app (Devise 5, Propshaft,
+Kaminari, PG, Solid Queue/Cache/Cable, Turbo, Action Mailbox/Text) under
+**official Ruby 4.0.7**: worker Ractors serve every routable action — `GET
+/up`, full ERB rendering, Devise sign-in/sign-out (CSRF issuance **and**
+validation), authenticated writes (`POST /posts` → 302, row persisted), plus
+Action Mailer, Active Storage, ActiveJob, Turbo Streams, and Solid Queue
+enqueue from workers (143 of 144 audited Rails features pass; the one
+unsupported feature is Nokogiri-backed `sanitize`/`simple_format` — see
+[FEATURES.md](FEATURES.md)). Unit specs: **835 runs, 0 failures** (no Rails
+dependency); an integration spec dispatches `GET /up` → 200 in a worker Ractor.
 
-**No patched Ruby or kino required.** Official Ruby 4.0.6 ships the frozen-iseq
-call-cache fix (#22075) and the cross-ractor env-string fix, so the SIGBUS crashes
-that previously required the DDKatch patched Ruby/kino forks are resolved in core.
-Both SIGBUS classes were the only reason a patched build was ever needed; on 4.0.6
-the shim runs `kino -m ractor` on the official `kino` gem (0.1.3) under sustained
-read **and** write load (verified: 0 transport failures / 0 server errors across
-`/up`, `GET /posts`, `POST /posts` in the benchmark matrix).
+Under sustained load the app outperforms forked servers: on the 2026-10-25
+benchmark (Ruby 4.0.7, YJIT on, 12 cores), **kino `:ractor` multiproc (4
+processes × 5 ractors)** reaches **58,122 req/s** on the no-DB path — **2.73×
+falcon forked** — at +13% memory, and single-process kino `:ractor` runs at
+**255 MB** peak footprint, ~3.6× below the forked servers. Full tables:
+[ractor-rails-shim-test-app/BENCHMARKS.md](https://github.com/DDKatch/ractor-rails-shim-test-app/blob/main/BENCHMARKS.md).
+
+**No patched Ruby or kino required.** Official Ruby 4.0.6+ ships the
+frozen-iseq call-cache fix (#22075) and the cross-ractor env-string fix, and
+**4.0.7 additionally ships the YJIT/Ractor VM-lock fix**
+([ruby#22224](https://bugs.ruby-lang.org/issues/22224) /
+[ruby/ruby#18176](https://github.com/ruby/ruby/pull/18176)) — so no `YJIT off`
+workaround either. Prefer 4.0.7.
+
+## Documentation map
+
+| Doc | Type | Read it for |
+|---|---|---|
+| [README.md](README.md) | how-to | install, run, audit — the two mode tracks |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | explanation | why the frozen shared graph exists, how each isolation wall is solved, file-by-file layout, POODR design notes |
+| [FEATURES.md](FEATURES.md) | reference | Rails feature support matrix in worker Ractors |
+| [COMPATIBILITY.md](COMPATIBILITY.md) | reference | gem-by-gem compatibility matrix and the decision tree |
+| [VALIDATION.md](VALIDATION.md) | record | the Phase 1 validation run against a minimal app (historical) |
+| [CHANGELOG.md](CHANGELOG.md) | reference | per-version changes |
+| [UPSTREAM_ISSUE.md](UPSTREAM_ISSUE.md) | draft | the blocker map and the proposed incremental upstream merge plan |
 
 ## Requirements
 
-- **Ruby >= 4.0.6** — the shim relies on Ruby 4.0's Ractor semantics and
-  `Ractor.make_shareable`, plus the frozen-iseq call-cache fix (#22075) and
-  the cross-ractor env-string fix that both shipped in 4.0.6. It will not
-  work (and refuses to install) on earlier Ruby versions.
+- **Ruby >= 4.0.6, 4.0.7 preferred** — the shim relies on Ruby 4.0's Ractor
+  semantics and `Ractor.make_shareable`, plus the frozen-iseq call-cache fix
+  (#22075) and the cross-ractor env-string fix that both shipped in 4.0.6, and
+  the YJIT/Ractor VM-lock fix that shipped in 4.0.7. It will not work (and
+  refuses to install) on earlier Ruby versions.
 - **Rails ~> 8.1** — tested against Rails 8.1.x class layouts. Other versions
-  are not yet supported (see Version compatibility below).
+  are not yet supported (see [Version compatibility](#version-compatibility)).
 
-**Ractor-mode server:** as of this writing, the only Ruby web server that can
-run a Rails app in Ractor mode is
-[kino](https://github.com/yaroslav/kino) (`kino -m ractor`). Other servers
-(Puma, Falcon, …) run Rails in processes or threads, not Ractors. This shim was
-developed and tested against a real Rails 8.1 app **served by kino**; that is
-the configuration it is verified against.
-
-**kino:** the Ractor-mode server is
-[kino](https://github.com/yaroslav/kino) (`kino -m ractor`). On official Ruby
-4.0.6 the **upstream `kino` gem (0.1.3) works as-is** — no fork or patch is
-required. (Historically a DDKatch/kino fork carried a per-ractor env-string
-cache fix; that fix landed in official 4.0.6, so the fork is obsolete.)
+**Ractor-mode server:** the only Ruby web server that can run a Rails app in
+Ractor mode is [kino](https://github.com/yaroslav/kino) (`kino -m ractor`).
+On Ruby 4.0.6+ the **upstream `kino` gem works as-is** — the app pins
+`~> 0.2.1`; no fork or patch is required. (Historically a DDKatch/kino fork
+carried a per-ractor env-string cache fix; that fix landed in official Ruby
+4.0.6, so the fork is obsolete.)
 
 **Threaded servers (Puma/Falcon/Thin/Webrick):** set
 `RactorRailsShim.thread_mode = true` (or `ENV["SERVER"]` to one of
@@ -58,140 +72,6 @@ class globals are thread-safe and used as-is. Use this when you want the
 callback-correctness fixes without running in Ractor mode.
 **Never call `prepare_for_ractors!` or `make_app_shareable!` in thread mode** —
 both are Ractor-mode-only (see the Install section's two tracks).
-
-**Benchmarks:** throughput/latency/memory of this shim + the test app under
-kino `:ractor` vs Puma vs Falcon are documented in
-[ractor-rails-shim-test-app/BENCHMARKS.md](https://github.com/DDKatch/ractor-rails-shim-test-app/blob/main/BENCHMARKS.md).
-Latest (0.4.2, Ruby 4.0.7, YJIT on): with 4.0.7 shipping the YJIT/Ractor
-VM-lock fix ([ruby#22224](https://bugs.ruby-lang.org/issues/22224) /
-[ruby/ruby#18176](https://github.com/ruby/ruby/pull/18176)), kino `:ractor`
-(-w5 -t1) reaches 14,094 rps on the no-DB path (was 2,148 on 4.0.6) at
-~3.5× lower memory than puma/falcon forked — no `BENCH_YJIT_OFF` workaround
-needed anymore.
-
-## Repository layout
-
-```
-lib/ractor_rails_shim.rb                  # entry point — autoload-install if Rails is loaded
-lib/ractor_rails_shim/
-  version.rb                              # VERSION constant (currently 0.5.1)
-  loader.rb                               # pure require hub — one file, one job (POODR §1)
-  patches.rb                              # backward-compat redirect → loader.rb
-
-  foundation/                             # Layer 2: no internal deps
-    funnel.rb                             #   debug-aware exception-swallowing role
-    registry.rb                           #   canonical home for the nine shared registries
-    storage.rb                            #   pluggable key-value store contract (IES / ThreadLocal)
-    storage_strategy.rb                   #   composed Ractor/Thread strategy for class_attribute
-    ies_accessor.rb                       #   3-tier IES lookup pattern generator
-    const_reassign.rb                     #   $VERBOSE-suppressed const_set utility
-    version_check.rb                      #   Gem::Version-based Ruby/Rails detection
-    version_policy.rb                     #   mismatch policy (:warn/:strict/:off) + patch registry
-    run_mode.rb                           #   thread vs Ractor mode decision
-    role_defaults.rb                      #   DRY mixin for shared default-proc patterns
-
-  roles/                                  # Layer 3: depend on foundation
-    lifecycle.rb                          #   prepare_for_ractors! orchestration
-    installer.rb                          #   install orchestrator + framework-patch dispatcher
-    install_strategy.rb                   #   per-mode install bodies (Ractor / Thread)
-    pre_spawn_steps.rb                    #   shared orchestration steps
-    ar_model_walker.rb                    #   ActiveRecord model enumeration
-    constant_shareabilizer.rb             #   constant shareability
-    shareability_traversal.rb             #   app-graph traversal
-    callback_capture.rb                   #   callback-declaration capture
-    fallback_builder.rb                   #   shareable-fallback builder
-    worker_app.rb                         #   shareable Rack wrapper (per-worker init)
-    worker_app_factory.rb                 #   shareable-Rack-app factory
-    app_shareabilizer.rb                  #   make_app_shareable! orchestrator
-    freezers.rb                           #   freeze/warm sub-domain (6 freezer roles)
-    logger_io_neutralizer.rb              #   logger IO detachment
-    fallback_ies.rb                       #   backward-compat alias → Storage::ThreadLocal
-    check.rb                              #   ractor-rails-check audit (Check.scan / report)
-
-  patches/                                # Layer 4: monkey-patches (depend on roles + foundation)
-    core.rb                               #   module skeleton, registries, facade delegations
-    callables.rb                          #   NoOpProc, Callable, CallableConst, RequestCallable, …
-    make_shareable.rb                     #   make_app_shareable!, proc/lock replacement
-    rails_module.rb                       #   Rails.application / Rails.cache / Rails.logger / Rails.env …
-    mattr_accessor.rb                     #   Module#mattr_accessor / cattr_accessor macro rewrite
-    class_attribute.rb                    #   ActiveSupport class_attribute macro rewrite
-    zeitwerk_registry.rb                  #   Zeitwerk::Registry class ivars
-    route_helpers.rb                      #   ActionDispatch::Routing::RouteSet#generate_url_helpers
-    url_helpers.rb                        #   URL helper singleton + module fixes
-    execution_wrapper.rb                  #   ActiveSupport::ExecutionWrapper + callback replay
-    rack.rb                               #   Rack::Request / Rack::Utils
-    action_view.rb                        #   PathRegistry, LookupContext, Template handlers
-    action_controller.rb                  #   AbstractController, ActionController name/encoding
-    action_dispatch.rb                    #   ActionDispatch routing, http_url, journey
-    polymorphic_routes.rb                 #   polymorphic_path(s) URL helpers
-    active_support.rb                     #   Inflector, error_reporter, ExecutionContext, I18n, JSON
-    i18n.rb                               #   I18n locale/fallback patches
-    warden.rb                             #   Warden hooks / strategies / serializer
-    devise.rb                             #   Devise url_helpers / authenticatable / failure_app
-    active_model_attribute.rb             #   ActiveModel::Attribute dup_or_share for frozen graphs
-    active_record_model_schema.rb         #   AR ModelSchema reload_schema_from_cache
-    activerecord.rb                       #   AR connection handler, configurations, query caches
-    kaminari.rb                           #   Kaminari config
-    propshaft.rb                          #   Propshaft asset server
-    orm_adapter.rb                        #   orm_adapter
-    openssl.rb                            #   OpenSSL digest cache
-    rubygems.rb                           #   Rubygems msgpack pre-check
-    hash_compute_if_absent.rb             #   Hash#compute_if_absent for Concurrent::Map replacement
-
-exe/ractor-rails-check                    # CLI audit tool
-spec/                                     # 724 unit tests (no Rails dep) + integration spec
-script/make_test_app.sh                   # build the minimal Rails 8.1 test app (CI uses this)
-script/make_full_test_app.sh              # build the full-featured test app (Devise/PG/Kaminari)
-.github/workflows/ci.yml                  # unit job + integration job (GET /up → 200 in a worker Ractor)
-```
-
-### Architecture: layered, POODR-aligned design
-
-The directory structure mirrors the dependency layers:
-
-```
-Layer 1: Entry        ractor_rails_shim.rb, loader.rb
-Layer 2: Foundation   foundation/  (no internal deps)
-Layer 3: Roles        roles/       (depend on foundation)
-Layer 4: Patches      patches/     (depend on roles + foundation)
-```
-
-The gem follows **Practical Object-Oriented Design in Ruby** (POODR) principles:
-
-- **SRP (§1):** Every file defines exactly one concern. `loader.rb` is a pure
-  require hub (no logic). `lifecycle.rb` owns `prepare_for_ractors!` orchestration.
-  Role objects (`Funnel`, `Registry`, `CallbackCapture`, etc.) each own one
-  responsibility.
-
-- **Dependencies (§2):** Role objects receive collaborators via `configure` seams
-  (keyword arguments), defaulting to facade lookups. No role reaches past its
-  own namespace by name — the composition root (`Installer`) is the one place
-  allowed to resolve by name.
-
-- **Interfaces (§3):** The `Storage` contract (`[]`, `[]=`, `key?`, `delete`)
-  is implemented by `Storage::IES` and `Storage::ThreadLocal`. The
-  `StorageStrategy` contract (`lookup`, `store`, `replay_callbacks?`,
-  `replay_callbacks!`) is implemented by `StorageStrategy::Ractor` and
-  `StorageStrategy::Thread`.
-
-- **Duck Typing (§4):** `ShareabilityTraversal` uses a `CONTAINER_WALKERS`
-  dispatch table (Hash → lambda) instead of `is_a?` chains. Lock detection
-  uses `respond_to?(:synchronize)` instead of `is_a?(Mutex)`.
-
-- **Composition (§5):** `AppShareabilizer` composes 15 collaborators via the
-  configure seam. `FallbackBuilder` uses a `ValueLookup` chain of responsibility.
-  `Installer` selects between `InstallStrategy::Ractor` and `InstallStrategy::Thread`.
-
-- **Roles (§6):** Modules as roles (`Funnel`, `ARModelWalker`,
-  `ConstantShareabilizer`, `CallbackCapture`, etc.) — each `extend RoleDefaults`
-  for DRY default-proc patterns.
-
-Per-concern patch files reopen `RactorRailsShim`'s singleton class to add
-their `_install_*` methods. `loader.rb` requires them in dependency order
-(`core.rb` first — it defines the module skeleton + constants that others
-reference). Each `_install_*` method is idempotent (guarded by its own
-`@*_patched` flag), so `install`, `prepare_for_ractors!`, and
-`make_app_shareable!` can all call the full set safely.
 
 ## Why
 
@@ -213,48 +93,11 @@ can not get unshareable values from instance variables of classes/modules
 from non-main Ractors
 ```
 
-This is the primary blocker preventing Rails from running in Ractor mode (see the [kino](https://github.com/yaroslav/kino) project's `doc/rails-on-ractors.md` for the full diagnosis). The same pattern blocks Hanami, Padrino, Sinatra, and most Ruby web frameworks.
-
-## How it works
-
-The shim reroutes the accessor methods through `ActiveSupport::IsolatedExecutionState`, which is thread-local storage (`Thread.current[:key]`). Each Ractor has its own threads, so each Ractor gets its own slot automatically — verified on Ruby 4.0.6. Rails already uses this primitive for `ActiveRecord::ConnectionHandling.connection_handler` (for thread safety), so the pattern is proven in production.
-
-Two storage paths, depending on the state's shape:
-
-| path | primitive | sharing | mutability | use case |
-|---|---|---|---|---|
-| **per-Ractor** | `IsolatedExecutionState` / `Ractor.store_if_absent` | none (each Ractor own copy) | mutable | connection pools, per-Ractor config, logger |
-| **shareable** | `Ractor.make_shareable` + constant | one copy, by reference | frozen (read-only) | route tables, frozen config, templates |
-
-The shim uses the per-Ractor path by default. For shareable state, use `Ractor.make_shareable` directly — that's not this gem's job.
-
-**Load order.** `install` may be called either before or after Rails is defined — the normal `config/boot.rb` path calls it before `require "rails"`. The `mattr_accessor` macro patch applies regardless; the Rails-module accessor patch (`Rails.application`, `Rails.env`, ...) defers via a `TracePoint(:class)` load hook that fires when `module Rails` opens.
-
-## Version compatibility
-
-The shim targets specific Rails class layouts (8.1.x) and Ruby Ractor semantics
-(4.0.x). At install it runs a real `Gem::Version`-based check (not a string
-compare) and applies a configurable policy on mismatch:
-
-```ruby
-RactorRailsShim.version_policy = :strict  # raise on untested versions
-RactorRailsShim.version_policy = :warn    # default: warn to $stderr, proceed
-RactorRailsShim.version_policy = :off     # silent (experimentation)
-```
-
-Under `:strict` a mismatch raises `RactorRailsShim::UnsupportedVersionError`.
-Each patch registers its tested Rails versions in `RactorRailsShim::PATCH_VERSIONS`;
-query what applied to your runtime with:
-
-```ruby
-RactorRailsShim.applicable_patches
-# => { applied: [:mattr_accessor, :rails_module, ...], skipped: [{name: ...}] }
-```
-
-Adding Rails 7.x support: the version-gated registry is the extension point —
-write version-specific patch variants, tag them in `PATCH_VERSIONS`, and the
-dispatcher applies only matching patches. (7.x is not yet supported; only 8.1
-is tested today.)
+This is the primary blocker preventing Rails from running in Ractor mode (see
+the [kino](https://github.com/yaroslav/kino) project's
+`doc/rails-on-ractors.md` for the full diagnosis). The same pattern blocks
+Hanami, Padrino, Sinatra, and most Ruby web frameworks. ARCHITECTURE.md
+explains how the shim solves it, section by section.
 
 ## Install
 
@@ -308,13 +151,9 @@ worker = Ractor.new(app) { |a| a.call(env) }
 ```
 
 **Note:** `make_app_shareable!` is production-only (the app becomes read-only).
-It also **detaches the logger IO from the app graph**: `app.config.logger`
-(the broadcast target holding the real `$stdout`/`$stderr` IO) is swapped for a
-frozen no-op `BroadcastLogger` so `Ractor.make_shareable(app)` doesn't freeze
-the process's real IOs, and the main ractor's `Rails.logger` (the per-Ractor
-module accessor, not in the app graph) is re-pointed at a fresh live
-`BroadcastLogger` → `$stderr` so main keeps logging. Worker ractors build their
-own per-Ractor `Rails.logger` (a `BroadcastLogger` → `$stderr`). To fix
+It also **detaches the logger IO from the app graph** so
+`Ractor.make_shareable(app)` doesn't freeze the process's real IOs; the main
+Ractor keeps logging, and each worker builds its own `Rails.logger`. To fix
 unshareable constants in your own app/gems, add them to the registry before
 `prepare_for_ractors!`:
 
@@ -362,7 +201,8 @@ bundle exec ractor-rails-check --rails   # only Rails framework modules
 bundle exec ractor-rails-check --app     # only app + gems
 ```
 
-Reports class ivars holding unshareable values — the ones that would raise `Ractor::IsolationError` from a worker Ractor. Example:
+Reports class ivars holding unshareable values — the ones that would raise
+`Ractor::IsolationError` from a worker Ractor. Example:
 
 ```
 ractor-rails-shim check: 23 class-ivar blocker(s) found
@@ -390,26 +230,97 @@ hints:
 
 ## What this fixes
 
-- `Rails.application`, `Rails.app_class`, `Rails.cache`, `Rails.logger`, `Rails.env`, `Rails.backtrace_cleaner` — rerouted through `IsolatedExecutionState`.
-- `Module.mattr_accessor` / `cattr_accessor` — the macro is rewritten so all ~150 call sites in Rails inherit the fix without individual edits. Pass `shareable: true` to opt an accessor into the shareable-by-reference path instead.
-- `Class.class_attribute` (ActiveSupport) — the macro is rewritten so `executor`, `check`, and every other `class_attribute`-defined accessor routes through `IsolatedExecutionState` via string-eval'd methods (no captured binding). Without this, a worker Ractor calling `app.reloader.executor = ...` during boot raises "defined with an un-shareable Proc in a different Ractor".
-- `Zeitwerk::Registry` class ivars (`@loaders`, `@mutex`, `@autoloads`, etc.) — routed through `IsolatedExecutionState` so a worker Ractor can create autoloaders (each Ractor gets its own registry).
-- Unshareable constants (`Rails::Railtie::ABSTRACT_RAILTIES`, `ActiveSupport::EnvironmentInquirer::DEFAULT_ENVIRONMENTS`, etc.) — made shareable once at boot via `Ractor.make_shareable` + `const_set`. Add your own via `RactorRailsShim.shareable_constants << "MyGem::CONST"` then call `prepare_for_ractors!`.
-- **Framework class config fallback** (`SHAREABLE_FALLBACK`) — at `make_app_shareable!` time the main ractor's live `class_attribute` / `mattr_accessor` values are captured, made shareable (callable-replacement for any Procs), and exposed as a read-only fallback. Worker readers return it when their per-Ractor IES slot is empty — this is what fixes `ActionController::Base.config` being nil in workers.
-- **Raw class-ivar/cvar accessors Rails reads per-request** (the long tail beyond `mattr_accessor`) — patched individually: `ExecutionWrapper.active_key`, `ActiveSupport::Notifications.notifier`, `ActiveSupport.error_reporter`, `ActiveSupport::ExecutionContext` (after_change_callbacks / nestable), `ActiveSupport::Inflector::Inflections`, `ActionView::PathRegistry`, `ActionView::LookupContext` + `DetailsKey` (`view_context_class` built per-controller in main & shared via `VIEW_CONTEXT_REGISTRY`), `ActionView::Template::Handlers`, `AbstractController::Base` (`controller_path` / `action_methods` / `abstract` / `_prefixes` via per-Ractor Hash caches keyed by class), `AbstractController::UrlFor#action_methods` (sidesteps the unshareable `_routes` define_method-block), `ActionController::ParameterEncoding#action_encoding_template`, `Rack::Request` (`forwarded_priority` / `x_forwarded_proto_priority`), `Rack::Utils` (`default_query_parser` / multipart limits), `ActionDispatch::Request.parameter_parsers`, `I18n::Config` (`default_locale` / `locale`) + `I18n.fallbacks` + `I18n::Locale::Tag.implementation`.
-- **`ActiveSupport::Callbacks#run_callbacks`** — made nil-safe so a worker Ractor whose `__callbacks` couldn't be shared (frozen, self-capturing-Proc callback chains) treats callbacks as empty. Correct for a read-only shared app where boot-time callbacks already ran in main.
+- `Rails.application`, `Rails.app_class`, `Rails.cache`, `Rails.logger`,
+  `Rails.env`, `Rails.backtrace_cleaner` — rerouted through
+  `IsolatedExecutionState`.
+- `Module.mattr_accessor` / `cattr_accessor` — the macro is rewritten so all
+  ~150 call sites in Rails inherit the fix without individual edits. Pass
+  `shareable: true` to opt an accessor into the shareable-by-reference path.
+- `Class.class_attribute` (ActiveSupport) — the macro is rewritten so
+  `executor`, `check`, and every other `class_attribute`-defined accessor
+  routes through `IsolatedExecutionState` via string-eval'd methods (no
+  captured binding).
+- `Zeitwerk::Registry` class ivars — routed through `IsolatedExecutionState`
+  so a worker Ractor can create autoloaders (each Ractor gets its own
+  registry).
+- Unshareable constants (`Rails::Railtie::ABSTRACT_RAILTIES`,
+  `ActiveSupport::EnvironmentInquirer::DEFAULT_ENVIRONMENTS`, etc.) — made
+  shareable once at boot via `Ractor.make_shareable` + `const_set`.
+- **Framework class config fallback** (`SHAREABLE_FALLBACK`) — at
+  `make_app_shareable!` time the main Ractor's live `class_attribute` /
+  `mattr_accessor` values are captured and exposed as a read-only fallback;
+  worker readers return it when their per-Ractor IES slot is empty. This is
+  what fixes `ActionController::Base.config` being nil in workers.
+- **Raw class-ivar/cvar accessors Rails reads per-request** (the long tail
+  beyond `mattr_accessor`) — patched individually: `ExecutionWrapper.active_key`,
+  `ActiveSupport::Notifications.notifier`, `ActiveSupport.error_reporter`,
+  `ActiveSupport::ExecutionContext`, `ActiveSupport::Inflector::Inflections`,
+  `ActionView::PathRegistry`, `ActionView::LookupContext` + `DetailsKey`,
+  `ActionView::Template::Handlers`, `AbstractController::Base` caches,
+  `Rack::Request` / `Rack::Utils`, `ActionDispatch::Request.parameter_parsers`,
+  `I18n::Config` + fallbacks, and more. The full list with mechanisms is in
+  [ARCHITECTURE.md](ARCHITECTURE.md) §4.
+- **`ActiveSupport::Callbacks#run_callbacks`** — made nil-safe so a worker
+  Ractor whose `__callbacks` couldn't be shared treats callbacks as empty,
+  with captured callback descriptors replayed by a per-Ractor Registry
+  (symbolic filters, `dependent: :destroy` cascades, autosave). ARCHITECTURE.md
+  §5c has the transport design.
 
 ## What this does NOT fix
 
-- **Gems.** Every gem your app depends on (Devise, Sidekiq, redis-rb, pg, etc.) has its own class ivars. The shim's `mattr_accessor` rewrite helps gems that use that macro, but gems using raw `@ivar ||= ...` need their own patches. The `--check` script surfaces these.
-- **App code** holding mutable state in closures (`cache = {}; ->(env){ cache[...] }`). The shim can't see into closures; `--check` finds class ivars only.
-- **define_method-block methods.** A handful of Rails methods are defined via `define_method` with a block capturing the defining Ractor (e.g. `ActionDispatch::Routing::RouteSet`'s `_routes` singleton helper, `ActionView::Base.with_empty_template_cache`'s `compiled_method_container`). The shim works around these by building the affected classes (e.g. `view_context_class`) in the main Ractor and sharing them, or by reading the route set directly from the shared `Rails.application`. More complex apps may hit additional `define_method`-block call sites that need similar treatment.
+- **Gems.** Every gem your app depends on (Devise, Sidekiq, redis-rb, pg, etc.)
+  has its own class ivars. The shim's `mattr_accessor` rewrite helps gems that
+  use that macro, but gems using raw `@ivar ||= ...` need their own patches —
+  either in the shim (many common ones already ship: Devise, Warden, Kaminari,
+  mail, Turbo) or upstream. See [COMPATIBILITY.md](COMPATIBILITY.md).
+- **App code** holding mutable state in closures
+  (`cache = {}; ->(env){ cache[...] }`). The shim can't see into closures;
+  `--check` finds class ivars only.
+- **define_method-block methods.** A handful of Rails methods are defined via
+  `define_method` with a block capturing the defining Ractor. The shim
+  redefines the load-bearing ones as shareable `def`s or pre-builds the
+  affected objects in the main Ractor; more complex apps may hit additional
+  call sites.
 
 ## Limitations
 
-- **Per-Ractor means N copies.** Each Ractor gets its own `Rails.application`, `Rails.cache`, etc. — same shape as forking N processes, but cheaper (no heap duplication). For large read-only state, use `Ractor.make_shareable` instead.
-- **The mattr_accessor rewrite is broad.** It reroutes *all* `mattr_accessor`-defined accessors through `IsolatedExecutionState`, including ones that were legitimately class-global. This may change semantics for code that sets a value in main Ractor expecting worker Ractors to see it. Audit with `--check` and use `shareable: true` for accessors that should be shared.
-- **Fragile across Rails versions.** This is a monkey-patch. Rails releases that touch `rails.rb` or `mattr_accessor` may break it. When upstream fixes it, delete the gem.
+- **Per-Ractor means N copies.** Each Ractor gets its own `Rails.application`,
+  `Rails.cache`, etc. — same shape as forking N processes, but cheaper (no heap
+  duplication). For large read-only state, use `Ractor.make_shareable`.
+- **The mattr_accessor rewrite is broad.** It reroutes *all* `mattr_accessor`-
+  defined accessors through `IsolatedExecutionState`, including ones that were
+  legitimately class-global. This may change semantics for code that sets a
+  value in main Ractor expecting worker Ractors to see it. Audit with
+  `--check` and use `shareable: true` for accessors that should be shared.
+- **Fragile across Rails versions.** This is a monkey-patch. Rails releases
+  that touch `rails.rb` or `mattr_accessor` may break it. When upstream fixes
+  it, delete the gem.
+
+## Version compatibility
+
+The shim targets specific Rails class layouts (8.1.x) and Ruby Ractor
+semantics (4.0.x). At install it runs a real `Gem::Version`-based check (not a
+string compare) and applies a configurable policy on mismatch:
+
+```ruby
+RactorRailsShim.version_policy = :strict  # raise on untested versions
+RactorRailsShim.version_policy = :warn    # default: warn to $stderr, proceed
+RactorRailsShim.version_policy = :off     # silent (experimentation)
+```
+
+Under `:strict` a mismatch raises `RactorRailsShim::UnsupportedVersionError`.
+Each patch registers its tested Rails versions in
+`RactorRailsShim::PATCH_VERSIONS`; query what applied to your runtime with:
+
+```ruby
+RactorRailsShim.applicable_patches
+# => { applied: [:mattr_accessor, :rails_module, ...], skipped: [{name: ...}] }
+```
+
+Adding Rails 7.x support: the version-gated registry is the extension point —
+write version-specific patch variants, tag them in `PATCH_VERSIONS`, and the
+dispatcher applies only matching patches. (7.x is not yet supported; only 8.1
+is tested today.)
 
 ## When to delete this gem
 
@@ -418,24 +329,25 @@ natively supports Ractor mode — i.e. when **all** of these land upstream:
 
 1. Class-level instance variables / class variables backing `mattr_accessor`
    and `class_attribute` are migrated to `IsolatedExecutionState` (or
-   equivalent ractor-safe storage). Rails already does this for
+   equivalent Ractor-safe storage). Rails already does this for
    `ActiveRecord::ConnectionHandling.connection_handler`, proving the pattern.
-2. The `Zeitwerk::Registry` class ivars route through ractor-safe storage.
+2. The `Zeitwerk::Registry` class ivars route through Ractor-safe storage.
 3. Unshareable constants (`EnvironmentInquirer::DEFAULT_ENVIRONMENTS`, etc.)
    are made shareable (deep-frozen) at boot.
- 4. The **7 self-capturing Procs** in the app graph are restructured to not
-    capture `self` — e.g. the `Rack::Files` head lambda, `ActionDispatch::SSL`
-    exclude proc, `CookieStore` same-site proc, the message-verifier secret
-    generator, and the routes-reloader blocks. These block
-    `Ractor.make_shareable(Rails.application)` today.
+4. The self-capturing Procs in the app graph are restructured to not capture
+   `self` — e.g. the `Rack::Files` head lambda, `ActionDispatch::SSL` exclude
+   proc, `CookieStore` same-site proc, the message-verifier secret generator,
+   and the routes-reloader blocks. These block
+   `Ractor.make_shareable(Rails.application)` upstream today (the shim
+   replaces them with callable objects at boot).
 5. Initializer blocks (`Rails::Initializable::Initializer#block`) are
    shareable (defined as methods, not closures) so per-Ractor boot works.
 
 Until then, the shim is required. A simple canary: with the gem removed,
 `Ractor.make_shareable(Rails.application)` fails (it raises on a Mutex or a
-"Proc's self is not shareable"). When that call succeeds unshimmed, the gem
-is obsolete. See `UPSTREAM_ISSUE.md` for the full blocker map and the
-proposed incremental upstream merge plan.
+"Proc's self is not shareable"). When that call succeeds unshimmed, the gem is
+obsolete. See [UPSTREAM_ISSUE.md](UPSTREAM_ISSUE.md) for the full blocker map
+and the proposed incremental upstream merge plan.
 
 ## Publishing (maintainers)
 

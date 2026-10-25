@@ -3,7 +3,7 @@
 > Reference/design document. For the task-oriented "what to do next", see
 > `README.md`. This file captures *why* the shim is built the way it is,
 > the dev/prod tradeoffs, and the conclusions reached while getting the
-> `ractor-rails-shim-test-app` dummy app to serve under [kino](https://github.com/yaroslav/kino) `-m ractor`. On official Ruby 4.0.6 the upstream `kino` gem (0.1.3) works as-is — the per-ractor env-string cache fix now ships in 4.0.6, so the earlier DDKatch/kino fork is obsolete.
+> `ractor-rails-shim-test-app` dummy app to serve under [kino](https://github.com/yaroslav/kino) `-m ractor`. On official Ruby 4.0.6+ the upstream `kino` gem works as-is — the per-ractor env-string cache fix ships in Ruby itself, so the earlier DDKatch/kino fork is obsolete; the test app pins kino `~> 0.2.1`.
 
 ## 1. The core model: one frozen, shared app graph
 
@@ -30,9 +30,10 @@ own Rails graph pay **N× full memory and N× boot time**.
 Hence the frozen **shared** graph: one graph, made `Ractor.shareable`,
 referenced by all workers. No COW is needed because the graph is genuinely
 shared. This is the Ractor-appropriate alternative to the process COW trick.
-
-See `README.md` ("Kino status" / env analysis) and the dev/prod discussion
-in chat history for the full COW explanation.
+The measured payoff is in the test app's
+[`BENCHMARKS.md`](https://github.com/DDKatch/ractor-rails-shim-test-app/blob/main/BENCHMARKS.md):
+single-process kino `:ractor` runs the full app at 255 MB peak footprint,
+~3.6× below forked Puma/Falcon.
 
 ## 3. Ractor isolation restrictions the shim addresses
 
@@ -334,8 +335,10 @@ main** that swaps worker pools; workers are always non-main.
   correct content. `/posts/1` proves the `set_post` replay works; the Devise
   routes prove `require_no_authentication`/`allow_params_authentication!`/etc.
   replay correctly. The only 500 (`/users/confirmation/new`) is a genuine missing
-  route (Devise confirmable not enabled), not a shim bug. Shim unit specs: 61/61
-  pass.
+  route (Devise confirmable not enabled), not a shim bug. Shim unit specs:
+  835/835 pass (0 failures, 4 skips — the current counts; the §5b-era runs were
+  61). The current full-app validation status lives in the test app's
+  `RAILS_FEATURES.md` (143/144 audited features pass).
 - `kino -m threaded` in **development** (mode-aware boot, `KINO_MODE=threaded`):
   same routes return 200 with code reloading ON (live reload). This is the
   intended dev path — lazy-load + no freeze means the eager-load callback leak
@@ -358,7 +361,11 @@ main** that swaps worker pools; workers are always non-main.
   regressions won't surface there — keep a `:ractor` smoke test (CI or
   pre-deploy) in the loop.
 
-## 8. Verification & commits
+## 8. Verification history (snapshot — historical record)
+
+This section is a point-in-time commit summary from the era when the §5b
+callback-leak fix landed; current verification lives in the test app's
+`RAILS_FEATURES.md` and `BENCHMARKS.md`. Kept for the record:
 
 - Shim: `ractor-rails-shim` (main) — early `with_empty_template_cache`
   install via `on_load`; shared `SHAREABLE_COMPILED_MODULE`; JSON const
@@ -448,6 +455,42 @@ Role objects:
 Each patch file reopens `RactorRailsShim`'s singleton class to add
 `_install_*` methods. The loader requires them in dependency order
 (`core.rb` first). Each `_install_*` is idempotent.
+
+| File | Covers |
+|---|---|
+| `core.rb` | module skeleton, registries, facade delegations |
+| `callables.rb` | NoOpProc, Callable, CallableConst, RequestCallable, … |
+| `make_shareable.rb` | make_app_shareable!, proc/lock replacement |
+| `rails_module.rb` | Rails.application / Rails.cache / Rails.logger / Rails.env … |
+| `mattr_accessor.rb` | Module#mattr_accessor / cattr_accessor macro rewrite |
+| `class_attribute.rb` | ActiveSupport class_attribute macro rewrite |
+| `zeitwerk_registry.rb` | Zeitwerk::Registry class ivars |
+| `route_helpers.rb` | ActionDispatch::Routing::RouteSet#generate_url_helpers |
+| `url_helpers.rb` | URL helper singleton + module fixes |
+| `execution_wrapper.rb` | ActiveSupport::ExecutionWrapper + callback replay |
+| `rack.rb` | Rack::Request / Rack::Utils |
+| `action_view.rb` | PathRegistry, LookupContext, Template handlers |
+| `action_controller.rb` | AbstractController, ActionController name/encoding |
+| `action_dispatch.rb` | ActionDispatch routing, http_url, journey |
+| `polymorphic_routes.rb` | polymorphic_path(s) URL helpers |
+| `active_support.rb` | Inflector, error_reporter, ExecutionContext, I18n, JSON |
+| `i18n.rb` | I18n locale/fallback patches |
+| `warden.rb` | Warden hooks / strategies / serializer |
+| `devise.rb` | Devise url_helpers / authenticatable / failure_app |
+| `active_model_attribute.rb` | ActiveModel::Attribute dup_or_share for frozen graphs |
+| `active_record_model_schema.rb` | AR ModelSchema reload_schema_from_cache |
+| `activerecord.rb` | AR connection handler, configurations, query caches |
+| `kaminari.rb` | Kaminari config |
+| `propshaft.rb` | Propshaft asset server |
+| `orm_adapter.rb` | orm_adapter |
+| `openssl.rb` | OpenSSL digest cache |
+| `rubygems.rb` | Rubygems msgpack pre-check |
+| `hash_compute_if_absent.rb` | Hash#compute_if_absent for Concurrent::Map replacement |
+
+Plus the callbacks sub-domain: `lib/ractor_rails_shim/callbacks/` —
+`registry.rb` (per-Ractor replay registry), `symbolic_transport.rb`
+(symbolic filter capture + replay), `dependent_association_transport.rb`
+(`dependent:` cascade replay). §5c has the design.
 
 ### POODR principles applied
 

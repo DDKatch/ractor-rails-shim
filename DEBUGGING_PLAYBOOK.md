@@ -714,7 +714,7 @@ Got an error in a worker Ractor?
 - [ ] Registered the patch in `prepare_for_ractors!` (core.rb)
 - [ ] Ran the debug probe — error changed or resolved
 - [ ] If resolved, ran the full verification probe (count + first + all + page)
-- [ ] Ran unit specs (`bundle exec rake spec`) — 61/61 pass
+- [ ] Ran unit specs (`bundle exec rake spec`) — current: 835 runs, 0 failures (was 61/61 at the time this playbook was first written)
 
 ---
 
