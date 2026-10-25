@@ -74,7 +74,7 @@ needed anymore.
 ```
 lib/ractor_rails_shim.rb                  # entry point — autoload-install if Rails is loaded
 lib/ractor_rails_shim/
-  version.rb                              # VERSION constant (currently 0.3.0)
+  version.rb                              # VERSION constant (currently 0.5.1)
   loader.rb                               # pure require hub — one file, one job (POODR §1)
   patches.rb                              # backward-compat redirect → loader.rb
 
