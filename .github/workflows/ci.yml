@@ -1,6 +1,8 @@
 name: CI
 
-# CI for ractor-rails-shim. Two jobs:
+# CI for ractor-rails-shim. Three jobs:
+#   - lint:       code style via Standard (standardrb, config in
+#                 .standard.yml). Fast, always runs.
 #   - unit:       runs the no-Rails unit specs (shim mechanism + version
 #                 detection + callable/lock infra). Fast, always runs.
 #   - integration: builds the minimal Rails 8.1 test app (via
@@ -22,6 +24,21 @@ on:
     branches: [master, main]
 
 jobs:
+  lint:
+    name: Code style (Standard)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Ruby 4.0.6
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0.6"
+          bundler-cache: true
+
+      - name: Run standardrb
+        run: bundle exec rake lint
+
   unit:
     name: Unit specs (no Rails)
     runs-on: ubuntu-latest
