@@ -58,12 +58,12 @@ class PerRactorCacheSpec < Minitest::Spec
     cache = RactorRailsShim::PerRactorCache
 
     assert cache.process_local?(ActiveSupport::Cache::MemoryStore.new),
-           "MemoryStore keeps entries in a mutable Hash — it cannot be shared"
+      "MemoryStore keeps entries in a mutable Hash — it cannot be shared"
     assert cache.process_local?(ActiveSupport::Cache::NullStore.new),
-           "NullStore memoizes LocalCache state on the instance"
+      "NullStore memoizes LocalCache state on the instance"
     Dir.mktmpdir do |dir|
       refute cache.process_local?(ActiveSupport::Cache::FileStore.new(dir)),
-             "FileStore writes to disk and is safe to share by reference"
+        "FileStore writes to disk and is safe to share by reference"
     end
   end
 
@@ -73,11 +73,11 @@ class PerRactorCacheSpec < Minitest::Spec
 
     refute_same store, proxy
     assert_instance_of ActiveSupport::Cache::MemoryStore, proxy,
-                       "the proxy must keep the store's class identity"
+      "the proxy must keep the store's class identity"
     assert Ractor.shareable?(proxy), "the proxy must be readable from every Ractor"
     assert_same proxy, RactorRailsShim::PerRactorCache::PROXY
     assert_same proxy, RactorRailsShim::PerRactorCache.wrap!(store),
-                "wrap! must be idempotent"
+      "wrap! must be idempotent"
   end
 
   it "keeps the original store unfrozen for the main Ractor" do
@@ -86,7 +86,7 @@ class PerRactorCacheSpec < Minitest::Spec
     proxy = RactorRailsShim::PerRactorCache.wrap!(store)
 
     assert_same store, RactorRailsShim::PerRactorCache.store_for(spec_on(proxy)),
-                "main must keep using the original (boot-warmed) instance"
+      "main must keep using the original (boot-warmed) instance"
     refute store.frozen?, "the live main-Ractor store must NOT be frozen"
     assert_equal "value", proxy.read("boot")
   end
@@ -131,12 +131,12 @@ class PerRactorCacheSpec < Minitest::Spec
       store = ActiveSupport::Cache::FileStore.new(dir)
 
       assert_nil RactorRailsShim::PerRactorCache.wrap!(store),
-                 "FileStore must keep the existing share-by-reference behavior"
+        "FileStore must keep the existing share-by-reference behavior"
       assert_nil RactorRailsShim::PerRactorCache::PROXY
 
       proxy = RactorRailsShim::PerRactorCache.wrap!(ActiveSupport::Cache::MemoryStore.new)
       assert_nil RactorRailsShim::PerRactorCache.wrap!(ActiveSupport::Cache::FileStore.new(dir)),
-                 "a later process-local wrap must not swallow FileStore"
+        "a later process-local wrap must not swallow FileStore"
       refute_nil proxy
     end
   end

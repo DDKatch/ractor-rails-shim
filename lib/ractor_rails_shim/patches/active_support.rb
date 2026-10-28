@@ -75,7 +75,7 @@ module RactorRailsShim
     # Mutex/ConditionVariable internals are handled by the locks
     # replacement in ShareabilityTraversal.)
     "SolidCache::Store::Failsafe::TRANSIENT_ACTIVE_RECORD_ERRORS",
-    "SolidCache::Store::Api::SQL_WILDCARD_CHARS",
+    "SolidCache::Store::Api::SQL_WILDCARD_CHARS"
   ])
 
   class << self
@@ -98,12 +98,12 @@ module RactorRailsShim
       _register_patch :cache_store_cattr, "8.1"
 
       store = ::ActiveSupport::Cache::Store
-      logger = (store.logger rescue nil)
-      raise_on_invalid = (store.raise_on_invalid_cache_expiration_time rescue false)
+      logger = store.logger rescue nil
+      raise_on_invalid = store.raise_on_invalid_cache_expiration_time rescue false
 
       store.mattr_accessor :logger, instance_writer: true, default: logger
       store.mattr_accessor :raise_on_invalid_cache_expiration_time,
-                           default: raise_on_invalid
+        default: raise_on_invalid
     rescue StandardError => e
       warn "ractor-rails-shim: cache store cattr patch failed " \
            "(#{e.class}: #{e.message[0, 120]})"
@@ -132,6 +132,7 @@ module RactorRailsShim
         end
       end
     end
+
     # Patch ActiveSupport::Inflector::Inflections to not read @__en_instance__
     # / @__instance__ class ivars from a worker Ractor. The inflections instance
     # holds rules (Arrays/Hashes of Strings) populated at boot; for a frozen
@@ -293,7 +294,7 @@ module RactorRailsShim
             name = self.name
             return if name.nil?
 
-            parent_name = name =~ /::[^:]+\z/ ? -$` : nil
+            parent_name = (name =~ /::[^:]+\z/) ? -$` : nil
             if Ractor.main?
               @parent_name = parent_name unless frozen?
             else
@@ -429,7 +430,7 @@ module RactorRailsShim
       _register_patch :current_attributes_key, "8.1"
       return unless defined?(::ActiveSupport::CurrentAttributes)
 
-      ::ActiveSupport::CurrentAttributes.singleton_class.class_eval <<~'RUBY', __FILE__, __LINE__ + 1
+      ::ActiveSupport::CurrentAttributes.singleton_class.class_eval <<~RUBY, __FILE__, __LINE__ + 1
         remove_method :current_instances_key rescue nil
 
         def current_instances_key

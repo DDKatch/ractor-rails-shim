@@ -63,7 +63,7 @@ class InstallStrategySpec < Minitest::Spec
     called = []
     originals = {}
     %i[install_mattr_accessor install_class_attribute install_zeitwerk_registry
-       install_rubygems install_rails_module install_execution_wrapper].each do |m|
+      install_rubygems install_rails_module install_execution_wrapper].each do |m|
       originals[m] = RactorRailsShim.method(m)
       RactorRailsShim.define_singleton_method(m) { called << m }
     end

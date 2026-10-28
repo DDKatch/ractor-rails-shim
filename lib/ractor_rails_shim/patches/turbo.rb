@@ -42,7 +42,7 @@ module RactorRailsShim
         # where the renderer exists; if not (very-early dispatch), leave
         # @applied false so the make_app_shareable! dispatch retries.
         if defined?(::ActionController::Renderers) &&
-           ::ActionController::Renderers::RENDERERS.include?(:turbo_stream)
+            ::ActionController::Renderers::RENDERERS.include?(:turbo_stream)
           emit_turbo_stream_renderer_def!
           @applied = true
         end
@@ -53,8 +53,8 @@ module RactorRailsShim
 
       def emit_turbo_stream_renderer_def!
         return unless defined?(::ActionController::Renderers) &&
-                      ::ActionController::Renderers::RENDERERS.include?(:turbo_stream)
-        ::ActionController::Renderers.module_eval(<<-'RUBY', __FILE__, __LINE__ + 1)
+          ::ActionController::Renderers::RENDERERS.include?(:turbo_stream)
+        ::ActionController::Renderers.module_eval(<<-RUBY, __FILE__, __LINE__ + 1)
           remove_method :_render_with_renderer_turbo_stream if method_defined?(:_render_with_renderer_turbo_stream)
           def _render_with_renderer_turbo_stream(turbo_streams_html, options)
             self.content_type = Mime[:turbo_stream] if media_type.nil?
@@ -128,7 +128,7 @@ module RactorRailsShim
     classes = [::ActionController::Base]
     classes.concat(::ActionController::Base.descendants) rescue nil
     classes.each do |klass|
-      layout = (klass._layout rescue nil)
+      layout = klass._layout rescue nil
       next unless layout.is_a?(::Proc)
       begin
         Ractor.make_shareable(layout) unless (Ractor.shareable?(layout) rescue false)

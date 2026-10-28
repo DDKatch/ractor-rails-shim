@@ -46,7 +46,7 @@ require_relative "../lib/ractor_rails_shim/patches"
 class WorkerAppSetupOnceRaceSpec < Minitest::Spec
   class FrozenApp
     def call(env)
-      [200, { "content-type" => "text/plain" }, ["ok"]]
+      [200, {"content-type" => "text/plain"}, ["ok"]]
     end
   end
 
@@ -122,7 +122,7 @@ class WorkerAppSetupOnceRaceSpec < Minitest::Spec
     threads.each(&:join)
 
     # The app must still dispatch correctly after the raced init.
-    status, _headers, body = wa.call({ "PATH_INFO" => "/up", "REQUEST_METHOD" => "GET" })
+    status, _headers, body = wa.call({"PATH_INFO" => "/up", "REQUEST_METHOD" => "GET"})
     assert_equal 200, status
     assert_equal "ok", body.each.to_a.join
 
@@ -172,7 +172,7 @@ class WorkerAppSetupOnceRaceSpec < Minitest::Spec
 
     # The race DOES produce multiple mutexes (no CAS available) — this is
     # expected and acceptable. What matters is the observable effect:
-    status, _headers, body = wa.call({ "PATH_INFO" => "/up", "REQUEST_METHOD" => "GET" })
+    status, _headers, body = wa.call({"PATH_INFO" => "/up", "REQUEST_METHOD" => "GET"})
     assert_equal 200, status, "app must dispatch 200 after the raced init"
     assert_equal "ok", body.each.to_a.join
     assert Ractor.current[:rrs_worker_ready],
@@ -191,7 +191,7 @@ class WorkerAppSetupOnceRaceSpec < Minitest::Spec
     # change that removes the guard fails this spec.
     app = FrozenApp.new
     Ractor.make_shareable(app)
-    bindings = { "ShimRebindIdempProbe" => app }.freeze
+    bindings = {"ShimRebindIdempProbe" => app}.freeze
     Ractor.make_shareable(bindings)
     wa = RactorRailsShim::WorkerApp.new(app, bindings)
 

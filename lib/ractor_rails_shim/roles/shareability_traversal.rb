@@ -51,14 +51,14 @@ module RactorRailsShim
     # `locs:` kwarg instead of 5 string kwargs; the 5 individual readers
     # (`ssl_loc` etc.) delegate to the Locs object for backward compat.
     Locs = Struct.new(:ssl, :files, :cookie, :devise_scope, :mapper,
-                       keyword_init: true) do
+      keyword_init: true) do
       def self.default
         new(
           ssl: RactorRailsShim::SSL_LOC,
           files: RactorRailsShim::FILES_LOC,
           cookie: RactorRailsShim::COOKIE_LOC,
           devise_scope: RactorRailsShim::DEVISE_SCOPE_LOC,
-          mapper: RactorRailsShim::MAPPER_LOC,
+          mapper: RactorRailsShim::MAPPER_LOC
         )
       end
     end
@@ -71,11 +71,11 @@ module RactorRailsShim
     # object). Passing `nil` for any (or calling `reset_configuration`)
     # restores the facade-lookup default for that collaborator.
     def self.configure(funnel: nil, find_files_server: nil,
-                       devise_mapping_replacement: nil, strategy_replacement_for: nil,
-                       noop_lock_class: nil, noop_proc_class: nil,
-                       callable_class: nil, callable_const_class: nil,
-                       request_callable_class: nil,
-                       locs: nil)
+      devise_mapping_replacement: nil, strategy_replacement_for: nil,
+      noop_lock_class: nil, noop_proc_class: nil,
+      callable_class: nil, callable_const_class: nil,
+      request_callable_class: nil,
+      locs: nil)
       @funnel = funnel
       @find_files_server = find_files_server
       @devise_mapping_replacement = devise_mapping_replacement
@@ -144,11 +144,25 @@ module RactorRailsShim
       @locs || Locs.default
     end
 
-    def self.ssl_loc; locs.ssl; end
-    def self.files_loc; locs.files; end
-    def self.cookie_loc; locs.cookie; end
-    def self.devise_scope_loc; locs.devise_scope; end
-    def self.mapper_loc; locs.mapper; end
+    def self.ssl_loc
+      locs.ssl
+    end
+
+    def self.files_loc
+      locs.files
+    end
+
+    def self.cookie_loc
+      locs.cookie
+    end
+
+    def self.devise_scope_loc
+      locs.devise_scope
+    end
+
+    def self.mapper_loc
+      locs.mapper
+    end
 
     # Container dispatch table: maps container class to a walker lambda.
     # Replaces the is_a? chain in each_ivar_and_child (Issue #30, POODR §4a
@@ -156,13 +170,16 @@ module RactorRailsShim
     # [child, ivar_or_nil] pairs.
     CONTAINER_WALKERS = {
       Hash => ->(o, &b) {
-        o.each { |k, v| b.call(k, nil); b.call(v, nil) }
+        o.each { |k, v|
+          b.call(k, nil)
+          b.call(v, nil)
+        }
         dp = o.default_proc
         b.call(dp, :__default_proc__) if dp
       },
       Array => ->(o, &b) { o.each { |e| b.call(e, nil) } },
       Set => ->(o, &b) { o.each { |e| b.call(e, nil) } },
-      Struct => ->(o, &b) { o.each_pair { |_n, v| b.call(v, nil) } },
+      Struct => ->(o, &b) { o.each_pair { |_n, v| b.call(v, nil) } }
     }.freeze
 
     # BasicObject (and its subclasses) don't define respond_to?, so calling
@@ -256,8 +273,8 @@ module RactorRailsShim
         each_ivar_and_child(o) do |child, child_ivar|
           if child_ivar == :__default_proc__
             procs << [child, o, :__default_proc__]
-          else
-            stack << [child, o, child_ivar] if child
+          elsif child
+            stack << [child, o, child_ivar]
           end
         end
       end
@@ -269,7 +286,7 @@ module RactorRailsShim
     # containers (e.g. deprecation behaviors shared across deprecators).
     # Doesn't dedup procs — must replace every occurrence.
     def self.replace_unshareable_procs!(app)
-      mw = (app.instance_variable_get(:@app) rescue nil)
+      mw = app.instance_variable_get(:@app) rescue nil
       # Replace every Proc in the graph. The same Proc object can live in
       # many containers (e.g. deprecation behaviors shared across
       # deprecators), and replacing one occurrence doesn't replace the
@@ -344,7 +361,7 @@ module RactorRailsShim
         rescue StandardError
           t.noop_proc_class.new
         end
-      },
+      }
     }.freeze
 
     # The ordered list of (tag, locs-attr) pairs used to resolve a
@@ -352,11 +369,11 @@ module RactorRailsShim
     # matching suffix wins, mirroring the original elsif chain). The
     # `[nil, nil]` default in PROC_REPLACEMENTS is the fallback.
     LOC_TAGS = [
-      [:ssl,          :ssl],
-      [:files,        :files],
-      [:cookie,       :cookie],
+      [:ssl, :ssl],
+      [:files, :files],
+      [:cookie, :cookie],
       [:devise_scope, :devise_scope],
-      [:mapper,       :mapper],
+      [:mapper, :mapper]
     ].freeze
 
     # Resolve a source_location suffix to a LOC tag, or nil if no LOC
@@ -421,41 +438,41 @@ module RactorRailsShim
     # cross-concern dispatcher reached via RactorRailsShim._strategy_replacement_for.
     # The extracted traversal calls it through the facade.
 
-      def self.replace_locks_and_concurrent_maps!(app)
-        condvar_class = defined?(Thread::ConditionVariable) ? Thread::ConditionVariable : nil
-        lock_like = lambda do |o|
-          o.is_a?(Mutex) || o.is_a?(Monitor) || (condvar_class && o.is_a?(condvar_class))
-        end
-        seen = {}
-        stack = [[app, nil, nil]]
-        until stack.empty?
-          o, _parent, _ivar = stack.pop
-          next if o.equal?(nil)
-          next unless introspectable?(o)
-          next if seen[o.object_id]
-          seen[o.object_id] = true
-          next if lock_like.call(o)
-          each_ivar_and_child(o) do |child, child_ivar|
-            next if child_ivar == :__default_proc__
-            if lock_like.call(child)
-              funnel.call("replace lock ivar") do
-                o.instance_variable_set(child_ivar, noop_lock_class.new) if child_ivar
-              end
-              # If the lock is in an Array/Set/Hash (no ivar), we can't swap
-              # it in place here — leave it; make_shareable will handle the
-              # frozen container. The ivar case is the load-bearing one.
-            elsif defined?(::Concurrent::Map) && child.is_a?(::Concurrent::Map) && child_ivar
-              hash_copy = {}
-              child.each_pair { |k, val| hash_copy[k] = val }
-              funnel.call("replace concurrent map ivar") do
-                o.instance_variable_set(child_ivar, hash_copy)
-              end
-            elsif child
-              stack << [child, o, child_ivar]
+    def self.replace_locks_and_concurrent_maps!(app)
+      condvar_class = defined?(Thread::ConditionVariable) ? Thread::ConditionVariable : nil
+      lock_like = lambda do |o|
+        o.is_a?(Mutex) || o.is_a?(Monitor) || (condvar_class && o.is_a?(condvar_class))
+      end
+      seen = {}
+      stack = [[app, nil, nil]]
+      until stack.empty?
+        o, _parent, _ivar = stack.pop
+        next if o.equal?(nil)
+        next unless introspectable?(o)
+        next if seen[o.object_id]
+        seen[o.object_id] = true
+        next if lock_like.call(o)
+        each_ivar_and_child(o) do |child, child_ivar|
+          next if child_ivar == :__default_proc__
+          if lock_like.call(child)
+            funnel.call("replace lock ivar") do
+              o.instance_variable_set(child_ivar, noop_lock_class.new) if child_ivar
             end
+            # If the lock is in an Array/Set/Hash (no ivar), we can't swap
+            # it in place here — leave it; make_shareable will handle the
+            # frozen container. The ivar case is the load-bearing one.
+          elsif defined?(::Concurrent::Map) && child.is_a?(::Concurrent::Map) && child_ivar
+            hash_copy = {}
+            child.each_pair { |k, val| hash_copy[k] = val }
+            funnel.call("replace concurrent map ivar") do
+              o.instance_variable_set(child_ivar, hash_copy)
+            end
+          elsif child
+            stack << [child, o, child_ivar]
           end
         end
       end
+    end
 
     # Force lazy app ivars to populate in the MAIN Ractor before the graph
     # is frozen. Each call rescues nil (the app may not define the method,
@@ -512,11 +529,9 @@ module RactorRailsShim
       # not readable in workers (as before this snapshot existed).
       snapshot = {}
       options.each do |key, value|
-        begin
-          snapshot[key] = ::Ractor.make_shareable(value)
-        rescue ::Ractor::Error, ::TypeError, ::FrozenError
-          next
-        end
+        snapshot[key] = ::Ractor.make_shareable(value)
+      rescue ::Ractor::Error, ::TypeError, ::FrozenError
+        next
       end
       klass.const_set(:RRS_FROZEN_OPTIONS, snapshot.freeze)
     end

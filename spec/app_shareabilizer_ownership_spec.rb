@@ -14,10 +14,10 @@ class AppShareabilizerOwnershipSpec < Minitest::Spec
     app = Object.new
     AS.stash!(app)
     assert AS.const_defined?(:SHAREABLE_APP, false),
-           "SHAREABLE_APP should be defined on AppShareabilizer"
+      "SHAREABLE_APP should be defined on AppShareabilizer"
     assert_same app, AS::SHAREABLE_APP
     refute RactorRailsShim.const_defined?(:SHAREABLE_APP, false),
-           "facade must not hold SHAREABLE_APP (Issue #36b)"
+      "facade must not hold SHAREABLE_APP (Issue #36b)"
   ensure
     AS.reset_stashed!
   end

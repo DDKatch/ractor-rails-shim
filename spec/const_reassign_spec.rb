@@ -14,7 +14,7 @@ class ConstReassignSpec < Minitest::Spec
 
   it "RactorRailsShim::ConstReassign is defined" do
     assert defined?(CR),
-           "ConstReassign should be defined"
+      "ConstReassign should be defined"
   end
 
   it "ConstReassign.call sets the constant on the target module" do
@@ -29,7 +29,7 @@ class ConstReassignSpec < Minitest::Spec
   it "ConstReassign.call suppresses warnings during const_set" do
     target = Module.new
     target.const_set(:WARN_CONST, :first)
-    out, err = capture_io { CR.call(target, :WARN_CONST, :second) }
+    _, err = capture_io { CR.call(target, :WARN_CONST, :second) }
     assert_empty err
     assert_equal :second, target.const_get(:WARN_CONST)
   ensure
@@ -57,7 +57,7 @@ class ConstReassignSpec < Minitest::Spec
 
   it "RactorRailsShim._reassign_shareable_const delegates to ConstReassign.call" do
     old = RactorRailsShim::SHAREABLE_FALLBACK
-    new_val = Ractor.make_shareable({ reassign_test: true }.freeze)
+    new_val = Ractor.make_shareable({reassign_test: true}.freeze)
     RactorRailsShim._reassign_shareable_const(:SHAREABLE_FALLBACK, new_val)
     assert_equal true, RactorRailsShim::SHAREABLE_FALLBACK[:reassign_test]
   ensure

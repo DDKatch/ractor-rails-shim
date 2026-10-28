@@ -37,7 +37,7 @@ module RactorRailsShim
           return true if @installed
           return true unless defined?(::TZInfo::DataSource)
 
-          ::TZInfo::DataSource.singleton_class.class_eval <<~RUBY
+          ::TZInfo::DataSource.singleton_class.class_eval <<~RUBY, __FILE__, __LINE__ + 1
             def get
               if ::Ractor.main?
                 # Upstream body verbatim (class-variable memoize + mutex).
@@ -73,7 +73,7 @@ module RactorRailsShim
             # NameError at runtime.
             default_search_path = zds.const_get(:DEFAULT_SEARCH_PATH).dup.freeze
             default_alt_iso3166 = zds.const_get(:DEFAULT_ALTERNATE_ISO3166_TAB_SEARCH_PATH).dup.freeze
-            zds.singleton_class.class_eval <<~RUBY
+            zds.singleton_class.class_eval <<~RUBY, __FILE__, __LINE__ + 1
               def search_path
                 if ::Ractor.main?
                   class_variable_get(:@@search_path)

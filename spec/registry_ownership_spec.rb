@@ -54,7 +54,7 @@ class RegistryOwnershipSpec < Minitest::Spec
 
   it "reassigning SHAREABLE_FALLBACK updates the facade constant AND Registry" do
     old = RactorRailsShim::SHAREABLE_FALLBACK
-    new_val = Ractor.make_shareable({ rrs_ownership_test: :yes }.freeze)
+    new_val = Ractor.make_shareable({rrs_ownership_test: :yes}.freeze)
     RactorRailsShim._reassign_shareable_const(:SHAREABLE_FALLBACK, new_val)
     assert_same new_val, RactorRailsShim::SHAREABLE_FALLBACK
     assert_same new_val, Registry.shareable_fallback
@@ -65,7 +65,7 @@ class RegistryOwnershipSpec < Minitest::Spec
 
   it "reassigning SHAREABLE_MATTR_DEFAULTS updates the facade constant AND Registry" do
     old = RactorRailsShim::SHAREABLE_MATTR_DEFAULTS
-    new_val = Ractor.make_shareable({ rrs_omd_test: :yes }.freeze)
+    new_val = Ractor.make_shareable({rrs_omd_test: :yes}.freeze)
     RactorRailsShim._reassign_shareable_const(:SHAREABLE_MATTR_DEFAULTS, new_val)
     assert_same new_val, RactorRailsShim::SHAREABLE_MATTR_DEFAULTS
     assert_same new_val, Registry.shareable_mattr_defaults
@@ -75,7 +75,7 @@ class RegistryOwnershipSpec < Minitest::Spec
 
   it "reassigning ABSTRACT_REGISTRY updates the facade constant AND Registry" do
     old = RactorRailsShim::ABSTRACT_REGISTRY
-    new_val = Ractor.make_shareable({ Object => true }.freeze)
+    new_val = Ractor.make_shareable({Object => true}.freeze)
     RactorRailsShim._reassign_shareable_const(:ABSTRACT_REGISTRY, new_val)
     assert_same new_val, RactorRailsShim::ABSTRACT_REGISTRY
     assert_same new_val, Registry.abstract_registry
@@ -85,7 +85,7 @@ class RegistryOwnershipSpec < Minitest::Spec
 
   it "reassigning VIEW_CONTEXT_REGISTRY updates the facade constant AND Registry" do
     old = RactorRailsShim::VIEW_CONTEXT_REGISTRY
-    new_val = Ractor.make_shareable({ Object => Class.new }.freeze)
+    new_val = Ractor.make_shareable({Object => Class.new}.freeze)
     RactorRailsShim._reassign_shareable_const(:VIEW_CONTEXT_REGISTRY, new_val)
     assert_same new_val, RactorRailsShim::VIEW_CONTEXT_REGISTRY
     assert_same new_val, Registry.view_context_registry

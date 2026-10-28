@@ -18,19 +18,19 @@ class ActiveModelAttributePatchSpec < Minitest::Spec
   # The role object exists and exposes the install entry point.
   it "is a module under Patches with an .install method" do
     assert RactorRailsShim::Patches.const_defined?(:ActiveModelAttribute, false),
-           "RactorRailsShim::Patches::ActiveModelAttribute should be defined"
+      "RactorRailsShim::Patches::ActiveModelAttribute should be defined"
     assert RactorRailsShim::Patches::ActiveModelAttribute.respond_to?(:install),
-           "Patches::ActiveModelAttribute.install should be defined"
+      "Patches::ActiveModelAttribute.install should be defined"
   end
 
   # Idempotency: the flag lives on the role object, not the facade.
   it "owns its own installed? flag — false initially, true after install" do
     RactorRailsShim::Patches::ActiveModelAttribute.reset_installed_for_test!
     refute RactorRailsShim::Patches::ActiveModelAttribute.installed?,
-           "installed? should be false after reset"
+      "installed? should be false after reset"
     RactorRailsShim::Patches::ActiveModelAttribute.install
     assert RactorRailsShim::Patches::ActiveModelAttribute.installed?,
-           "installed? should be true after install"
+      "installed? should be true after install"
   ensure
     RactorRailsShim::Patches::ActiveModelAttribute.reset_installed_for_test!
   end
@@ -41,11 +41,11 @@ class ActiveModelAttributePatchSpec < Minitest::Spec
     RactorRailsShim::Patches::ActiveModelAttribute.reset_installed_for_test!
     # ActiveModel is not loaded under the shim's own bundle, so the guard
     # `return unless defined?(::ActiveModel::Attribute)` fires.
-    result = RactorRailsShim::Patches::ActiveModelAttribute.install
+    RactorRailsShim::Patches::ActiveModelAttribute.install
     # The guard returns nil (the value of the `return unless`); the role
     # object still records installed? = true (it ran to completion).
     assert RactorRailsShim::Patches::ActiveModelAttribute.installed?,
-           "installed? should be true even on the guarded no-op path"
+      "installed? should be true even on the guarded no-op path"
   ensure
     RactorRailsShim::Patches::ActiveModelAttribute.reset_installed_for_test!
   end
@@ -64,8 +64,13 @@ class ActiveModelAttributePatchSpec < Minitest::Spec
     RactorRailsShim::Patches::ActiveModelAttribute.reset_installed_for_test!
     fake_active_model = Module.new
     fake_attribute = Class.new do
-      def frozen?; false; end
-      def dup_or_share; :original; end
+      def frozen?
+        false
+      end
+
+      def dup_or_share
+        :original
+      end
     end
     fake_active_model.const_set(:Attribute, fake_attribute)
     Object.const_set(:FakeActiveModelForAMAPatch, fake_active_model)
@@ -78,7 +83,7 @@ class ActiveModelAttributePatchSpec < Minitest::Spec
       result = RactorRailsShim::Patches::ActiveModelAttribute.install
       assert_equal true, result, "install should return true when the patch applies"
       assert fake_attribute.include?(RactorRailsShim::ActiveModelAttributePatch),
-             "ActiveModel::Attribute should include ActiveModelAttributePatch after install"
+        "ActiveModel::Attribute should include ActiveModelAttributePatch after install"
       # The patched dup_or_share on a frozen receiver returns a new from_database.
       # We only verify the include took effect; the full dup_or_share contract
       # is exercised by the integration spec against real ActiveModel.

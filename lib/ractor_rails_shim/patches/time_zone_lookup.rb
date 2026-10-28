@@ -37,7 +37,7 @@ module RactorRailsShim
           return true if @installed
           return true unless defined?(::ActiveSupport::TimeZone)
 
-          ::ActiveSupport::TimeZone.singleton_class.class_eval <<~RUBY
+          ::ActiveSupport::TimeZone.singleton_class.class_eval <<~RUBY, __FILE__, __LINE__ + 1
             def [](arg)
               if ::Ractor.main?
                 # Upstream body verbatim (lazy class-ivar Concurrent::Map).

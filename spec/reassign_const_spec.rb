@@ -14,7 +14,7 @@ class ReassignShareableConstSpec < Minitest::Spec
     # SHAREABLE_FALLBACK starts as a frozen shareable Hash; _reassign should
     # swap in a new frozen shareable Hash without warning.
     old = RactorRailsShim::SHAREABLE_FALLBACK
-    new_val = Ractor.make_shareable({ test_key: :test_val }.freeze)
+    new_val = Ractor.make_shareable({test_key: :test_val}.freeze)
     RactorRailsShim._reassign_shareable_const(:SHAREABLE_FALLBACK, new_val)
     assert_equal :test_val, RactorRailsShim::SHAREABLE_FALLBACK[:test_key]
     assert RactorRailsShim::SHAREABLE_FALLBACK.frozen?
@@ -36,8 +36,8 @@ class ReassignShareableConstSpec < Minitest::Spec
   it "works for any constant on RactorRailsShim" do
     # Define a throwaway constant, then reassign it via the helper.
     RactorRailsShim.const_set(:RRS_TEST_CONST, Ractor.make_shareable({}.freeze))
-    old = RactorRailsShim::RRS_TEST_CONST
-    new_val = Ractor.make_shareable({ replaced: true }.freeze)
+    RactorRailsShim::RRS_TEST_CONST
+    new_val = Ractor.make_shareable({replaced: true}.freeze)
     RactorRailsShim._reassign_shareable_const(:RRS_TEST_CONST, new_val)
     assert_equal true, RactorRailsShim::RRS_TEST_CONST[:replaced]
   ensure

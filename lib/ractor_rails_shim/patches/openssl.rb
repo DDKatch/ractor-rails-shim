@@ -32,7 +32,7 @@ module RactorRailsShim
       _register_patch :openssl_digest, "8.1"
       return unless defined?(::OpenSSL::Digest)
 
-      algos = %w(MD4 MD5 RIPEMD160 SHA1 SHA224 SHA256 SHA384 SHA512)
+      algos = %w[MD4 MD5 RIPEMD160 SHA1 SHA224 SHA256 SHA384 SHA512]
       algos.each do |name|
         klass_name = name.tr("-", "_")
         next unless ::OpenSSL::Digest.const_defined?(klass_name)
@@ -41,7 +41,7 @@ module RactorRailsShim
 
         # Replace the lambda-based `initialize` (super(name, data)) with a
         # string-eval'd method that holds no captured Proc.
-        klass.class_eval "def initialize(data = nil); super(#{name.inspect}, data); end"
+        klass.class_eval "def initialize(data = nil); super(#{name.inspect}, data); end", __FILE__, __LINE__
 
         # Replace the singleton `digest`/`hexdigest` blocks the same way.
         klass.singleton_class.class_eval <<-RUBY, __FILE__, __LINE__ + 1

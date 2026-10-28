@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
-require "set"
 require "active_support/isolated_execution_state"
 require "active_support/callbacks"
 require_relative "../lib/ractor_rails_shim/roles/fallback_ies"
@@ -21,17 +20,17 @@ class CallbackCaptureOwnershipSpec < Minitest::Spec
     reset_table
     # The facade should NOT hold the table after the call.
     refute RactorRailsShim.instance_variable_defined?(:@declared_callbacks),
-           "facade must not hold @declared_callbacks (Issue #36a)"
+      "facade must not hold @declared_callbacks (Issue #36a)"
     CC.record_declared_callback(99901, :process_action, :before, :set_post, [:index], nil)
     # The table lives on CallbackCapture now.
     assert CC.instance_variable_defined?(:@declared_callbacks),
-           "CallbackCapture should own @declared_callbacks"
+      "CallbackCapture should own @declared_callbacks"
     table = CC.instance_variable_get(:@declared_callbacks)
     assert_kind_of Hash, table
     assert_includes table.keys, 99901
     # The facade still does NOT hold it.
     refute RactorRailsShim.instance_variable_defined?(:@declared_callbacks),
-           "facade must not hold @declared_callbacks after record (Issue #36a)"
+      "facade must not hold @declared_callbacks after record (Issue #36a)"
   ensure
     reset_table
   end

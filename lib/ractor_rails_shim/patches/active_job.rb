@@ -7,7 +7,7 @@ module RactorRailsShim
   #   Ractor::IsolationError: can not access non-shareable objects in
   #   constant ActiveJob::Arguments::RESERVED_KEYS by non-main ractor.
   SHAREABLE_CONSTANTS.concat([
-    "ActiveJob::Arguments::RESERVED_KEYS",
+    "ActiveJob::Arguments::RESERVED_KEYS"
   ])
 
   # ActiveJob::Serializers keeps its serializer registry in TWO class ivars:
@@ -90,7 +90,7 @@ module RactorRailsShim
     module_function
 
     TARGETS = Ractor.make_shareable([
-      ["ActiveSupport::JSON::Encoding::JSONGemCoderEncoder", :CODER],
+      ["ActiveSupport::JSON::Encoding::JSONGemCoderEncoder", :CODER]
     ].freeze)
 
     def apply!

@@ -27,9 +27,7 @@ module RactorRailsShim
         defined?(@debug) ? @debug : false
       end
 
-      def debug=(value)
-        @debug = value
-      end
+      attr_writer :debug
 
       # Swallow an exception raised by the block, optionally logging it
       # when `debug?` is on. `label` identifies the call site (e.g.

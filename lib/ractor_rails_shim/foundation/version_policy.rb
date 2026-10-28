@@ -40,7 +40,7 @@ module RactorRailsShim
 
         def self.missing_ivar(obj, ivar, label, funnel:)
           raise UnsupportedVersionError,
-                "#{label}: missing ivar #{ivar} on #{obj.class}"
+            "#{label}: missing ivar #{ivar} on #{obj.class}"
         end
       end
 
@@ -66,7 +66,7 @@ module RactorRailsShim
         end
       end
 
-      MAP = { strict: Strict, off: Off, warn: Warn }.freeze
+      MAP = {strict: Strict, off: Off, warn: Warn}.freeze
     end
 
     class << self
@@ -112,10 +112,10 @@ module RactorRailsShim
           if seg.nil? || tested.include?(seg)
             applied << name
           else
-            skipped << { name: name, tested: tested, runtime: seg }
+            skipped << {name: name, tested: tested, runtime: seg}
           end
         end
-        { applied: applied, skipped: skipped }
+        {applied: applied, skipped: skipped}
       end
 
       # Check Ruby and Rails version support. Warns/raises/silences
@@ -131,7 +131,7 @@ module RactorRailsShim
           mismatch(msg)
         end
         if RactorRailsShim::Version.rails &&
-           !RactorRailsShim::Version.supported_rails?
+            !RactorRailsShim::Version.supported_rails?
           rv = defined?(::Rails::VERSION::STRING) ? ::Rails::VERSION::STRING : "unknown"
           msg = "ractor-rails-shim: Rails #{rv} — shim developed against " \
                 "Rails #{RactorRailsShim::Version::TESTED_RAILS.join(", ")}. " \

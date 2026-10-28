@@ -25,7 +25,7 @@ class WorkerAppSpec < Minitest::Spec
   # Ractor.make_shareable. Returns a fixed 200 response.
   class FrozenApp
     def call(env)
-      [200, { "content-type" => "text/plain" }, ["ok"]]
+      [200, {"content-type" => "text/plain"}, ["ok"]]
     end
   end
 
@@ -54,9 +54,9 @@ class WorkerAppSpec < Minitest::Spec
     worker_app = RactorRailsShim.worker_app!(app)
     # First call: setup_once! runs rebind_constants + init_worker_ar_connections!
     r = Ractor.new(worker_app) do |wa|
-      wa.call({ "PATH_INFO" => "/up", "REQUEST_METHOD" => "GET" })
+      wa.call({"PATH_INFO" => "/up", "REQUEST_METHOD" => "GET"})
     end
-    status, _headers, body = r.value
+    status, _headers, _ = r.value
     assert_equal 200, status, "worker should serve requests after setup_once! (AR-init exercised)"
   end
 
@@ -67,8 +67,8 @@ class WorkerAppSpec < Minitest::Spec
     # Two calls in the same Ractor — second must be short-circuited by
     # the Ractor.current[:rrs_worker_ready] guard.
     r = Ractor.new(worker_app) do |wa|
-      s1, _, _ = wa.call({ "PATH_INFO" => "/up", "REQUEST_METHOD" => "GET" })
-      s2, _, _ = wa.call({ "PATH_INFO" => "/up", "REQUEST_METHOD" => "GET" })
+      s1, _, _ = wa.call({"PATH_INFO" => "/up", "REQUEST_METHOD" => "GET"})
+      s2, _, _ = wa.call({"PATH_INFO" => "/up", "REQUEST_METHOD" => "GET"})
       [s1, s2]
     end
     s1, s2 = r.value
@@ -79,7 +79,7 @@ class WorkerAppSpec < Minitest::Spec
   it "WorkerApp is Ractor.shareable? after the factory builds it" do
     app = FrozenApp.new
     Ractor.make_shareable(app)
-    bindings = { "ShimWorkerAppProbe" => app }.freeze
+    bindings = {"ShimWorkerAppProbe" => app}.freeze
     Ractor.make_shareable(bindings)
 
     worker_app = RactorRailsShim.worker_app!(app)
@@ -95,7 +95,7 @@ class WorkerAppSpec < Minitest::Spec
     worker_app = RactorRailsShim.worker_app!(app)
 
     r = Ractor.new(worker_app) do |wa|
-      wa.call({ "PATH_INFO" => "/up", "REQUEST_METHOD" => "GET" })
+      wa.call({"PATH_INFO" => "/up", "REQUEST_METHOD" => "GET"})
     end
     status, _headers, body = r.value
     assert_equal 200, status
@@ -159,17 +159,17 @@ class WorkerAppSpec < Minitest::Spec
   # --- IES prefill from the shareable fallback table ---
 
   it "prefill copies non-nil fallback values into the worker's IES" do
-    key = :"rrs_worker_app_prefill_spec_key"
+    key = :rrs_worker_app_prefill_spec_key
     RactorRailsShim::Registry.reassign_shareable_fallback(
-      Ractor.make_shareable({ key => "prefilled", gone_key_missing: nil }.freeze)
+      Ractor.make_shareable({key => "prefilled", :gone_key_missing => nil}.freeze)
     )
     app = FrozenApp.new
     Ractor.make_shareable(app)
     worker_app = RactorRailsShim.worker_app!(app)
 
-    observed = nil
+    nil
     r = Ractor.new(worker_app) do |wa|
-      wa.call({ "PATH_INFO" => "/up", "REQUEST_METHOD" => "GET" })
+      wa.call({"PATH_INFO" => "/up", "REQUEST_METHOD" => "GET"})
       storage = RactorRailsShim.storage
       [storage[:rrs_worker_app_prefill_spec_key], storage.key?(:rrs_worker_app_prefill_spec_key)]
     end
@@ -185,18 +185,18 @@ class WorkerAppSpec < Minitest::Spec
   end
 
   it "prefill does not overwrite values the worker already set" do
-    key = :"rrs_worker_app_prefill_keep_spec_key"
+    key = :rrs_worker_app_prefill_keep_spec_key
     RactorRailsShim::Registry.reassign_shareable_fallback(
-      Ractor.make_shareable({ key => "fallback_value" }.freeze)
+      Ractor.make_shareable({key => "fallback_value"}.freeze)
     )
     app = FrozenApp.new
     Ractor.make_shareable(app)
     worker_app = RactorRailsShim.worker_app!(app)
 
-    observed = nil
+    nil
     r = Ractor.new(worker_app) do |wa|
       RactorRailsShim.storage[:rrs_worker_app_prefill_keep_spec_key] = "worker_override"
-      wa.call({ "PATH_INFO" => "/up", "REQUEST_METHOD" => "GET" })
+      wa.call({"PATH_INFO" => "/up", "REQUEST_METHOD" => "GET"})
       RactorRailsShim.storage[:rrs_worker_app_prefill_keep_spec_key]
     end
     observed = r.value

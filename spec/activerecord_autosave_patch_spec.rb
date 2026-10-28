@@ -33,12 +33,12 @@ require_relative "../lib/ractor_rails_shim/patches"
 class ActiverecordAutosavePatchSpec < Minitest::Spec
   it "defines the redefinition entrypoint _redefine_ar_autosave_methods!" do
     assert RactorRailsShim.respond_to?(:_redefine_ar_autosave_methods!, true),
-           "_redefine_ar_autosave_methods! must be defined"
+      "_redefine_ar_autosave_methods! must be defined"
   end
 
   it "defines the source detector _rrs_rails_autosave_source?" do
     assert RactorRailsShim.respond_to?(:_rrs_rails_autosave_source?, true),
-           "_rrs_rails_autosave_source? must be defined"
+      "_rrs_rails_autosave_source? must be defined"
   end
 
   it "no-ops cleanly when ActiveRecord is not loaded" do
@@ -53,16 +53,16 @@ class ActiverecordAutosavePatchSpec < Minitest::Spec
       # this is exactly how a define_non_cyclic_method-generated method looks
       # to `instance_method(m).source_location`.
       class_eval("def generated_save_method; true; end",
-                 "/some/gems/activerecord-8.0.0/lib/active_record/autosave_association.rb", 675)
+        "/some/gems/activerecord-8.0.0/lib/active_record/autosave_association.rb", 675)
       def app_override_method
         true
       end
     end
 
     assert RactorRailsShim._rrs_rails_autosave_source?(klass, :generated_save_method),
-           "a define_non_cyclic_method-generated method must be detected"
+      "a define_non_cyclic_method-generated method must be detected"
     refute RactorRailsShim._rrs_rails_autosave_source?(klass, :app_override_method),
-           "an app's own def must NOT be detected (its override must win)"
+      "an app's own def must NOT be detected (its override must win)"
   end
 
   it "returns false (not an error) when the method is undefined" do

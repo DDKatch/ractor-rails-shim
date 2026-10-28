@@ -10,7 +10,6 @@
 # Run: bundle exec ruby -Ilib -Ispec spec/active_job_serializers_patch_spec.rb
 
 require "minitest/autorun"
-require "set"
 require_relative "../lib/ractor_rails_shim/foundation/role_defaults"
 require_relative "../lib/ractor_rails_shim/patches/active_job"
 require_relative "../lib/ractor_rails_shim/roles/freezers"
@@ -38,7 +37,7 @@ class ActiveJobSerializersPatchSpec < Minitest::Spec
     with_fake_serializers_module do
       assert_equal true, RactorRailsShim::ActiveJobSerializersPatch.register_target!
       assert_includes RactorRailsShim::Freezers::GlobalClassIvarFreezer::TARGETS,
-                      "ActiveJob::Serializers"
+        "ActiveJob::Serializers"
     end
   end
 
@@ -47,7 +46,7 @@ class ActiveJobSerializersPatchSpec < Minitest::Spec
       RactorRailsShim::ActiveJobSerializersPatch.register_target!
       RactorRailsShim::ActiveJobSerializersPatch.register_target!
       assert_equal 1,
-                   RactorRailsShim::Freezers::GlobalClassIvarFreezer::TARGETS.count { |t| t == "ActiveJob::Serializers" }
+        RactorRailsShim::Freezers::GlobalClassIvarFreezer::TARGETS.count { |t| t == "ActiveJob::Serializers" }
     end
   end
 
@@ -55,7 +54,7 @@ class ActiveJobSerializersPatchSpec < Minitest::Spec
     result = RactorRailsShim::ActiveJobSerializersPatch.register_target!
     refute_equal true, result # no ActiveJob in this bundle → deferred
     refute_includes RactorRailsShim::Freezers::GlobalClassIvarFreezer::TARGETS,
-                    "ActiveJob::Serializers"
+      "ActiveJob::Serializers"
   end
 
   def test_frozen_serializers_registry_is_worker_readable
@@ -66,7 +65,7 @@ class ActiveJobSerializersPatchSpec < Minitest::Spec
       def serialize?(arg) = arg.is_a?(Struct.new(:v))
     end
     Ractor.make_shareable(serializer_class)
-    index = { serializer_class => "inst" }
+    index = {serializer_class => "inst"}
     set = Set.new([:sym_serializer])
     Ractor.make_shareable(index)
     Ractor.make_shareable(set)

@@ -19,7 +19,7 @@ class FallbackNamespaceSpec < Minitest::Spec
 
   def run_subprocess_assertions(script)
     out, err, status = Open3.capture3(
-      { "RUBYOPT" => "-I#{SHIM_LIB}" },
+      {"RUBYOPT" => "-I#{SHIM_LIB}"},
       "ruby", "-e", script
     )
     [out, err, status]
@@ -28,7 +28,7 @@ class FallbackNamespaceSpec < Minitest::Spec
   # --- RactorRailsShim::FallbackIES is an alias for Storage::ThreadLocal ---
 
   it "RactorRailsShim::FallbackIES is defined (as an alias for Storage::ThreadLocal)" do
-    script = <<~'RUBY'
+    script = <<~RUBY
       require "ractor_rails_shim/roles/fallback_ies"
       puts defined?(RactorRailsShim::FallbackIES)
       puts RactorRailsShim::FallbackIES.equal?(RactorRailsShim::Storage::ThreadLocal)
@@ -43,7 +43,7 @@ class FallbackNamespaceSpec < Minitest::Spec
   end
 
   it "FallbackIES provides the IES API ([] / []= / key? / delete / clear)" do
-    script = <<~'RUBY'
+    script = <<~RUBY
       require "ractor_rails_shim/roles/fallback_ies"
       IES = RactorRailsShim::FallbackIES
       IES[:foo] = "bar"
@@ -68,7 +68,7 @@ class FallbackNamespaceSpec < Minitest::Spec
   # --- The namespace patch is gone: AS::IES is NOT defined by the shim ---
 
   it "when AS is absent, ActiveSupport::IsolatedExecutionState is NOT defined by the shim" do
-    script = <<~'RUBY'
+    script = <<~RUBY
       require "ractor_rails_shim/roles/fallback_ies"
       puts defined?(ActiveSupport).inspect
       puts defined?(ActiveSupport::IsolatedExecutionState).inspect
@@ -83,7 +83,7 @@ class FallbackNamespaceSpec < Minitest::Spec
   end
 
   it "RactorRailsShim.storage is ThreadLocal when AS is absent" do
-    script = <<~'RUBY'
+    script = <<~RUBY
       require "ractor_rails_shim/roles/fallback_ies"
       puts RactorRailsShim.storage.equal?(RactorRailsShim::Storage::ThreadLocal)
     RUBY
@@ -95,7 +95,7 @@ class FallbackNamespaceSpec < Minitest::Spec
   # --- When AS is present, the real one wins, no alias ---
 
   it "when AS is present, RactorRailsShim.storage is Storage::IES (the real AS IES)" do
-    script = <<~'RUBY'
+    script = <<~RUBY
       require "active_support/isolated_execution_state"
       require "ractor_rails_shim/roles/fallback_ies"
       puts RactorRailsShim.storage.equal?(RactorRailsShim::Storage::IES)

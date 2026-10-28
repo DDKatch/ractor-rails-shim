@@ -22,9 +22,9 @@ class AppShareabilizerSpec < Minitest::Spec
   # The role object exists and exposes the entry point.
   it "is a module under RactorRailsShim with a .make_shareable! method" do
     assert RactorRailsShim.const_defined?(:AppShareabilizer, false),
-           "RactorRailsShim::AppShareabilizer should be defined"
+      "RactorRailsShim::AppShareabilizer should be defined"
     assert RactorRailsShim::AppShareabilizer.respond_to?(:make_shareable!),
-           "AppShareabilizer.make_shareable! should be defined"
+      "AppShareabilizer.make_shareable! should be defined"
   end
 
   # The orchestration fires every step in the right order. We stub each
@@ -63,7 +63,10 @@ class AppShareabilizerSpec < Minitest::Spec
 
     # Stub Ractor.make_shareable to record + return the app unchanged.
     orig_ms = Ractor.method(:make_shareable)
-    Ractor.define_singleton_method(:make_shareable) { |o| called << :make_shareable; o }
+    Ractor.define_singleton_method(:make_shareable) { |o|
+      called << :make_shareable
+      o
+    }
     RactorRailsShim::AppShareabilizer.make_shareable!(app)
     Ractor.define_singleton_method(:make_shareable, orig_ms)
 
@@ -76,7 +79,7 @@ class AppShareabilizerSpec < Minitest::Spec
       make_shareable build_fallback
     ]
     assert_equal expected_order, called,
-                 "orchestration steps must fire in the documented order"
+      "orchestration steps must fire in the documented order"
   ensure
     RactorRailsShim::ConstantShareabilizer.reset_applied!
   end
@@ -85,20 +88,21 @@ class AppShareabilizerSpec < Minitest::Spec
   it "returns the same app object it received" do
     app = Object.new
     # Stub the heavy steps to no-ops so the test is hermetic.
-    stub_facade_step(:_apply_shareable_constants!) { }
-    stub_facade_step(:_install_all_framework_patches) { }
+    stub_facade_step(:_apply_shareable_constants!) {}
+    stub_facade_step(:_install_all_framework_patches) {}
     stub_facade_step(:_precompute_lazy_ivars) { |a| }
     stub_facade_step(:_precompute_propshaft!) { |a| }
-    stub_facade_step(:_generate_ar_attribute_methods!) { }
-    stub_facade_step(:_warm_attribute_method_patterns!) { }
-    stub_facade_step(:_freeze_declared_callbacks!) { }
-    stub_facade_step(:_freeze_shareable_class_ivars!) { }
-    stub_facade_step(:_warm_journey_routes!) { }
+    stub_facade_step(:_generate_ar_attribute_methods!) {}
+    stub_facade_step(:_warm_attribute_method_patterns!) {}
+    stub_facade_step(:_freeze_declared_callbacks!) {}
+    stub_facade_step(:_freeze_shareable_class_ivars!) {}
+    stub_facade_step(:_warm_journey_routes!) {}
     stub_facade_step(:_neutralize_logger_io!) { |a| }
     stub_facade_step(:_replace_unshareable_procs!) { |a| }
     stub_facade_step(:_replace_locks_and_concurrent_maps!) { |a| }
-    stub_facade_step(:_build_shareable_fallback!) { }
-    RactorRailsShim::ConstantShareabilizer.reset_applied!; RactorRailsShim::ConstantShareabilizer.instance_variable_set(:@applied, true)
+    stub_facade_step(:_build_shareable_fallback!) {}
+    RactorRailsShim::ConstantShareabilizer.reset_applied!
+    RactorRailsShim::ConstantShareabilizer.instance_variable_set(:@applied, true)
     orig_ms = Ractor.method(:make_shareable)
     Ractor.define_singleton_method(:make_shareable) { |o| o }
     result = RactorRailsShim::AppShareabilizer.make_shareable!(app)
@@ -111,20 +115,21 @@ class AppShareabilizerSpec < Minitest::Spec
   # The facade delegates to the role object.
   it "facade make_app_shareable! delegates to the role object" do
     app = Object.new
-    stub_facade_step(:_apply_shareable_constants!) { }
-    stub_facade_step(:_install_all_framework_patches) { }
+    stub_facade_step(:_apply_shareable_constants!) {}
+    stub_facade_step(:_install_all_framework_patches) {}
     stub_facade_step(:_precompute_lazy_ivars) { |a| }
     stub_facade_step(:_precompute_propshaft!) { |a| }
-    stub_facade_step(:_generate_ar_attribute_methods!) { }
-    stub_facade_step(:_warm_attribute_method_patterns!) { }
-    stub_facade_step(:_freeze_declared_callbacks!) { }
-    stub_facade_step(:_freeze_shareable_class_ivars!) { }
-    stub_facade_step(:_warm_journey_routes!) { }
+    stub_facade_step(:_generate_ar_attribute_methods!) {}
+    stub_facade_step(:_warm_attribute_method_patterns!) {}
+    stub_facade_step(:_freeze_declared_callbacks!) {}
+    stub_facade_step(:_freeze_shareable_class_ivars!) {}
+    stub_facade_step(:_warm_journey_routes!) {}
     stub_facade_step(:_neutralize_logger_io!) { |a| }
     stub_facade_step(:_replace_unshareable_procs!) { |a| }
     stub_facade_step(:_replace_locks_and_concurrent_maps!) { |a| }
-    stub_facade_step(:_build_shareable_fallback!) { }
-    RactorRailsShim::ConstantShareabilizer.reset_applied!; RactorRailsShim::ConstantShareabilizer.instance_variable_set(:@applied, true)
+    stub_facade_step(:_build_shareable_fallback!) {}
+    RactorRailsShim::ConstantShareabilizer.reset_applied!
+    RactorRailsShim::ConstantShareabilizer.instance_variable_set(:@applied, true)
     orig_ms = Ractor.method(:make_shareable)
     Ractor.define_singleton_method(:make_shareable) { |o| o }
     result = RactorRailsShim.make_app_shareable!(app)
@@ -150,7 +155,7 @@ class AppShareabilizerSpec < Minitest::Spec
   end
 
   it "configure injects all 13 pipeline steps + make_shareable_fn" do
-    noop = ->(*) { }
+    noop = ->(*) {}
     RactorRailsShim::AppShareabilizer.configure(
       apply_shareable_constants: noop,
       install_all_framework_patches: noop,
@@ -192,16 +197,20 @@ class AppShareabilizerSpec < Minitest::Spec
       replace_unshareable_procs: ->(a) { called << :replace_procs },
       replace_locks_and_concurrent_maps: ->(a) { called << :replace_locks },
       build_shareable_fallback: -> { called << :build_fallback },
-      make_shareable_fn: ->(o) { called << :make_shareable; o },
+      make_shareable_fn: ->(o) {
+        called << :make_shareable
+        o
+      },
       reassign_shareable_const: ->(s, v) { s }
     )
-    RactorRailsShim::ConstantShareabilizer.reset_applied!; RactorRailsShim::ConstantShareabilizer.instance_variable_set(:@applied, true)
+    RactorRailsShim::ConstantShareabilizer.reset_applied!
+    RactorRailsShim::ConstantShareabilizer.instance_variable_set(:@applied, true)
     app = Object.new
     RactorRailsShim::AppShareabilizer.make_shareable!(app)
     expected = %i[install_patches precompute_lazy precompute_propshaft
-                  generate_ar_attrs warm_attr_patterns freeze_callbacks
-                  freeze_class_ivars warm_routes neutralize_logger
-                  replace_procs replace_locks make_shareable build_fallback]
+      generate_ar_attrs warm_attr_patterns freeze_callbacks
+      freeze_class_ivars warm_routes neutralize_logger
+      replace_procs replace_locks make_shareable build_fallback]
     assert_equal expected, called
   ensure
     RactorRailsShim::ConstantShareabilizer.reset_applied!
@@ -210,19 +219,19 @@ class AppShareabilizerSpec < Minitest::Spec
 
   it "reset_configuration restores the role-object-lookup defaults" do
     RactorRailsShim::AppShareabilizer.configure(
-      apply_shareable_constants: ->(*) { },
+      apply_shareable_constants: ->(*) {},
       reassign_shareable_const: ->(s, v) { v }
     )
     refute_equal RactorRailsShim::ConstantShareabilizer.method(:apply!),
-                 RactorRailsShim::AppShareabilizer.apply_shareable_constants
+      RactorRailsShim::AppShareabilizer.apply_shareable_constants
     refute_equal RactorRailsShim.method(:_reassign_shareable_const),
-                 RactorRailsShim::AppShareabilizer.reassign_shareable_const
+      RactorRailsShim::AppShareabilizer.reassign_shareable_const
 
     RactorRailsShim::AppShareabilizer.reset_configuration
     assert_equal RactorRailsShim::ConstantShareabilizer.method(:apply!),
-                 RactorRailsShim::AppShareabilizer.apply_shareable_constants
+      RactorRailsShim::AppShareabilizer.apply_shareable_constants
     assert_equal RactorRailsShim.method(:_reassign_shareable_const),
-                 RactorRailsShim::AppShareabilizer.reassign_shareable_const
+      RactorRailsShim::AppShareabilizer.reassign_shareable_const
   ensure
     RactorRailsShim::AppShareabilizer.reset_configuration
   end
@@ -316,7 +325,7 @@ class AppShareabilizerSpec < Minitest::Spec
     RactorRailsShim::AppShareabilizer.reset_stashed!
     RactorRailsShim::AppShareabilizer.stash!(app)
     assert RactorRailsShim::AppShareabilizer.const_defined?(:SHAREABLE_APP, false),
-           "SHAREABLE_APP should be defined on AppShareabilizer after stash!"
+      "SHAREABLE_APP should be defined on AppShareabilizer after stash!"
   ensure
     RactorRailsShim::AppShareabilizer.reset_stashed!
   end

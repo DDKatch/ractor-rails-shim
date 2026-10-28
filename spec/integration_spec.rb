@@ -45,7 +45,7 @@ class IntegrationSpec < Minitest::Spec
     super
     app_dir = DEFAULT_APP_DIR
     boot = File.join(app_dir, "config", "boot.rb")
-    gemfile = File.join(app_dir, "Gemfile")
+    File.join(app_dir, "Gemfile")
     unless File.file?(boot)
       skip "No test Rails app at #{app_dir}. Run " \
            "`./script/make_test_app.sh #{app_dir}` first to create one, " \
@@ -117,14 +117,14 @@ class IntegrationSpec < Minitest::Spec
     env_tmpl = Ractor.make_shareable({
       "REQUEST_METHOD" => "GET", "PATH_INFO" => "/up", "SCRIPT_NAME" => "",
       "QUERY_STRING" => "", "SERVER_NAME" => "localhost", "SERVER_PORT" => "9293",
-      "HTTP_HOST" => "localhost", "rack.url_scheme" => "http",
+      "HTTP_HOST" => "localhost", "rack.url_scheme" => "http"
     })
 
     r = Ractor.new(app, env_tmpl) do |a, e|
       rack_env = e.to_h.merge(
         "rack.input" => StringIO.new(""),
         "rack.errors" => StringIO.new(""),
-        "rack.version" => [3, 0],
+        "rack.version" => [3, 0]
       )
       begin
         status, headers, body = a.call(rack_env)
@@ -133,7 +133,7 @@ class IntegrationSpec < Minitest::Spec
         root = ex
         root = root.cause while root.cause
         [:err, ex.class.name, ex.message[0, 150],
-         "ROOT: #{root.class.name}: #{root.message[0, 150]}"]
+          "ROOT: #{root.class.name}: #{root.message[0, 150]}"]
       end
     end
     result = r.value

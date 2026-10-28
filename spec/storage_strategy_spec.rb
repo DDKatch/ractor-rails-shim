@@ -33,7 +33,7 @@ class StorageStrategySpec < Minitest::Spec
   # --- Both strategies implement the same contract ---
 
   [RactorRailsShim::StorageStrategy::Ractor,
-   RactorRailsShim::StorageStrategy::Thread].each do |strategy|
+    RactorRailsShim::StorageStrategy::Thread].each do |strategy|
     describe strategy.name do
       it "implements lookup and store" do
         assert_respond_to strategy, :lookup
@@ -72,13 +72,13 @@ class StorageStrategySpec < Minitest::Spec
   describe RactorRailsShim::StorageStrategy::Thread do
     it "lookup walks ancestors for copy-on-write fallback (subclass finds superclass value)" do
       parent = Class.new
-      child  = Class.new(parent)
+      child = Class.new(parent)
       # The key the writer uses: ractor_rails_shim_class_attr_<oid>___class_attr_probe
       key = :"ractor_rails_shim_class_attr_#{parent.object_id}___class_attr_probe"
       RactorRailsShim::StorageStrategy::Thread.store(parent, key, "from-parent")
       # child.lookup with the PARENT's key should find it via ancestor walk
       assert_equal "from-parent",
-                   RactorRailsShim::StorageStrategy::Thread.lookup(child, key, nil)
+        RactorRailsShim::StorageStrategy::Thread.lookup(child, key, nil)
     end
   end
 
@@ -90,7 +90,7 @@ class StorageStrategySpec < Minitest::Spec
       key = :"rrs_strategy_present_#{owner.object_id}"
       RactorRailsShim::StorageStrategy::Ractor.store(owner, key, "ies-value")
       assert_equal "ies-value",
-                   RactorRailsShim::StorageStrategy::Ractor.lookup(owner, key, nil)
+        RactorRailsShim::StorageStrategy::Ractor.lookup(owner, key, nil)
     end
 
     it "lookup returns nil when neither IES nor fallback has the key (missing_default unused)" do
@@ -112,7 +112,7 @@ class StorageStrategySpec < Minitest::Spec
     # that it's one of the two and matches RunMode.thread?.
     s = RactorRailsShim.storage_strategy
     assert_includes [RactorRailsShim::StorageStrategy::Ractor,
-                     RactorRailsShim::StorageStrategy::Thread], s
+      RactorRailsShim::StorageStrategy::Thread], s
     expected = RactorRailsShim::RunMode.thread? ?
       RactorRailsShim::StorageStrategy::Thread :
       RactorRailsShim::StorageStrategy::Ractor
@@ -123,17 +123,17 @@ class StorageStrategySpec < Minitest::Spec
 
   it "both strategies implement replay_callbacks?" do
     [RactorRailsShim::StorageStrategy::Ractor,
-     RactorRailsShim::StorageStrategy::Thread].each do |strategy|
+      RactorRailsShim::StorageStrategy::Thread].each do |strategy|
       assert_respond_to strategy, :replay_callbacks?,
-                        "#{strategy} should respond to replay_callbacks?"
+        "#{strategy} should respond to replay_callbacks?"
     end
   end
 
   it "both strategies implement replay_callbacks!" do
     [RactorRailsShim::StorageStrategy::Ractor,
-     RactorRailsShim::StorageStrategy::Thread].each do |strategy|
+      RactorRailsShim::StorageStrategy::Thread].each do |strategy|
       assert_respond_to strategy, :replay_callbacks!,
-                        "#{strategy} should respond to replay_callbacks!"
+        "#{strategy} should respond to replay_callbacks!"
     end
   end
 

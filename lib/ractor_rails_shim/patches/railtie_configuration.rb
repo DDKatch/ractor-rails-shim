@@ -55,7 +55,7 @@ module RactorRailsShim
           # cvar access from prepended modules ("overtaken"). Methods
           # defined via class_eval on the class itself own the class's
           # cvars, so the main-side delegation stays legal.
-          ::Rails::Railtie::Configuration.class_eval <<~RUBY
+          ::Rails::Railtie::Configuration.class_eval <<~RUBY, __FILE__, __LINE__ + 1
             alias_method :rrs_original_respond_to, :respond_to?
             def respond_to?(name, include_private = false)
               if defined?(::Ractor) && ::Ractor.current != ::Ractor.main

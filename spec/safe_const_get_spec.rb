@@ -21,7 +21,7 @@ class SafeConstGetSpec < Minitest::Spec
 
   it "resolves a nested constant path" do
     assert_equal ActiveSupport::IsolatedExecutionState,
-                 RactorRailsShim::ConstantShareabilizer.safe_const_get("ActiveSupport::IsolatedExecutionState")
+      RactorRailsShim::ConstantShareabilizer.safe_const_get("ActiveSupport::IsolatedExecutionState")
   end
 
   it "returns nil for a missing top-level constant" do
@@ -66,7 +66,7 @@ class SafeConstGetSpec < Minitest::Spec
     Object.const_set(:InheritTestChild, child) unless Object.const_defined?(:InheritTestChild)
     begin
       assert_nil RactorRailsShim::ConstantShareabilizer.safe_const_get("InheritTestChild::CHILD", inherit: false),
-                 "inherit: false must not resolve inherited constants"
+        "inherit: false must not resolve inherited constants"
     ensure
       Object.send(:remove_const, :InheritTestChild)
     end
@@ -81,7 +81,7 @@ class SafeConstGetSpec < Minitest::Spec
     begin
       result = RactorRailsShim::ConstantShareabilizer.safe_const_get("InheritTestChild2::CHILD")
       assert_equal 42, result,
-                   "inherit: true should resolve inherited constants"
+        "inherit: true should resolve inherited constants"
     ensure
       Object.send(:remove_const, :InheritTestChild2)
     end

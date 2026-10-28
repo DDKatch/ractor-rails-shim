@@ -28,13 +28,13 @@ module RactorRailsShim
     # ENCODINGS is a mutable Hash. None are shareable by default.
     "Rack::Multipart::Parser::TEMPFILE_FACTORY",
     "Rack::Multipart::Parser::EMPTY",
-      "Rack::Multipart::Parser::REENCODE_DUMMY_ENCODINGS",
+    "Rack::Multipart::Parser::REENCODE_DUMMY_ENCODINGS"
   ])
 
   # Source-location constant used by make_app_shareable!'s proc-replacement
   # graph traversal (moved here from make_shareable.rb so the Rack concern's
   # pieces live together).
-  FILES_LOC = "/rack/files.rb".freeze
+  FILES_LOC = "/rack/files.rb"
 
   class << self
     # Patch Rack::Request's class-level attr_accessors (forwarded_priority,
@@ -170,7 +170,7 @@ module RactorRailsShim
       _register_patch :delegator, "8.1"
       return unless defined?(::Delegator) && defined?(::Tempfile)
 
-      marker = ::Delegator.delegating_block(:"__rrs_marker__").source_location
+      marker = ::Delegator.delegating_block(:__rrs_marker__).source_location
       return unless marker.is_a?(::Array) && marker.size == 2
       marker_file = marker[0]
       marker_line = marker[1]
@@ -179,10 +179,10 @@ module RactorRailsShim
       ::ObjectSpace.each_object(::Class) do |klass|
         next unless (sc = klass.superclass) && sc.name.nil?
         (klass.instance_methods(false) + klass.protected_instance_methods(false) + klass.private_instance_methods(false)).each do |m|
-          mm = (klass.instance_method(m) rescue nil)
+          mm = klass.instance_method(m) rescue nil
           loc = mm&.source_location
           next unless loc.is_a?(::Array) && loc.size == 2 &&
-                      loc[0] == marker_file && loc[1] == marker_line
+            loc[0] == marker_file && loc[1] == marker_line
           begin
             klass.class_eval(<<~RUBY, __FILE__, __LINE__ + 1)
               def #{m}(*args, &b)

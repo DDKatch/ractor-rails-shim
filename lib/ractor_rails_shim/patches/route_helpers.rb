@@ -83,8 +83,8 @@ module RactorRailsShim
             @path_helpers_module.const_set(:"RRS_HELPER_\#{path_name}", helper)
             @url_helpers_module.send(:remove_const, :"RRS_HELPER_\#{url_name}") if @url_helpers_module.const_defined?(:"RRS_HELPER_\#{url_name}", false)
             @url_helpers_module.const_set(:"RRS_HELPER_\#{url_name}", helper)
-            pbody = "def " + path_name.to_s + "(*args)\\n  const_get(:\\\"RRS_HELPER_" + path_name.to_s + "\\\").call(self, args, true)\\nend"
-            ubody = "def " + url_name.to_s + "(*args)\\n  const_get(:\\\"RRS_HELPER_" + url_name.to_s + "\\\").call(self, args, false)\\nend"
+            pbody = "def " + path_name.to_s + "(*args)\\n  const_get(:\\"RRS_HELPER_" + path_name.to_s + "\\").call(self, args, true)\\nend"
+            ubody = "def " + url_name.to_s + "(*args)\\n  const_get(:\\"RRS_HELPER_" + url_name.to_s + "\\").call(self, args, false)\\nend"
             @path_helpers_module.module_eval(pbody, __FILE__, __LINE__ + 1)
             @url_helpers_module.module_eval(ubody, __FILE__, __LINE__ + 1)
             @path_helpers << path_name

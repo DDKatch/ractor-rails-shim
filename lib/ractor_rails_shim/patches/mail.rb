@@ -16,8 +16,8 @@
 # IES slot (seeded lazily with the documented default). This lets a worker Ractor
 # build + render + deliver a mailer message off the frozen shared graph.
 
-  module RactorRailsShim
-    class << self
+module RactorRailsShim
+  class << self
     def _install_mail_patch
       return if @mail_patched
       @mail_patched = true
@@ -179,8 +179,7 @@
       # makes `new` private, so use `allocate` + `initialize`). A fresh instance
       # is correct: delivery settings are derived per-call from the method name.
       if defined?(::Mail::Configuration)
-        unless ::Mail::Configuration.singleton_class.private_instance_methods
-                .include?(:_rrs_orig_configuration_instance)
+        unless ::Mail::Configuration.singleton_class.private_method_defined?(:_rrs_orig_configuration_instance)
           ::Mail::Configuration.singleton_class.class_eval do
             alias_method :_rrs_orig_configuration_instance, :instance
           end
@@ -306,7 +305,7 @@
           captured.each do |iv, val|
             reader = iv.to_s.sub(/\A@/, "").to_sym
             if method_defined?(reader, true) && !val.nil?
-              class_eval(<<~RUBY)
+              class_eval(<<~RUBY, __FILE__, __LINE__ + 1)
                 def #{reader}
                   ::#{pmod}.singleton_class::#{const_name}[#{iv.inspect}]
                 end
@@ -332,7 +331,7 @@
           # inherited `initialize`, which calls `__setobj__`) as Procs in the main
           # Ractor, so redefine those shareably too. The backing ivar is
           # `@delegate_dc_obj` (verified against Ruby's DelegateClass).
-          klass.class_eval(<<~RUBY)
+          klass.class_eval(<<~RUBY, __FILE__, __LINE__ + 1)
             def __getobj__
               @delegate_dc_obj
             end
@@ -354,13 +353,13 @@
             next if %i[object_id __send__ __id__ equal?].include?(m)
             im = klass.instance_method(m) rescue nil
             next if im && im.owner == klass
-            klass.class_eval(<<~RUBY)
+            klass.class_eval(<<~RUBY, __FILE__, __LINE__ + 1)
               def #{m}(*args, &block)
                 __getobj__.send(:#{m}, *args, &block)
               end
             RUBY
           end
-          klass.class_eval(<<~RUBY)
+          klass.class_eval(<<~RUBY, __FILE__, __LINE__ + 1)
             def method_missing(name, *args, &block)
               __getobj__.send(name, *args, &block)
             end
@@ -371,7 +370,6 @@
           RUBY
         end
       end
-
     end
 
     # Walk every module/class under `Mail` and make each un-shareable constant
@@ -397,7 +395,7 @@
 
       {
         MAIL_INTERCEPTORS: ::Mail.class_variable_get(:@@delivery_interceptors),
-        MAIL_OBSERVERS: ::Mail.class_variable_get(:@@delivery_notification_observers),
+        MAIL_OBSERVERS: ::Mail.class_variable_get(:@@delivery_notification_observers)
       }.each do |name, value|
         next if ::RactorRailsShim.const_defined?(name, false)
         names = value.map { |hook| hook.name if hook.is_a?(Module) }.compact
@@ -465,7 +463,7 @@
     # `@mailer_name`.
     if defined?(::ActionView::ViewPaths::ClassMethods)
       amod = ::ActionView::ViewPaths::ClassMethods
-      unless amod.private_instance_methods.include?(:rrs_original_local_prefixes)
+      unless amod.private_method_defined?(:rrs_original_local_prefixes)
         amod.alias_method :rrs_original_local_prefixes, :local_prefixes
       end
       amod.class_eval do
@@ -500,7 +498,7 @@
         templates_name = headers[:template_name] || action_name
 
         each_template(Array(templates_path), templates_name).map do |template|
-          format = template.format || self.formats.first
+          format = template.format || formats.first
           {
             body: render(template: template, formats: [format]),
             content_type: Mime[format].to_s

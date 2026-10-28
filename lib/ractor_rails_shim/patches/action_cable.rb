@@ -70,7 +70,7 @@ module RactorRailsShim
       # Re-define the module function `ActionCable.server` with a
       # main/worker branch. Real `def` bodies (no Proc) — workers inherit
       # the re-definition through the (cloned or shared frozen) module.
-      ::ActionCable.singleton_class.class_eval <<~'RUBY', __FILE__, __LINE__ + 1
+      ::ActionCable.singleton_class.class_eval <<~RUBY, __FILE__, __LINE__ + 1
         remove_method :server rescue nil
 
         def server
@@ -127,14 +127,14 @@ module RactorRailsShim
       return unless ::SolidCable.respond_to?(:configuration)
 
       if ::SolidCable.configuration.respond_to?(:options, true)
-        options = (::SolidCable.configuration.send(:options).to_h rescue nil)
+        options = ::SolidCable.configuration.send(:options).to_h rescue nil
         if options.is_a?(Hash) && !options.empty?
           shareable = Ractor.make_shareable(options)
           _reassign_shareable_const(:SOLID_CABLE_OPTIONS_SHAREABLE, shareable)
         end
       end
 
-      ::SolidCable.singleton_class.class_eval <<~'RUBY', __FILE__, __LINE__ + 1
+      ::SolidCable.singleton_class.class_eval <<~RUBY, __FILE__, __LINE__ + 1
         def configuration
           if ::Ractor.main?
             @configuration ||= ::SolidCable::Configuration.new(**::Rails.application.config_for("cable"))

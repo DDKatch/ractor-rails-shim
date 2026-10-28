@@ -126,7 +126,7 @@ class VersionPolicySpec < Minitest::Spec
     # Existing public API: errors are catchable as RactorRailsShim::UnsupportedVersionError.
     assert defined?(RactorRailsShim::UnsupportedVersionError)
     assert_equal RactorRailsShim::VersionPolicy::UnsupportedVersionError,
-                 RactorRailsShim::UnsupportedVersionError
+      RactorRailsShim::UnsupportedVersionError
   end
 
   # --- check_version_support (Issue #46) ---

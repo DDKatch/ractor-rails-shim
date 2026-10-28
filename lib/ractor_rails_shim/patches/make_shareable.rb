@@ -27,7 +27,7 @@ module RactorRailsShim
       "Devise::ROUTES",
       "Devise::STRATEGIES",
       "Devise::URL_HELPERS",
-      "Devise::NO_INPUT",
+      "Devise::NO_INPUT"
     ])
 
     # Class instance variables holding unshareable values that workers read
@@ -56,7 +56,7 @@ module RactorRailsShim
       ["JSON", :@dump_default_options],
       ["JSON", :@load_default_options],
       ["JSON", :@generate_default_options],
-      ["JSON", :@parse_default_options],
+      ["JSON", :@parse_default_options]
     ])
 
     # Public API: make Rails.application shareable across Ractors. Delegates

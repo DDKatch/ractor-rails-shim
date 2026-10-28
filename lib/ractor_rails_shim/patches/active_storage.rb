@@ -28,13 +28,13 @@ module RactorRailsShim
   # Seeded with the real (string) values in main at prepare_for_ractors! time
   # (see `_seed_active_storage_prefix!`); workers read these instead of the
   # un-shareable `mattr_accessor` readers. Reassigned (not mutated) in main.
-  ACTIVE_STORAGE_PREFIX = "".freeze
-  ACTIVE_STORAGE_SUFFIX = "".freeze
+  ACTIVE_STORAGE_PREFIX = ""
+  ACTIVE_STORAGE_SUFFIX = ""
   # Default service NAME (String) captured in main at prepare time. Workers
   # cannot read the `ActiveStorage::Blob.service` class_attribute (a live
   # Service instance with unshareable config), so the symbolic service-name
   # callback falls back to this constant.
-  ACTIVE_STORAGE_DEFAULT_SERVICE = "".freeze
+  ACTIVE_STORAGE_DEFAULT_SERVICE = ""
 
   module ActiveStorageAttachedPatch
     # Frozen, shareable host used as the defining `self` of attachment scope
@@ -52,7 +52,7 @@ module RactorRailsShim
       def compute_checksum_in_chunks(io)
         raise ArgumentError, "io must be rewindable" unless io.respond_to?(:rewind)
 
-        checksum = OpenSSL::Digest::MD5.new
+        checksum = OpenSSL::Digest.new("MD5")
         read_buffer = "".b
         while io.read(5.megabytes, read_buffer)
           checksum << read_buffer
@@ -69,7 +69,7 @@ module RactorRailsShim
     # different Ractor". Reimplement with the same (all-keyword) signature but
     # without a block.
     module BlobBuildPatch
-      def build_after_unfurling(key: nil, io:, filename:, content_type: nil, metadata: nil, service_name: nil, identify: true, record: nil)
+      def build_after_unfurling(io:, filename:, key: nil, content_type: nil, metadata: nil, service_name: nil, identify: true, record: nil)
         blob = new(key: key, filename: filename, content_type: content_type, metadata: metadata, service_name: service_name)
         blob.unfurl(io, identify: identify)
         blob
@@ -110,13 +110,14 @@ module RactorRailsShim
       def create_before_direct_upload!(service_name: nil, **options)
         service_name ||= ::RactorRailsShim::ACTIVE_STORAGE_DEFAULT_SERVICE
         service_name = nil if service_name.to_s.empty?
-        super(service_name: service_name, **options)
+        super
       end
     end
 
-    module BlobMetadataTypePatch      def type_for_attribute(name = :__none__)
+    module BlobMetadataTypePatch
+      def type_for_attribute(name = :__none__)
         return super if name != :metadata
-        t = super(name)
+        t = super
         return t if defined?(::ActiveRecord::Type::Serialized) && t.is_a?(::ActiveRecord::Type::Serialized)
         coder = ::ActiveRecord::Coders::JSON.new
         ind_coder = ::ActiveRecord::Store::IndifferentCoder.new(:metadata, coder)
@@ -187,10 +188,10 @@ module RactorRailsShim
 
       scope :"with_attached_#{name}", -> {
         if ActiveStorage.track_variants
-          includes("#{name}_attachment": { blob: {
-            variant_records: { image_attachment: :blob },
-            preview_image_attachment: { blob: { variant_records: { image_attachment: :blob } } }
-          } })
+          includes("#{name}_attachment": {blob: {
+            variant_records: {image_attachment: :blob},
+            preview_image_attachment: {blob: {variant_records: {image_attachment: :blob}}}
+          }})
         else
           includes("#{name}_attachment": :blob)
         end
@@ -198,13 +199,13 @@ module RactorRailsShim
 
       after_save { attachment_changes[name.to_s]&.save }
 
-      after_commit(on: %i[ create update ]) { attachment_changes.delete(name.to_s).try(:upload) }
+      after_commit(on: %i[create update]) { attachment_changes.delete(name.to_s).try(:upload) }
 
       reflection = ActiveRecord::Reflection.create(
         :has_one_attached,
         name,
         nil,
-        { dependent: dependent, service_name: service },
+        {dependent: dependent, service_name: service},
         self
       )
       yield reflection if block_given?
@@ -239,10 +240,10 @@ module RactorRailsShim
 
       scope :"with_attached_#{name}", -> {
         if ActiveStorage.track_variants
-          includes("#{name}_attachments": { blob: {
-            variant_records: { image_attachment: :blob },
-            preview_image_attachment: { blob: { variant_records: { image_attachment: :blob } } }
-          } })
+          includes("#{name}_attachments": {blob: {
+            variant_records: {image_attachment: :blob},
+            preview_image_attachment: {blob: {variant_records: {image_attachment: :blob}}}
+          }})
         else
           includes("#{name}_attachments": :blob)
         end
@@ -250,13 +251,13 @@ module RactorRailsShim
 
       after_save { attachment_changes[name.to_s]&.save }
 
-      after_commit(on: %i[ create update ]) { attachment_changes.delete(name.to_s).try(:upload) }
+      after_commit(on: %i[create update]) { attachment_changes.delete(name.to_s).try(:upload) }
 
       reflection = ActiveRecord::Reflection.create(
         :has_many_attached,
         name,
         nil,
-        { dependent: dependent, service_name: service },
+        {dependent: dependent, service_name: service},
         self
       )
       yield reflection if block_given?
@@ -321,7 +322,7 @@ module RactorRailsShim
       @_secure_random_tp = TracePoint.new(:constant) do |tp|
         name = tp.const_name
         next unless name == "SecureRandom::BASE36_ALPHABET" ||
-                    name == "SecureRandom::BASE58_ALPHABET"
+          name == "SecureRandom::BASE58_ALPHABET"
         _freeze_secure_random_alphabets!
         if %i[BASE36_ALPHABET BASE58_ALPHABET].all? do |c|
              ::SecureRandom.const_defined?(c) && ::Ractor.shareable?(::SecureRandom.const_get(c))
@@ -419,7 +420,7 @@ module RactorRailsShim
     def _register_blob_service_name_callback!
       return if @_blob_service_name_callback_registered
       return unless defined?(::ActiveStorage::Blob)
-      ::ActiveStorage::Blob.class_eval <<-'RUBY', __FILE__, __LINE__ + 1
+      ::ActiveStorage::Blob.class_eval <<-RUBY, __FILE__, __LINE__ + 1
         def __ractors_default_service_name
           return if self.service_name
           default = ::RactorRailsShim::ACTIVE_STORAGE_DEFAULT_SERVICE
@@ -484,7 +485,7 @@ module RactorRailsShim
       # any other symbolic filter).
       if defined?(::ActiveStorage::SetCurrent) && defined?(::ActionController::Base)
         begin
-          ::ActiveStorage::SetCurrent.module_eval <<-'RUBY'
+          ::ActiveStorage::SetCurrent.module_eval <<-RUBY, __FILE__, __LINE__ + 1
             def __ractors_set_current_url_options
               ::ActiveStorage::Current.url_options = {
                 protocol: request.protocol,
@@ -511,7 +512,7 @@ module RactorRailsShim
       if defined?(::ActiveStorage::Blob) && ::ActiveStorage::Blob.respond_to?(:services)
         begin
           registry = ::ActiveStorage::Blob.services
-          configurations = (registry.instance_variable_get(:@configurations) rescue {})
+          configurations = registry.instance_variable_get(:@configurations) rescue {}
           configurations.each_key do |service_key|
             registry.fetch(service_key) rescue nil
           end
@@ -519,7 +520,7 @@ module RactorRailsShim
           # (the direct-upload URL, row 121) does `@url_helpers ||= Rails
           # .application.routes.url_helpers` — a write on the frozen service
           # instance -> FrozenError in workers.
-          services = (registry.instance_variable_get(:@services) rescue {})
+          services = registry.instance_variable_get(:@services) rescue {}
           services.each_value do |svc|
             svc.__send__(:url_helpers) rescue nil
           end
@@ -528,9 +529,9 @@ module RactorRailsShim
         end
       end
       default_service = if defined?(::ActiveStorage::Blob)
-        (::ActiveStorage::Blob.service&.name rescue nil)
+        ::ActiveStorage::Blob.service&.name rescue nil
       end
-      default_service ||= (::Rails.application.config.active_storage.service rescue nil)
+      default_service ||= ::Rails.application.config.active_storage.service rescue nil
       RactorRailsShim.const_set(:ACTIVE_STORAGE_DEFAULT_SERVICE, default_service.to_s.freeze)
       # Reset the cached `table_name` on ActiveStorage models so they recompute
       # with the correct prefix/suffix. Without this, `ActiveStorage::Blob`'s

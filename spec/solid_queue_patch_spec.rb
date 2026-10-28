@@ -22,12 +22,12 @@ class SolidQueuePatchSpec < Minitest::Spec
     # No SolidQueue in this bundle — apply! must still be idempotent + safe.
     RactorRailsShim::Patches::SolidQueuePatch.apply!
     assert_equal true, RactorRailsShim::Patches::SolidQueuePatch.apply!,
-                 "apply! must be idempotent"
+      "apply! must be idempotent"
   end
 
   def test_prewarm_methods_target_only_the_enqueue_path
     assert_equal ["SolidQueue::Batch", :migrated?],
-                 RactorRailsShim::Patches::SolidQueuePatch::PREWARM_METHODS.first
+      RactorRailsShim::Patches::SolidQueuePatch::PREWARM_METHODS.first
   end
 
   def test_redeclare_symbolic_assumption_guards_non_class
@@ -39,10 +39,10 @@ class SolidQueuePatchSpec < Minitest::Spec
     coder = Object.new
     Ractor.make_shareable(coder)
     decorator = RactorRailsShim.singleton_class.const_get(:SerializedTypeDecorator)
-                                  .new(coder, false)
+      .new(coder, false)
     Ractor.make_shareable(decorator)
     assert decorator.is_a?(RactorRailsShim.singleton_class.const_get(:SerializedTypeDecorator)),
-           "the decorator must be reachable via the singleton-class const (same access path as EnumTypeDecorator)"
+      "the decorator must be reachable via the singleton-class const (same access path as EnumTypeDecorator)"
     assert Ractor.shareable?(decorator), "the decorator must freeze+share cleanly"
   end
 end

@@ -21,9 +21,9 @@ class LoggerIONeutralizerSpec < Minitest::Spec
   # The role object exists and exposes the call entry point.
   it "is a module under RactorRailsShim with a .call method" do
     assert RactorRailsShim.const_defined?(:LoggerIONeutralizer, false),
-           "RactorRailsShim::LoggerIONeutralizer should be defined"
+      "RactorRailsShim::LoggerIONeutralizer should be defined"
     assert RactorRailsShim::LoggerIONeutralizer.respond_to?(:call),
-           "LoggerIONeutralizer.call should be defined"
+      "LoggerIONeutralizer.call should be defined"
   end
 
   # Replaces the app-instance @logger ivar with a frozen, shareable
@@ -36,7 +36,7 @@ class LoggerIONeutralizerSpec < Minitest::Spec
     RactorRailsShim::LoggerIONeutralizer.call(app)
     replaced = app.instance_variable_get(:@logger)
     assert_kind_of ::ActiveSupport::BroadcastLogger, replaced,
-                   "@logger should be a BroadcastLogger after neutralize"
+      "@logger should be a BroadcastLogger after neutralize"
     assert replaced.frozen?, "replaced logger should be frozen"
     assert Ractor.shareable?(replaced), "replaced logger should be Ractor-shareable"
   end
@@ -49,7 +49,7 @@ class LoggerIONeutralizerSpec < Minitest::Spec
     RactorRailsShim::LoggerIONeutralizer.call(app)
     replaced = app.instance_variable_get(:@dev)
     assert_kind_of RactorRailsShim.singleton_class::NoOpLogDev, replaced,
-                   "@dev holding $stdout should become NoOpLogDev"
+      "@dev holding $stdout should become NoOpLogDev"
     assert replaced.frozen?, "NoOpLogDev should be frozen"
     assert Ractor.shareable?(replaced), "NoOpLogDev should be Ractor-shareable"
   end
@@ -63,7 +63,7 @@ class LoggerIONeutralizerSpec < Minitest::Spec
     app.instance_variable_set(:@child, inner)
     RactorRailsShim::LoggerIONeutralizer.call(app)
     assert_kind_of RactorRailsShim.singleton_class::NoOpLogDev, inner.instance_variable_get(:@sink),
-                   "nested @sink holding $stderr should become NoOpLogDev"
+      "nested @sink holding $stderr should become NoOpLogDev"
   end
 
   # Recurses into Array and Hash children.
@@ -75,7 +75,7 @@ class LoggerIONeutralizerSpec < Minitest::Spec
     app.instance_variable_set(:@arr, arr)
     RactorRailsShim::LoggerIONeutralizer.call(app)
     assert_kind_of RactorRailsShim.singleton_class::NoOpLogDev, holder.instance_variable_get(:@io),
-                   "IO inside an Array child should be neutralized"
+      "IO inside an Array child should be neutralized"
   end
 
   # Recurses into Set children (uses CONTAINER_WALKERS dispatch).
@@ -87,7 +87,7 @@ class LoggerIONeutralizerSpec < Minitest::Spec
     app.instance_variable_set(:@set, s)
     RactorRailsShim::LoggerIONeutralizer.call(app)
     assert_kind_of RactorRailsShim.singleton_class::NoOpLogDev, holder.instance_variable_get(:@io),
-                   "IO inside a Set child should be neutralized"
+      "IO inside a Set child should be neutralized"
   end
 
   # The facade delegates to the role object (the existing
@@ -99,8 +99,8 @@ class LoggerIONeutralizerSpec < Minitest::Spec
     app.instance_variable_set(:@logger, sentinel)
     RactorRailsShim::LoggerIONeutralizer.call(app)
     assert_kind_of ::ActiveSupport::BroadcastLogger,
-                   app.instance_variable_get(:@logger),
-                   "facade delegation should neutralize @logger"
+      app.instance_variable_get(:@logger),
+      "facade delegation should neutralize @logger"
   end
 
   # Does not raise on a frozen app (ivar swap is funneled through _swallow).
@@ -146,7 +146,10 @@ class LoggerIONeutralizerSpec < Minitest::Spec
 
   it "funnels @logger ivar swap failures through an injected funnel" do
     funneled = []
-    funnel = ->(label, &blk) { funneled << label; blk&.call rescue StandardError; }
+    funnel = ->(label, &blk) {
+      funneled << label
+      blk&.call rescue StandardError
+    }
     RactorRailsShim::LoggerIONeutralizer.configure(funnel: funnel)
     app = Object.new
     app.instance_variable_set(:@logger, Object.new)
@@ -159,7 +162,10 @@ class LoggerIONeutralizerSpec < Minitest::Spec
 
   it "funnels stray IO ivar swap failures through an injected funnel" do
     funneled = []
-    funnel = ->(label, &blk) { funneled << label; blk&.call rescue StandardError; }
+    funnel = ->(label, &blk) {
+      funneled << label
+      blk&.call rescue StandardError
+    }
     RactorRailsShim::LoggerIONeutralizer.configure(funnel: funnel)
     app = Object.new
     app.instance_variable_set(:@dev, $stdout)
@@ -172,7 +178,9 @@ class LoggerIONeutralizerSpec < Minitest::Spec
 
   it "uses an injected noop_log_dev_class to replace stray IO ivars" do
     fake_sink_class = Class.new do
-      def freeze; super; end
+      def freeze
+        super
+      end
     end
     RactorRailsShim::LoggerIONeutralizer.configure(
       noop_log_dev_class: fake_sink_class
@@ -182,7 +190,7 @@ class LoggerIONeutralizerSpec < Minitest::Spec
     RactorRailsShim::LoggerIONeutralizer.call(app)
     replaced = app.instance_variable_get(:@dev)
     assert_kind_of fake_sink_class, replaced,
-                   "stray IO should be replaced with the injected sink class"
+      "stray IO should be replaced with the injected sink class"
     assert replaced.frozen?, "injected sink should be frozen"
     assert Ractor.shareable?(replaced), "injected sink should be Ractor-shareable"
   ensure

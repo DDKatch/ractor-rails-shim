@@ -113,7 +113,7 @@ module RactorRailsShim
           {
             name: refl.name.to_sym,
             type: dep.to_sym,
-            macro: refl.macro.to_sym,
+            macro: refl.macro.to_sym
           }
         end.compact
       rescue StandardError

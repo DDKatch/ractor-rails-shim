@@ -22,12 +22,12 @@ require_relative "../lib/ractor_rails_shim/patches"
 # The callable/lock classes are defined on RactorRailsShim's singleton class
 # (via module_eval inside `class << self`). Fetch them by name.
 SC = RactorRailsShim.singleton_class unless defined?(SC)
-NoOpProc      = SC.const_get(:NoOpProc) unless defined?(NoOpProc)
-Callable      = SC.const_get(:Callable) unless defined?(Callable)
+NoOpProc = SC.const_get(:NoOpProc) unless defined?(NoOpProc)
+Callable = SC.const_get(:Callable) unless defined?(Callable)
 CallableConst = SC.const_get(:CallableConst) unless defined?(CallableConst)
 RequestCallable = SC.const_get(:RequestCallable) unless defined?(RequestCallable)
-NoOpLock      = SC.const_get(:NoOpLock) unless defined?(NoOpLock)
-NoOpLogDev    = SC.const_get(:NoOpLogDev) unless defined?(NoOpLogDev)
+NoOpLock = SC.const_get(:NoOpLock) unless defined?(NoOpLock)
+NoOpLogDev = SC.const_get(:NoOpLogDev) unless defined?(NoOpLogDev)
 
 class VersionSpec < Minitest::Spec
   def self.test_order
@@ -50,8 +50,8 @@ class VersionSpec < Minitest::Spec
   it "Version.supported_ruby? is true on the developed-against Ruby" do
     # The shim requires Ruby >= 4.0.6; CI runs on 4.0.6+.
     assert RactorRailsShim::Version.supported_ruby?,
-           "expected Ruby #{RUBY_VERSION} to be >= " \
-           "#{RactorRailsShim::Version::SUPPORTED_RUBY}"
+      "expected Ruby #{RUBY_VERSION} to be >= " \
+      "#{RactorRailsShim::Version::SUPPORTED_RUBY}"
   end
 
   it "Version.rails is nil when Rails isn't loaded (boot.rb case)" do
@@ -161,12 +161,12 @@ class VersionSpec < Minitest::Spec
     end
     RactorRailsShim.prepare_for_ractors!
     expected = %i[rack_request inflector parameter_encoding path_registry
-                  abstract_controller error_reporter lookup_context i18n
-                  template_handlers execution_context
-                  request_parameter_parsers rack_utils]
+      abstract_controller error_reporter lookup_context i18n
+      template_handlers execution_context
+      request_parameter_parsers rack_utils]
     expected.each do |name|
       assert_includes RactorRailsShim::PATCH_VERSIONS, name,
-                      "expected #{name} to be registered"
+        "expected #{name} to be registered"
       assert_equal ["8.1"], RactorRailsShim::PATCH_VERSIONS[name]
     end
   end
@@ -199,7 +199,9 @@ class VersionSpec < Minitest::Spec
 
   it "Callable forwards call to target.method_name and is shareable when frozen" do
     target = Object.new
-    def target.greet(name); "hi #{name}"; end
+    def target.greet(name)
+      "hi #{name}"
+    end
     target.freeze
     callable = Callable.new(target, :greet)
     callable.freeze
@@ -227,7 +229,10 @@ class VersionSpec < Minitest::Spec
     lock.freeze
     assert Ractor.shareable?(lock)
     yielded = false
-    result = lock.synchronize { yielded = true; :inner }
+    result = lock.synchronize {
+      yielded = true
+      :inner
+    }
     assert yielded
     assert_equal :inner, result
     refute lock.locked?
@@ -251,20 +256,20 @@ class VersionSpec < Minitest::Spec
   it "Callable/NoOpLock are callable from a worker Ractor (frozen + shareable)" do
     port = Ractor::Port.new
     target = Object.new
-    def target.echo(x); "echo:#{x}"; end
+    def target.echo(x)
+      "echo:#{x}"
+    end
     target.freeze
 
     lock = NoOpLock.new.freeze
     callable = Callable.new(target, :echo).freeze
 
-    r = Ractor.new(port, callable, lock) do |p, c, l|
-      begin
-        lock_result = l.synchronize { :ok }
-        call_result = c.call(42)
-        p.send({ lock: lock_result, call: call_result })
-      rescue => e
-        p.send("err: #{e.class}: #{e.message[0,80]}")
-      end
+    Ractor.new(port, callable, lock) do |p, c, l|
+      lock_result = l.synchronize { :ok }
+      call_result = c.call(42)
+      p.send({lock: lock_result, call: call_result})
+    rescue => e
+      p.send("err: #{e.class}: #{e.message[0, 80]}")
     end
     result = port.receive
     assert_kind_of Hash, result, "got #{result.inspect}"

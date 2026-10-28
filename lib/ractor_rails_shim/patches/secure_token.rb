@@ -54,20 +54,20 @@ module RactorRailsShim
         classes.each do |klass|
           already = {}
           %i[initialize create save update].each do |chain|
-            callbacks = (klass.__callbacks[chain] rescue nil)
+            callbacks = klass.__callbacks[chain] rescue nil
             next unless callbacks
             callbacks.each do |cb|
               filter = cb.filter
               next unless filter.is_a?(::Proc)
               loc = (filter.source_location rescue nil)&.first.to_s
               next unless loc.end_with?("active_record/secure_token.rb")
-              attribute = (filter.binding.local_variable_get(:attribute) rescue nil)
+              attribute = filter.binding.local_variable_get(:attribute) rescue nil
               next unless attribute
               next if already[attribute]
               already[attribute] = true
               next if klass.private_method_defined?(:"__ractors_generate_secure_#{attribute}") ||
-                      klass.method_defined?(:"__ractors_generate_secure_#{attribute}")
-              length = (filter.binding.local_variable_get(:length) rescue nil)
+                klass.method_defined?(:"__ractors_generate_secure_#{attribute}")
+              length = filter.binding.local_variable_get(:length) rescue nil
               begin
                 klass.has_secure_token(attribute, length: length, on: chain)
               rescue StandardError

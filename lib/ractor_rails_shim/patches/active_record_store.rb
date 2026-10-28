@@ -108,8 +108,8 @@ module RactorRailsShim
       end
 
       self.local_stored_attributes ||= {}
-      self.local_stored_attributes[store_attribute] ||= []
-      self.local_stored_attributes[store_attribute] |= keys
+      local_stored_attributes[store_attribute] ||= []
+      local_stored_attributes[store_attribute] |= keys
     end
   end
 

@@ -86,7 +86,7 @@ class AroundTransportSpec < Minitest::Spec
 
   def transport(entries)
     RactorRailsShim::Callbacks::SymbolicTransport.new(
-      source: { @klass.object_id => entries }, kinds: [:process_action]
+      source: {@klass.object_id => entries}, kinds: [:process_action]
     )
   end
 
@@ -102,7 +102,10 @@ class AroundTransportSpec < Minitest::Spec
       entry(phase: :around, filter: :around_inner),
       entry(phase: :after, filter: :after_filter)
     ]
-    result = registry(entries).replay(ctx, :process_action) { ctx.order << :body; "BODY" }
+    result = registry(entries).replay(ctx, :process_action) {
+      ctx.order << :body
+      "BODY"
+    }
     assert_equal(
       %i[before outer-enter inner-enter body after inner-exit outer-exit],
       ctx.order
@@ -128,7 +131,10 @@ class AroundTransportSpec < Minitest::Spec
       entry(phase: :before, filter: :before_filter),
       entry(phase: :after, filter: :after_filter)
     ]
-    result = registry(entries).replay(ctx, :process_action) { ctx.order << :body; "RESULT" }
+    result = registry(entries).replay(ctx, :process_action) {
+      ctx.order << :body
+      "RESULT"
+    }
     assert_equal %i[before body after], ctx.order
     assert_equal "RESULT", result
   end
@@ -146,7 +152,10 @@ class AroundTransportSpec < Minitest::Spec
       entry(phase: :around, filter: :around_no_yield),
       entry(phase: :after, filter: :after_filter)
     ]
-    result = registry(entries).replay(ctx, :process_action) { ctx.order << :body; "BODY" }
+    result = registry(entries).replay(ctx, :process_action) {
+      ctx.order << :body
+      "BODY"
+    }
     assert_equal [:no_yield], ctx.order
     assert ctx.rendered
     # Rails discards the non-yielding filter's return value: run_callbacks
@@ -155,7 +164,7 @@ class AroundTransportSpec < Minitest::Spec
   end
 
   def test_halted_before_filter_skips_around_layers_entirely
-    ctx = FakeContext.new(@klass)
+    FakeContext.new(@klass)
     entries = [
       entry(phase: :before, filter: :halt_false),
       entry(phase: :around, filter: :around_outer),
@@ -192,6 +201,7 @@ class AroundTransportSpec < Minitest::Spec
     ctx = Class.new(FakeContext) do
       def cond = true
       def nope = false
+
       def gated_by_cond
         order << :gated_ok
         yield
@@ -203,8 +213,11 @@ class AroundTransportSpec < Minitest::Spec
     ]
     inner_run = []
     layer = RactorRailsShim::Callbacks::SymbolicTransport.new(
-      source: { @klass.object_id => entries }, kinds: [:process_action]
-    ).around(ctx, :process_action, -> { inner_run << :inner; "INNER" })
+      source: {@klass.object_id => entries}, kinds: [:process_action]
+    ).around(ctx, :process_action, -> {
+                                     inner_run << :inner
+                                     "INNER"
+                                   })
     # :cond is true → gated_by_cond wraps and descends into inner.
     # :nope is false → around_inner is gated out entirely (never entered);
     # the gated_by_cond wrapper's yield reaches the inner callable directly.
@@ -231,9 +244,12 @@ class AroundTransportSpec < Minitest::Spec
     end
     inner_run = []
     layer = RactorRailsShim::Callbacks::SymbolicTransport.new(
-      source: { @klass.object_id => [entry(phase: :around, filter: :around_unshareable)] },
+      source: {@klass.object_id => [entry(phase: :around, filter: :around_unshareable)]},
       kinds: [:process_action]
-    ).around(ctx, :process_action, -> { inner_run << :inner; :inner })
+    ).around(ctx, :process_action, -> {
+                                     inner_run << :inner
+                                     :inner
+                                   })
     assert_equal :inner, layer.call
     assert_equal [:before_raise], ctx.order
   end
@@ -263,7 +279,10 @@ class AroundTransportSpec < Minitest::Spec
       reg = RactorRailsShim::Callbacks::Registry.new(
         [RactorRailsShim::Callbacks::SymbolicTransport.new(source: shareable_table, kinds: [:process_action])]
       )
-      reg.replay(ctx, :process_action) { ctx.order << :body; "BODY" }
+      reg.replay(ctx, :process_action) {
+        ctx.order << :body
+        "BODY"
+      }
       [ctx.order.dup, "BODY"]
     end.value
     order, body = result

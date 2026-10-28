@@ -48,7 +48,7 @@ class CaptureAppConstantsSpec < Minitest::Spec
   end
 
   it "returns an empty frozen map when Rails doesn't respond to :autoloaders" do
-    fake = Module.new
+    Module.new
     with_rails(nil) do
       map = RactorRailsShim.capture_app_constants!
       assert_equal({}, map)
@@ -71,18 +71,18 @@ class CaptureAppConstantsSpec < Minitest::Spec
     not_zeitwerk = Object.new
     zeitwerk_like = Object.new
     zeitwerk_like.define_singleton_method(:all_expected_cpaths) do
-      { "ShimCaptureProbe" => "ShimCaptureProbe" }
+      {"ShimCaptureProbe" => "ShimCaptureProbe"}
     end
     autoloaders = Object.new
     autoloaders.define_singleton_method(:main) { not_zeitwerk }
     autoloaders.define_singleton_method(:once) { zeitwerk_like }
 
     # Define a shareable probe constant so the capture records it.
-    Object.const_set(:ShimCaptureProbe, "shareable-value".freeze)
+    Object.const_set(:ShimCaptureProbe, "shareable-value")
 
     with_rails(autoloaders) do
       map = RactorRailsShim.capture_app_constants!
-      assert_equal({ "ShimCaptureProbe" => "shareable-value" }, map)
+      assert_equal({"ShimCaptureProbe" => "shareable-value"}, map)
     end
   ensure
     Object.send(:remove_const, :ShimCaptureProbe) if defined?(ShimCaptureProbe)
@@ -91,14 +91,14 @@ class CaptureAppConstantsSpec < Minitest::Spec
   it "captures constants from a Zeitwerk-style autoloaders object" do
     loader = Object.new
     loader.define_singleton_method(:all_expected_cpaths) do
-      { "ShimCaptureA" => "ShimCaptureA", "ShimCaptureB" => "ShimCaptureB" }
+      {"ShimCaptureA" => "ShimCaptureA", "ShimCaptureB" => "ShimCaptureB"}
     end
     autoloaders = Object.new
     autoloaders.define_singleton_method(:main) { loader }
     autoloaders.define_singleton_method(:once) { nil }
 
-    Object.const_set(:ShimCaptureA, "a".freeze)
-    Object.const_set(:ShimCaptureB, "b".freeze)
+    Object.const_set(:ShimCaptureA, "a")
+    Object.const_set(:ShimCaptureB, "b")
 
     with_rails(autoloaders) do
       map = RactorRailsShim.capture_app_constants!

@@ -85,10 +85,10 @@ module RactorRailsShim
           # threads racing through setup_once! on the same worker) cannot
           # clobber a namespace module out from under us.
           parent = if parent.const_defined?(p, false)
-                     parent.const_get(p, false)
-                   else
-                     parent.const_set(p, Module.new)
-                   end
+            parent.const_get(p, false)
+          else
+            parent.const_set(p, Module.new)
+          end
         end
         leaf = parts.last
         parent.const_set(leaf, obj) unless parent.const_defined?(leaf, false)

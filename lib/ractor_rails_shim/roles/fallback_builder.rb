@@ -55,10 +55,10 @@ module RactorRailsShim
     # Passing `nil` for any (or calling `reset_configuration`) restores
     # the facade-lookup default for that collaborator.
     def self.configure(safe_const_get: nil, replace_unshareable_procs: nil,
-                       replace_locks_and_concurrent_maps: nil,
-                       reassign_shareable_const: nil, class_attributes: nil,
-                       class_attr_values: nil, shareable_mattr_defaults: nil,
-                       storage: nil, value_lookup_chain: nil)
+      replace_locks_and_concurrent_maps: nil,
+      reassign_shareable_const: nil, class_attributes: nil,
+      class_attr_values: nil, shareable_mattr_defaults: nil,
+      storage: nil, value_lookup_chain: nil)
       @safe_const_get = safe_const_get
       @replace_unshareable_procs = replace_unshareable_procs
       @replace_locks_and_concurrent_maps = replace_locks_and_concurrent_maps
@@ -190,7 +190,7 @@ module RactorRailsShim
         ClassAttrValues,
         Cvar,
         Ivar,
-        RailsSend,
+        RailsSend
       ].freeze
     end
 
@@ -227,7 +227,7 @@ module RactorRailsShim
         storage: storage,
         class_attr_values: class_attr_values,
         main: ::Ractor.main?,
-        safe_const_get: safe_const_get,
+        safe_const_get: safe_const_get
       }
       class_attributes.each do |(owner_name, attr_name, ies_key, default_val)|
         # Skip the Rails logger — it's intrinsically unshareable (IO + Mutex +
@@ -304,10 +304,8 @@ module RactorRailsShim
       # directly). Skip the attempt entirely — don't waste cycles traversing
       # the graph, and don't emit warnings for known-expected failures.
       attr_sym = attr_name.to_s
-      return nil if attr_sym.end_with?("__callbacks") ||
-                    attr_sym.end_with?("__validators") ||
-                    attr_sym.end_with?("default_connection_handler") ||
-                    attr_sym.include?("default_connection_handler")
+      return nil if attr_sym.end_with?("__callbacks", "__validators", "default_connection_handler") ||
+        attr_sym.include?("default_connection_handler")
       # NOTE: `queue_adapter` is deliberately NOT in this skip list. Adapter
       # instances differ wildly in shareability — AsyncAdapter holds an
       # unshareable @scheduler (threads/Mutex) and correctly falls back to
@@ -333,7 +331,7 @@ module RactorRailsShim
       begin
         Ractor.make_shareable(val)
         val
-      rescue StandardError => e
+      rescue StandardError
         begin
           replace_unshareable_procs.call(val)
           replace_locks_and_concurrent_maps.call(val)
@@ -359,7 +357,7 @@ module RactorRailsShim
           return rebuilt if rebuilt
           unless default
             warn "ractor-rails-shim: could not make attribute " \
-                 "#{owner_name}##{attr_name} shareable (#{e2.class}: #{e2.message[0,80]}); workers will fall back to default or nil"
+                 "#{owner_name}##{attr_name} shareable (#{e2.class}: #{e2.message[0, 80]}); workers will fall back to default or nil"
           end
           nil
         end
@@ -417,7 +415,7 @@ module RactorRailsShim
     def self._rebuild_copy(val, memo, depth)
       raise RebuildAbort if depth > MAX_REBUILD_DEPTH
       return val if val.is_a?(Module) || val.is_a?(Symbol) ||
-                    val.is_a?(String) || val.is_a?(Numeric) || val.equal?(true) || val.equal?(false) || val.equal?(nil)
+        val.is_a?(String) || val.is_a?(Numeric) || val.equal?(true) || val.equal?(false) || val.equal?(nil)
       return memo[val.object_id] if memo.key?(val.object_id)
       return val if val.is_a?(Proc) # carried as-is; traversal replaces later
 
@@ -465,8 +463,8 @@ module RactorRailsShim
     # one-line table entry (Issue #40, POODR §5b).
     module ShareableCopy
       COPIERS = {
-        Hash  => ->(v) { v.dup },
-        Array => ->(v) { v.dup },
+        Hash => ->(v) { v.dup },
+        Array => ->(v) { v.dup }
       }.freeze
 
       def self.call(val)

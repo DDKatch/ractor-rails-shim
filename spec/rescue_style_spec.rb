@@ -15,7 +15,6 @@
 # are checked.
 
 require "minitest/autorun"
-require "pathname"
 
 class RescueStyleSpec < Minitest::Spec
   LIB_DIR = Pathname.new(File.expand_path("../lib", __dir__))
@@ -29,22 +28,22 @@ class RescueStyleSpec < Minitest::Spec
         next if line.strip.start_with?("#")
 
         # Block bare rescue on its own line:  `rescue`  (nothing else)
-        if line =~ /^\s*rescue\s*$/
+        if /^\s*rescue\s*$/.match?(line)
           offenders << "#{path}:#{i + 1}: #{line.strip}"
         end
 
         # Block rescue with => but no class:  `rescue => e`
-        if line =~ /^\s*rescue\s*=>\s*\w+/
+        if /^\s*rescue\s*=>\s*\w+/.match?(line)
           offenders << "#{path}:#{i + 1}: #{line.strip}"
         end
 
         # Single-line begin; ... rescue; ... — bare rescue after ;
-        if line =~ /;\s*rescue\s*[;|]/
+        if /;\s*rescue\s*[;|]/.match?(line)
           offenders << "#{path}:#{i + 1}: #{line.strip}"
         end
 
         # Single-line begin; ... rescue => e; ...
-        if line =~ /;\s*rescue\s*=>\s*\w+\s*[;|]/
+        if /;\s*rescue\s*=>\s*\w+\s*[;|]/.match?(line)
           offenders << "#{path}:#{i + 1}: #{line.strip}"
         end
       end
@@ -55,7 +54,7 @@ class RescueStyleSpec < Minitest::Spec
   it "has no block-form bare rescue without explicit StandardError" do
     offenders = block_form_bare_rescues
     assert offenders.empty?,
-           "expected all block-form rescues to specify StandardError, " \
-           "but found bare rescues:\n  #{offenders.join("\n  ")}"
+      "expected all block-form rescues to specify StandardError, " \
+      "but found bare rescues:\n  #{offenders.join("\n  ")}"
   end
 end

@@ -102,19 +102,19 @@ class WorkerActiveRecordSpec < Minitest::Spec
     env_tmpl = Ractor.make_shareable({
       "REQUEST_METHOD" => "GET", "PATH_INFO" => "/up", "SCRIPT_NAME" => "",
       "QUERY_STRING" => "", "SERVER_NAME" => "localhost", "SERVER_PORT" => "9293",
-      "HTTP_HOST" => "localhost", "rack.url_scheme" => "http",
+      "HTTP_HOST" => "localhost", "rack.url_scheme" => "http"
     })
 
     r = Ractor.new(worker, env_tmpl) do |wa, e|
       rack_env = e.to_h.merge(
         "rack.input" => StringIO.new(""),
         "rack.errors" => StringIO.new(""),
-        "rack.version" => [3, 0],
+        "rack.version" => [3, 0]
       )
       # A dispatch triggers setup_once! -> init_worker_ar_connections! so the
       # worker has a usable AR connection for the direct probes below.
       up_status, _, _ = wa.call(rack_env)
-      results = { up_status: up_status }
+      results = {up_status: up_status}
 
       # columns_hash (per-Ractor IES cache)
       WorkerActiveRecordSpec.probe(results, :ch_id) { Post.columns_hash.key?("id") }
@@ -168,7 +168,7 @@ class WorkerActiveRecordSpec < Minitest::Spec
     assert_includes results[:columns], "title"
     assert_includes results[:column_names], "title"
     assert results[:content_columns].all? { |c| results[:column_names].include?(c) },
-           "content_columns must be a subset of column_names"
+      "content_columns must be a subset of column_names"
     # content_columns excludes the primary key (when primary_key resolves in
     # the worker — it can be nil under some worker setups, so guard on it).
     if results[:primary_key].is_a?(String)

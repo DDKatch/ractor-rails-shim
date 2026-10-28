@@ -74,7 +74,7 @@ module RactorRailsShim
     "ActiveRecord::Encryption::Properties::ALLOWED_VALUE_CLASSES",
     "ActiveRecord::Encryption::Properties::DEFAULT_PROPERTIES",
     "Arel::SelectManager::STRING_OR_SYMBOL_CLASS",
-    "ActiveRecord::Delegation::GeneratedRelationMethods::MUTEX",
+    "ActiveRecord::Delegation::GeneratedRelationMethods::MUTEX"
   ])
 
   # Shareable replacements for Arel::Visitors::*::BIND_BLOCK constants.
@@ -130,15 +130,25 @@ module RactorRailsShim
   # Shareable callable that replaces Arel::Visitors::PostgreSQL::BIND_BLOCK
   # (a Proc `proc { |i| "$#{i}" }`). Callable cross-Ractor.
   PgBindBlock = Ractor.make_shareable(Object.new.tap do |o|
-    def o.call(i); "$#{i}"; end
-    def o.to_proc; method(:call).to_proc; end
+    def o.call(i)
+      "$#{i}"
+    end
+
+    def o.to_proc
+      method(:call).to_proc
+    end
   end)
 
   # Shareable callable that replaces Arel::Visitors::ToSql::BIND_BLOCK
   # (a Proc `proc { "?" }`). Callable cross-Ractor.
   SqlBindBlock = Ractor.make_shareable(Object.new.tap do |o|
-    def o.call(_i = nil); "?"; end
-    def o.to_proc; method(:call).to_proc; end
+    def o.call(_i = nil)
+      "?"
+    end
+
+    def o.to_proc
+      method(:call).to_proc
+    end
   end)
 
   # Shareable snapshot of ActiveRecord::Base.configurations at
@@ -223,7 +233,7 @@ module RactorRailsShim
         snapshot.freeze
         Ractor.make_shareable(snapshot)
         _reassign_shareable_const(:AR_CONFIGURATIONS_SNAPSHOT, snapshot)
-      rescue StandardError => e
+      rescue StandardError
         # Best-effort; if we can't capture configs, workers won't be able
         # to auto-init connections. They can call init_worker_ar_connections!
         # manually with explicit configs.
@@ -262,7 +272,7 @@ module RactorRailsShim
           next if hash.empty?
           snapshot[klass.name.to_s] = {
             config: hash,
-            shard: (klass.default_shard || :default)
+            shard: klass.default_shard || :default
           }
         rescue StandardError
           nil
@@ -343,14 +353,12 @@ module RactorRailsShim
         env_configs.each do |name, config|
           shard = name.to_sym
           [writing_role, reading_role].uniq.each do |role|
-            begin
-              handler.establish_connection(config,
-                owner_name: ::ActiveRecord::Base,
-                role: role,
-                shard: shard)
-            rescue StandardError
-              # Best-effort: if one connection fails, continue with others.
-            end
+            handler.establish_connection(config,
+              owner_name: ::ActiveRecord::Base,
+              role: role,
+              shard: shard)
+          rescue StandardError
+            # Best-effort: if one connection fails, continue with others.
           end
         end
 
@@ -363,19 +371,17 @@ module RactorRailsShim
         connection_classes = AR_CONNECTION_CLASSES_SNAPSHOT
         if connection_classes && !connection_classes.empty?
           connection_classes.each do |class_name, entry|
-            klass = (Object.const_get(class_name) rescue nil)
+            klass = Object.const_get(class_name) rescue nil
             next unless klass.is_a?(::Class)
             config = entry[:config]
             next unless config.is_a?(::Hash)
             [writing_role, reading_role].uniq.each do |role|
-              begin
-                handler.establish_connection(config,
-                  owner_name: klass,
-                  role: role,
-                  shard: (entry[:shard] || :default))
-              rescue StandardError
-                # Best-effort: continue with the other pools.
-              end
+              handler.establish_connection(config,
+                owner_name: klass,
+                role: role,
+                shard: entry[:shard] || :default)
+            rescue StandardError
+              # Best-effort: continue with the other pools.
             end
           end
         end
@@ -487,7 +493,7 @@ module RactorRailsShim
         begin
           klass.instance_variable_set(:@relation_delegate_cache,
             Ractor.make_shareable(cache))
-        rescue StandardError => e
+        rescue StandardError
           # Best-effort: if a cache holds an unshareable delegate class we
           # can't freeze, skip it. The worker will then hit a clear error on
           # the first relation method and we can patch that class specifically.
@@ -562,15 +568,15 @@ module RactorRailsShim
             (klass.reflect_on_all_associations rescue []).each do |refl|
               next if per.key?(refl.name.to_s)
               next unless refl.respond_to?(:scope) && (refl.collection? || refl.has_one?)
-              scope = (refl.scope rescue nil)
+              scope = refl.scope rescue nil
               next unless scope.is_a?(::Proc) && !scope.class.name.to_s.end_with?("NoOpProc")
               begin
-                rel = (klass.unscoped.instance_exec(klass.new, &scope) rescue nil)
+                rel = klass.unscoped.instance_exec(klass.new, &scope) rescue nil
                 next unless rel.respond_to?(:where_clause)
                 wh = {}
                 (rel.where_clause.to_h rescue nil)&.each do |col, val|
                   next unless val.nil? || val == true || val == false ||
-                              val.is_a?(::Numeric) || val.is_a?(::Symbol) || val.is_a?(::String)
+                    val.is_a?(::Numeric) || val.is_a?(::Symbol) || val.is_a?(::String)
                   wh[col.to_s.freeze] = val.is_a?(::String) ? val.freeze : val
                 end
                 per[refl.name.to_s.freeze] = wh.freeze unless wh.empty?
@@ -603,11 +609,13 @@ module RactorRailsShim
           -> { klass.count rescue nil },
           -> { klass.first rescue nil },
           -> { klass.send(:query_constraints_list) if klass.respond_to?(:query_constraints_list, true) },
-          -> { if defined?(::Kaminari) && klass.respond_to?(:page)
-                 klass.page(1).to_a rescue nil
-               end },
+          -> {
+            if defined?(::Kaminari) && klass.respond_to?(:page)
+              klass.page(1).to_a rescue nil
+            end
+          }
         ]
-        warm_calls.each { |c| begin; c.call; rescue StandardError => e; end }
+        warm_calls.each { |c| begin; c.call; rescue StandardError; end }
 
         # Warm reflection objects. Reflections are part of the model class
         # graph and get deep-frozen by make_app_shareable!. Their lazy caches
@@ -617,21 +625,19 @@ module RactorRailsShim
         begin
           if klass.respond_to?(:reflect_on_all_associations, true)
             klass.reflect_on_all_associations.each do |refl|
-              begin
-                refl.class_name rescue nil
-                refl.klass rescue nil
-                refl.inverse_name rescue nil
-                refl.inverse_of rescue nil
-                refl.active_record rescue nil
-                refl.plural_name rescue nil
-                refl.options rescue nil
-                refl.macro rescue nil
-                refl.scope rescue nil if refl.respond_to?(:scope)
-                refl.check_validity! rescue nil
-                refl.automatic_inverse_of rescue nil if refl.respond_to?(:automatic_inverse_of)
-              rescue StandardError
-                nil
-              end
+              refl.class_name rescue nil
+              refl.klass rescue nil
+              refl.inverse_name rescue nil
+              refl.inverse_of rescue nil
+              refl.active_record rescue nil
+              refl.plural_name rescue nil
+              refl.options rescue nil
+              refl.macro rescue nil
+              refl.scope rescue nil if refl.respond_to?(:scope)
+              refl.check_validity! rescue nil
+              refl.automatic_inverse_of rescue nil if refl.respond_to?(:automatic_inverse_of)
+            rescue StandardError
+              nil
             end
           end
         rescue StandardError
@@ -649,14 +655,13 @@ module RactorRailsShim
             next unless replacement
             begin
               klass.instance_variable_set(iv, replacement)
-            rescue StandardError => e
+            rescue StandardError
               # frozen owner — leave as-is
             end
           end
-        rescue StandardError => e
+        rescue StandardError
           # BasicObject / frozen owners
         end
-
       end
 
       # Freeze the baked association-scope table for worker readability: a
@@ -703,7 +708,7 @@ module RactorRailsShim
             (table[name] ||= []) << {
               name: refl.name.to_sym,
               type: dep.to_sym,
-              macro: refl.macro,
+              macro: refl.macro
             }
           end
         rescue StandardError => e
@@ -828,7 +833,7 @@ module RactorRailsShim
 
         # table_name_prefix — only the Engine definition (railties engine.rb).
         if sc.method_defined?(:table_name_prefix) || sc.private_method_defined?(:table_name_prefix)
-          src = (sc.instance_method(:table_name_prefix).source_location rescue nil)
+          src = sc.instance_method(:table_name_prefix).source_location rescue nil
           # Ruby 4 source_location returns an Array of locations.
           srcs = src.is_a?(Array) ? src : [src]
           if srcs.any? { |s| s.is_a?(String) && s.end_with?("lib/rails/engine.rb") }
@@ -845,7 +850,7 @@ module RactorRailsShim
 
         # railtie_namespace — same Proc problem, same source.
         if sc.method_defined?(:railtie_namespace)
-          src = (sc.instance_method(:railtie_namespace).source_location rescue nil)
+          src = sc.instance_method(:railtie_namespace).source_location rescue nil
           srcs = src.is_a?(Array) ? src : [src]
           if srcs.any? { |s| s.is_a?(String) && s.end_with?("lib/rails/engine.rb") }
             engine_class_name = engine_class.name
@@ -940,11 +945,9 @@ module RactorRailsShim
 
       # connection_class ivar defined (not just false-assigned) in main.
       classes.each do |klass|
-        begin
-          klass.connection_class
-        rescue StandardError
-          nil
-        end
+        klass.connection_class
+      rescue StandardError
+        nil
       end
 
       # Complete the per-owner type caches in main (N^2 over models — bounded,
@@ -953,14 +956,13 @@ module RactorRailsShim
       # protected call from this module context would raise NoMethodError).
       classes.each do |owner|
         classes.each do |referenced|
-          begin
-            owner.send(:compute_type, referenced.name) if owner.respond_to?(:compute_type, true)
-          rescue StandardError, NameError
-            nil
-          end
+          owner.send(:compute_type, referenced.name) if owner.respond_to?(:compute_type, true)
+        rescue StandardError, NameError
+          nil
         end
       end
     end
+
     #  - Monitor/Mutex  -> NoOpLock (never contended post-boot)
     #  - Concurrent::Map -> frozen Hash
     #  - else           -> Ractor.make_shareable; if that fails (statement
@@ -975,7 +977,7 @@ module RactorRailsShim
         h = {}
         begin
           v.each_pair { |k, val| h[k] = val }
-        rescue StandardError => e
+        rescue StandardError
         end
         Ractor.make_shareable(h)
       else
@@ -994,7 +996,7 @@ module RactorRailsShim
         end
         begin
           Ractor.make_shareable(v)
-        rescue StandardError => e
+        rescue StandardError
           # NEVER substitute an empty twin ({} / [] / Set.new) for a container
           # whose contents are unshareable. The twin would be WRITTEN BACK
           # onto the class, silently destroying memoized data (observed:
@@ -1037,10 +1039,10 @@ module RactorRailsShim
       ObjectSpace.each_object(Class) do |c|
         n = c.name
         next unless n && n.start_with?("ActiveRecord::Relation::") &&
-                    n.end_with?("Clause")
+          n.end_with?("Clause")
         begin
           c.empty if c.respond_to?(:empty)
-        rescue StandardError => e
+        rescue StandardError
         end
         _freeze_class_ivars!(c)
       end
@@ -1073,17 +1075,17 @@ module RactorRailsShim
       #    deep-frozen, shareable copy built in the main Ractor — the same
       #    pattern as _freeze_journey_visitors! for Journey's *::INSTANCE.
       if defined?(::ActiveRecord::Associations::AssociationScope) &&
-         ::ActiveRecord::Associations::AssociationScope.const_defined?(:INSTANCE)
+          ::ActiveRecord::Associations::AssociationScope.const_defined?(:INSTANCE)
         inst = ::ActiveRecord::Associations::AssociationScope::INSTANCE
-          unless Ractor.shareable?(inst)
-            _swallow("make AssociationScope::INSTANCE shareable") do
-              # Reassigning a constant that already exists warns ("already
-              # initialized constant"); drop the old binding first.
-              ::ActiveRecord::Associations::AssociationScope.send(:remove_const, :INSTANCE) if ::ActiveRecord::Associations::AssociationScope.const_defined?(:INSTANCE, false)
-              ::ActiveRecord::Associations::AssociationScope.const_set(
-                :INSTANCE, Ractor.make_shareable(inst)
-              )
-            end
+        unless Ractor.shareable?(inst)
+          _swallow("make AssociationScope::INSTANCE shareable") do
+            # Reassigning a constant that already exists warns ("already
+            # initialized constant"); drop the old binding first.
+            ::ActiveRecord::Associations::AssociationScope.send(:remove_const, :INSTANCE) if ::ActiveRecord::Associations::AssociationScope.const_defined?(:INSTANCE, false)
+            ::ActiveRecord::Associations::AssociationScope.const_set(
+              :INSTANCE, Ractor.make_shareable(inst)
+            )
+          end
         end
       end
     end
@@ -1117,9 +1119,8 @@ module RactorRailsShim
           if Ractor.main?
             _rrs_orig_default_value
           else
-            RactorRailsShim.storage[:rrs_am_type_default_value] ||= (
-              RactorRailsShim::SHAREABLE_AM_TYPE_DEFAULT
-            )
+            RactorRailsShim.storage[:rrs_am_type_default_value] ||= RactorRailsShim::SHAREABLE_AM_TYPE_DEFAULT
+
           end
         end
       end
@@ -1134,21 +1135,19 @@ module RactorRailsShim
     # worker Ractor. Monitor/Mutex->NoOpLock; Concurrent::Map->frozen Hash;
     # values that can't be frozen (Procs, TypeMap) are left as-is.
     def _freeze_class_ivars!(owner)
-      begin
-        owner.instance_variables.each do |iv|
-          v = owner.instance_variable_get(iv) rescue nil
-          next unless v
-          next if Ractor.shareable?(v)
-          replacement = _shareable_ivar_replacement(v)
-          next unless replacement
-          begin
-            owner.instance_variable_set(iv, replacement)
-          rescue StandardError => e
-            # frozen owner — leave as-is
-          end
+      owner.instance_variables.each do |iv|
+        v = owner.instance_variable_get(iv) rescue nil
+        next unless v
+        next if Ractor.shareable?(v)
+        replacement = _shareable_ivar_replacement(v)
+        next unless replacement
+        begin
+          owner.instance_variable_set(iv, replacement)
+        rescue StandardError
+          # frozen owner — leave as-is
         end
-      rescue StandardError => e
       end
+    rescue StandardError
     end
 
     # Register + run the model-class shareability patch (Blocker: AR model
@@ -1233,7 +1232,7 @@ module RactorRailsShim
             @columns_hash
           else
             store = (RactorRailsShim.storage[:rrs_columns_hash] ||= {})
-            cached = store[self.object_id]
+            cached = store[object_id]
             return cached if cached
 
             cols = connection_pool.schema_cache.columns_hash(table_name)
@@ -1247,7 +1246,7 @@ module RactorRailsShim
               end
             end
             cols = cols.freeze if cols
-            store[self.object_id] = cols if cols
+            store[object_id] = cols if cols
             cols
           end
         end
@@ -1263,15 +1262,15 @@ module RactorRailsShim
         end
 
         def table_name=(value)
-          value = value && value.to_s
+          value &&= value.to_s
           if Ractor.main?
             if defined?(@table_name)
               return if value == @table_name
               reset_column_information if connected?
             end
-            @table_name        = value
-            @arel_table        = nil
-            @sequence_name     = nil unless @explicit_sequence_name
+            @table_name = value
+            @arel_table = nil
+            @sequence_name = nil unless @explicit_sequence_name
             @predicate_builder = nil
           else
             (RactorRailsShim.storage[:rrs_table_names] ||= {})[object_id] = value
@@ -1396,12 +1395,14 @@ module RactorRailsShim
         def predicate_builder
           if Ractor.main?
             @predicate_builder ||= ::ActiveRecord::PredicateBuilder.new(
-              ::ActiveRecord::TableMetadata.new(self, arel_table))
+              ::ActiveRecord::TableMetadata.new(self, arel_table)
+            )
           else
             store = (RactorRailsShim.storage[:rrs_predicate_builders] ||= {})
             store.fetch(object_id) do
               store[object_id] = ::ActiveRecord::PredicateBuilder.new(
-                ::ActiveRecord::TableMetadata.new(self, arel_table))
+                ::ActiveRecord::TableMetadata.new(self, arel_table)
+              )
             end
           end
         end
@@ -1461,6 +1462,7 @@ module RactorRailsShim
         end
       end
     end
+
     # (an ActiveModel::Name holding unfrozen, unshareable Strings) on the model
     # class. From a worker Ractor that write raises Ractor::IsolationError ("can
     # not set instance variables of classes/modules by non-main Ractors") and
@@ -1756,7 +1758,7 @@ module RactorRailsShim
           if cfg
             _reassign_shareable_const(:AR_CONFIGURATIONS_SHAREABLE, cfg)
           end
-        rescue StandardError => e
+        rescue StandardError
           # best-effort
         end
       end
@@ -1814,7 +1816,7 @@ module RactorRailsShim
           handlers.each { |h| _swallow("make ar db config handler shareable") { Ractor.make_shareable(h) } }
           shareable = Ractor.make_shareable(handlers.dup)
           _reassign_shareable_const(:AR_DB_CONFIG_HANDLERS_SHAREABLE, shareable)
-        rescue StandardError => e
+        rescue StandardError
           # best-effort
         end
       end
@@ -1864,7 +1866,7 @@ module RactorRailsShim
           transformers.each { |t| _swallow("make ar query transformer shareable") { Ractor.make_shareable(t) } }
           shareable = Ractor.make_shareable(transformers.dup)
           _reassign_shareable_const(:AR_QUERY_TRANSFORMERS_SHAREABLE, shareable)
-        rescue StandardError => e
+        rescue StandardError
           # best-effort
         end
       end
@@ -1903,7 +1905,7 @@ module RactorRailsShim
       # [method_name, const_name] pairs. The const holds the shareable snapshot.
       attrs = [
         [:schema_cache_ignored_tables, :AR_SCHEMA_CACHE_IGNORED_TABLES_SHAREABLE],
-        [:database_cli, :AR_DATABASE_CLI_SHAREABLE],
+        [:database_cli, :AR_DATABASE_CLI_SHAREABLE]
       ]
 
       attrs.each do |method_name, const_name|
@@ -1912,7 +1914,7 @@ module RactorRailsShim
             val = ::ActiveRecord.public_send(method_name)
             shareable = Ractor.make_shareable(val.is_a?(::Array) ? val.dup : val)
             _reassign_shareable_const(const_name, shareable)
-          rescue StandardError => e
+          rescue StandardError
             # best-effort
           end
         end
@@ -2153,14 +2155,14 @@ module RactorRailsShim
       # [module_path, column_logic, table_logic] per adapter.
       adapters = [
         ["ActiveRecord::ConnectionAdapters::SQLite3::Quoting",
-         %q{%Q("#{name.to_s.gsub('"', '""')}").freeze},
-         %q{%Q("#{name.to_s.gsub('"', '""').gsub(".", "\".\"")}").freeze}],
+          %q{%Q("#{name.to_s.gsub('"', '""')}").freeze},
+          %q{%Q("#{name.to_s.gsub('"', '""').gsub(".", "\".\"")}").freeze}],
         ["ActiveRecord::ConnectionAdapters::MySQL::Quoting",
-         %q{"`#{name.to_s.gsub('`', '``')}`".freeze},
-         %q{"`#{name.to_s.gsub('`', '``').gsub(".", "`.`")}`".freeze}],
+          %q{"`#{name.to_s.gsub('`', '``')}`".freeze},
+          %q{"`#{name.to_s.gsub('`', '``').gsub(".", "`.`")}`".freeze}],
         ["ActiveRecord::ConnectionAdapters::PostgreSQL::Quoting",
-         %q{::PG::Connection.quote_ident(name.to_s).freeze},
-         %q{::ActiveRecord::ConnectionAdapters::PostgreSQL::Utils.extract_schema_qualified_name(name.to_s).quoted.freeze}],
+          "::PG::Connection.quote_ident(name.to_s).freeze",
+          "::ActiveRecord::ConnectionAdapters::PostgreSQL::Utils.extract_schema_qualified_name(name.to_s).quoted.freeze"]
       ]
 
       adapters.each do |mod_path, column_logic, table_logic|
@@ -2223,7 +2225,7 @@ module RactorRailsShim
             RactorRailsShim::Registry.class_attr_values[:__ractor_rails_shim_ar_default_connection_handler__] = orig_handler
             RactorRailsShim.storage[dch_key] = orig_handler
           end
-        rescue StandardError => e
+        rescue StandardError
           # Best-effort
         end
       end
@@ -2627,7 +2629,7 @@ module RactorRailsShim
             next
           end
         end
-        snap = { format: format, handlers: entries.freeze }.freeze
+        snap = {format: format, handlers: entries.freeze}.freeze
         Ractor.make_shareable(snap)
         RactorRailsShim.const_set(:QUERY_LOGS_SNAPSHOT, snap)
       rescue StandardError
@@ -2817,7 +2819,7 @@ module RactorRailsShim
                   #   scope :name, -> { ... }
                   #   scope(:name, -> { ... })
                   #   scope :name, ->(arg) { ... }
-                  if raw_line =~ /->\s*(?:\([^)]*\))?\s*\{/
+                  if /->\s*(?:\([^)]*\))?\s*\{/.match?(raw_line)
                     # Find the matching closing brace
                     full_source = raw_line
                     depth = 0
@@ -2869,10 +2871,10 @@ module RactorRailsShim
           # main-Ractor locals.
           if body_source
             param_names = if body.respond_to?(:parameters)
-                            body.parameters.map { |p| p[1] }.compact
-                          else
-                            []
-                          end
+              body.parameters.map { |p| p[1] }.compact
+            else
+              []
+            end
             cur = RactorRailsShim.const_defined?(:SCOPE_SOURCE_CODES) ? RactorRailsShim::SCOPE_SOURCE_CODES : {}
             cur = cur.dup
             cur[model_name_str] ||= {}
@@ -2983,17 +2985,17 @@ module RactorRailsShim
           owner = namespace.const_get(c) rescue next
           next unless owner.is_a?(::Class) || owner.is_a?(::Module)
           (owner.constants rescue []).each do |nested|
-          value = owner.const_get(nested) rescue next
-          next if Ractor.shareable?(value)
-          next unless value.is_a?(::Array) || value.is_a?(::Hash) ||
-                      value.is_a?(::String) || value.is_a?(::Set)
-          begin
-            Ractor.make_shareable(value)
-          rescue StandardError, Ractor::Error
-            nil
+            value = owner.const_get(nested) rescue next
+            next if Ractor.shareable?(value)
+            next unless value.is_a?(::Array) || value.is_a?(::Hash) ||
+              value.is_a?(::String) || value.is_a?(::Set)
+            begin
+              Ractor.make_shareable(value)
+            rescue StandardError, Ractor::Error
+              nil
+            end
           end
         end
-      end
       end
     end
 
@@ -3014,7 +3016,7 @@ module RactorRailsShim
       classes.each do |klass|
         next unless klass.name
         begin
-          refls = (klass.reflect_on_all_associations rescue nil)
+          refls = klass.reflect_on_all_associations rescue nil
           (refls || []).each do |refl|
             name = refl.name.to_s
             refl_lookup = "self.class.reflect_on_association(#{name.inspect})"
@@ -3089,7 +3091,7 @@ module RactorRailsShim
     # (its source_location points at autosave_association.rb). Ruby 4 returns
     # an Array there — normalize first.
     def _rrs_rails_autosave_source?(klass, method_name)
-      src = (klass.instance_method(method_name).source_location rescue nil)
+      src = klass.instance_method(method_name).source_location rescue nil
       srcs = src.is_a?(Array) ? src : [src].compact
       srcs.any? { |s| s.is_a?(String) && s.end_with?("autosave_association.rb") }
     end
@@ -3130,9 +3132,9 @@ module RactorRailsShim
       classes.each do |klass|
         next unless klass.name
         begin
-          enums = (klass.defined_enums rescue nil)
+          enums = klass.defined_enums rescue nil
           next unless enums.is_a?(::Hash) && !enums.empty?
-          enum_mod = (klass.send(:_enum_methods_module) rescue nil)
+          enum_mod = klass.send(:_enum_methods_module) rescue nil
           next unless enum_mod.is_a?(::Module)
 
           # Predicate + bang methods: enumerate the enum methods module and
@@ -3283,7 +3285,7 @@ module RactorRailsShim
                   begin
                     bnd = val.binding
                     bnd.local_variables.each do |lv|
-                      lval = (bnd.local_variable_get(lv) rescue next)
+                      lval = bnd.local_variable_get(lv) rescue next
                       next if lval.nil? || (Ractor.shareable?(lval) rescue true)
                       begin
                         Ractor.make_shareable(lval)
@@ -3306,7 +3308,7 @@ module RactorRailsShim
                     # into a shareable decorator callable that rebuilds the
                     # fresh type per apply.
                     replacement = nil
-                    loc = (val.source_location rescue nil)
+                    loc = val.source_location rescue nil
                     srcs = loc.is_a?(::Array) ? loc : [loc]
                     if srcs.any? { |s| s.is_a?(::String) && s.end_with?("enum.rb") } && defined?(::ActiveRecord::Enum::EnumType)
                       begin
@@ -3315,7 +3317,7 @@ module RactorRailsShim
                         enum_values = bnd.local_variable_get(:enum_values)
                         validate = bnd.local_variable_get(:validate)
                         replacement = RactorRailsShim.singleton_class.const_get(:EnumTypeDecorator)
-                                             .new(enum_name, enum_values, validate)
+                          .new(enum_name, enum_values, validate)
                         Ractor.make_shareable(replacement)
                       rescue StandardError, Ractor::Error
                         replacement = nil
@@ -3338,7 +3340,7 @@ module RactorRailsShim
                     # and the body round-trips as stored HTML, which is what
                     # the app's rich-text probes are built on — row 120).
                     if replacement.nil? && srcs.any? { |s| s.is_a?(::String) && s.end_with?("serialization.rb") } &&
-                       defined?(::ActiveRecord::Type::Serialized)
+                        defined?(::ActiveRecord::Type::Serialized)
                       begin
                         bnd = val.binding
                         column_serializer = bnd.local_variable_get(:column_serializer)
@@ -3346,7 +3348,7 @@ module RactorRailsShim
                         unless column_serializer.is_a?(::Class) || column_serializer.is_a?(::Module)
                           Ractor.make_shareable(column_serializer) rescue nil
                           replacement = RactorRailsShim.singleton_class.const_get(:SerializedTypeDecorator)
-                                               .new(column_serializer, comparable)
+                            .new(column_serializer, comparable)
                           Ractor.make_shareable(replacement)
                         end
                       rescue StandardError, Ractor::Error
@@ -3415,7 +3417,7 @@ module RactorRailsShim
       _register_patch :ar_association_scope_attrs, "8.1"
       return unless defined?(::ActiveRecord::Associations::Association)
 
-      ::ActiveRecord::Associations::Association.class_eval <<~'RUBY', __FILE__, __LINE__ + 1
+      ::ActiveRecord::Associations::Association.class_eval <<~RUBY, __FILE__, __LINE__ + 1
         def initialize_attributes(record, except_from_scope_attributes = nil) # :nodoc:
           except_from_scope_attributes ||= {}
           skip_assign = [reflection.foreign_key, reflection.type].compact

@@ -70,7 +70,7 @@ module RactorRailsShim
           end
         end
     end
-    alias inverse_updates_counter_cache? inverse_which_updates_counter_cache
+    alias_method :inverse_updates_counter_cache?, :inverse_which_updates_counter_cache
   end
 
   module ReflectionMacroPatch
@@ -113,7 +113,7 @@ module RactorRailsShim
     # (not on AbstractReflection) because the original inverse_name lives on
     # AssociationReflection and would shadow an AbstractReflection-level override.
     def inverse_name
-      rrs_refl_cache[[object_id, :inverse_name]] ||= (options.fetch(:inverse_of) { automatic_inverse_of })
+      rrs_refl_cache[[object_id, :inverse_name]] ||= options.fetch(:inverse_of) { automatic_inverse_of }
     end
 
     def join_table
@@ -170,19 +170,18 @@ module RactorRailsShim
     end
 
     def association_primary_key(klass = nil)
-      if primary_key = options[:primary_key]
-        rrs_refl_cache[[object_id, :association_primary_key, klass]] ||=
-          if primary_key.is_a?(Array)
-            primary_key.map { |pk| pk.to_s.freeze }.freeze
-          else
-            -primary_key.to_s
-          end
+      rrs_refl_cache[[object_id, :association_primary_key, klass]] ||= if primary_key = options[:primary_key]
+        if primary_key.is_a?(Array)
+          primary_key.map { |pk| pk.to_s.freeze }.freeze
+        else
+          -primary_key.to_s
+        end
       elsif (klass || self.klass).has_query_constraints? || options[:query_constraints]
-        rrs_refl_cache[[object_id, :association_primary_key, klass]] ||= -Array(active_record.query_constraints_list).first.to_s
+        -Array(active_record.query_constraints_list).first.to_s
       elsif active_record.composite_primary_key?
-        rrs_refl_cache[[object_id, :association_primary_key, klass]] ||= primary_key(klass || self.klass)
+        primary_key(klass || self.klass)
       else
-        rrs_refl_cache[[object_id, :association_primary_key, klass]] ||= primary_key(klass || self.klass).to_s
+        primary_key(klass || self.klass).to_s
       end
     end
   end
@@ -195,10 +194,10 @@ module RactorRailsShim
     end
 
     def association_primary_key(klass = nil)
-      if primary_key = actual_source_reflection.options[:primary_key]
-        rrs_refl_cache[[object_id, :association_primary_key, klass]] ||= -primary_key.to_s
+      rrs_refl_cache[[object_id, :association_primary_key, klass]] ||= if primary_key = actual_source_reflection.options[:primary_key]
+        -primary_key.to_s
       else
-        rrs_refl_cache[[object_id, :association_primary_key, klass]] ||= primary_key(klass || self.klass)
+        primary_key(klass || self.klass)
       end
     end
 

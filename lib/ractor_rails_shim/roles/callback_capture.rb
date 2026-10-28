@@ -106,7 +106,7 @@ module RactorRailsShim
     # natively shareable. A non-frozen constant raises
     # Ractor::IsolationError when a worker reads it.
     def self.freeze_declared_callbacks!
-      table = (@declared_callbacks || {})
+      table = @declared_callbacks || {}
       funnel.call("freeze declared callbacks") do
         Ractor.make_shareable(table)
         reassign_shareable_const.call(:SHAREABLE_DECLARED_CALLBACKS, table)
@@ -258,10 +258,12 @@ module RactorRailsShim
       Ractor.make_shareable(descriptor)
       descriptor
     rescue StandardError, Ractor::IsolationError
-      funnel.call("unshareable validator #{validator.class.name}") do
-        warn "[ractor_rails_shim] validator #{validator.class.name} has unshareable options — " \
-             "its callback will not replay in worker Ractors"
-      end if RactorRailsShim.debug?
+      if RactorRailsShim.debug?
+        funnel.call("unshareable validator #{validator.class.name}") do
+          warn "[ractor_rails_shim] validator #{validator.class.name} has unshareable options — " \
+               "its callback will not replay in worker Ractors"
+        end
+      end
       nil
     end
 
@@ -269,10 +271,12 @@ module RactorRailsShim
     # NOT recorded (unresolvable Proc if:/unless:, unshareable validator
     # options). Silent unless debug — the shim's skip-and-continue philosophy.
     def self.log_unresolvable_callback(klass, chain_kind, filter)
-      funnel.call("unresolvable callback #{klass.name}##{chain_kind}:#{filter.class}") do
-        warn "[ractor_rails_shim] callback #{klass.name} #{chain_kind} filter #{filter.class} has " \
-             "unresolvable conditions/options — it will not replay in worker Ractors"
-      end if RactorRailsShim.debug?
+      if RactorRailsShim.debug?
+        funnel.call("unresolvable callback #{klass.name}##{chain_kind}:#{filter.class}") do
+          warn "[ractor_rails_shim] callback #{klass.name} #{chain_kind} filter #{filter.class} has " \
+               "unresolvable conditions/options — it will not replay in worker Ractors"
+        end
+      end
       nil
     end
 

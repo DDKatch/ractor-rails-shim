@@ -16,7 +16,6 @@
 # Run: ruby -Ilib -Ispec spec/make_shareable_spec.rb
 
 require "minitest/autorun"
-require "set"
 require "active_support/isolated_execution_state"
 require "concurrent" # for Concurrent::Map, used by Rails caches the rewriter targets
 require_relative "../lib/ractor_rails_shim/roles/fallback_ies"
@@ -30,9 +29,9 @@ class MakeShareableSpec < Minitest::Spec
   # The replacement classes are defined via `module_eval` on the shim's
   # singleton class (so specs access them via RactorRailsShim.singleton_class),
   # per the comment at make_shareable.rb:340-343.
-  NoOpLock    = RactorRailsShim.singleton_class.const_get(:NoOpLock)
-  NoOpProc    = RactorRailsShim.singleton_class.const_get(:NoOpProc)
-  Callable    = RactorRailsShim.singleton_class.const_get(:Callable)
+  NoOpLock = RactorRailsShim.singleton_class.const_get(:NoOpLock)
+  NoOpProc = RactorRailsShim.singleton_class.const_get(:NoOpProc)
+  Callable = RactorRailsShim.singleton_class.const_get(:Callable)
   CallableConst = RactorRailsShim.singleton_class.const_get(:CallableConst)
 
   # --- primitive shareability ---
@@ -67,7 +66,9 @@ class MakeShareableSpec < Minitest::Spec
 
   it "Callable routes .call to target.__send__(method_name, *args)" do
     target = Object.new
-    def target.greet(name); "hi #{name}"; end
+    def target.greet(name)
+      "hi #{name}"
+    end
     c = Callable.new(target, :greet)
     assert_equal "hi world", c.call("world")
   end
@@ -107,7 +108,7 @@ class MakeShareableSpec < Minitest::Spec
       @cache = Concurrent::Map.new
       @cache[:foo] = "bar"
       @children = [ChildWithLock.new, ChildWithLock.new]
-      @lookup = { nested: ChildWithLock.new }
+      @lookup = {nested: ChildWithLock.new}
     end
     attr_reader :lock, :monitor, :cache, :children, :lookup
   end
@@ -162,7 +163,7 @@ class MakeShareableSpec < Minitest::Spec
       [
         a.lock.synchronize { :from_worker },
         a.cache[:foo],
-        a.children.first.inner_lock.locked?,
+        a.children.first.inner_lock.locked?
       ]
     end
     assert_equal [:from_worker, "bar", false], r.value
@@ -207,7 +208,9 @@ class MakeShareableSpec < Minitest::Spec
     # A Set containing a holder that references a Proc. Pre-fix, the Proc
     # was not reached because Set wasn't traversed.
     proc_holder = Class.new do
-      def initialize; @p = ->(*) { :set_proc }; end
+      def initialize
+        @p = ->(*) { :set_proc }
+      end
       attr_reader :p
     end.new
     set_holder = Set.new([proc_holder])
@@ -227,7 +230,7 @@ class MakeShareableSpec < Minitest::Spec
       shared = ->(*) { :shared }
       @a = shared
       @b = [@a, @a] # same Proc twice in one Array
-      @c = { nested: @a, other: @a } # same Proc twice in one Hash
+      @c = {nested: @a, other: @a} # same Proc twice in one Hash
     end
   end
 

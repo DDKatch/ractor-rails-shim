@@ -17,7 +17,7 @@ module RactorRailsShim
       "Rails::AppLoader::EXECUTABLES",
       "Rails::Command::HELP_MAPPINGS",
       "Rails::Command::VERSION_MAPPINGS",
-      "Rails::Application::INITIAL_VARIABLES",
+      "Rails::Application::INITIAL_VARIABLES"
     ])
 
     # Patch the Rails module's class-level accessors (Rails.application,
@@ -74,10 +74,10 @@ module RactorRailsShim
       # worker Ractors (e.g. Rails.logger is read per-request by
       # Rails::Rack::SilenceRequest). `application` is NOT registered — workers
       # get the shared app via Ractor.new(app), not via Rails.application.
-      CLASS_ATTRIBUTES << ["Rails", :logger,        k[:logger],        nil]
-      CLASS_ATTRIBUTES << ["Rails", :cache,         k[:cache],         nil]
+      CLASS_ATTRIBUTES << ["Rails", :logger, k[:logger], nil]
+      CLASS_ATTRIBUTES << ["Rails", :cache, k[:cache], nil]
       CLASS_ATTRIBUTES << ["Rails", :backtrace_cleaner, k[:backtrace_cleaner], nil]
-      CLASS_ATTRIBUTES << ["Rails", :app_class,     k[:app_class],     nil]
+      CLASS_ATTRIBUTES << ["Rails", :app_class, k[:app_class], nil]
 
       # We PREPEND a module onto Rails.singleton_class rather than redefine
       # the methods directly, because Rails defines its own `application`,

@@ -36,8 +36,8 @@ class CacheOptionAliasesShareableSpec < Minitest::Spec
 
   it "registers OPTION_ALIASES in SHAREABLE_CONSTANTS" do
     assert_includes RactorRailsShim::SHAREABLE_CONSTANTS,
-                    "ActiveSupport::Cache::OPTION_ALIASES",
-                    "OPTION_ALIASES must stay registered — dropping it re-breaks cache access from worker Ractors"
+      "ActiveSupport::Cache::OPTION_ALIASES",
+      "OPTION_ALIASES must stay registered — dropping it re-breaks cache access from worker Ractors"
   end
 
   it "deep-freezes the alias map into a Ractor-shareable twin" do
@@ -50,10 +50,10 @@ class CacheOptionAliasesShareableSpec < Minitest::Spec
       # Shallow-freeze is not enough: every VALUE (Array) must be frozen too.
       ActiveSupport::Cache::OPTION_ALIASES.each_value do |aliases|
         assert aliases.frozen?,
-               "OPTION_ALIASES values must be frozen — a frozen Hash with unfrozen Array values is still unshareable"
+          "OPTION_ALIASES values must be frozen — a frozen Hash with unfrozen Array values is still unshareable"
       end
       assert Ractor.shareable?(ActiveSupport::Cache::OPTION_ALIASES),
-             "OPTION_ALIASES must be fully Ractor-shareable"
+        "OPTION_ALIASES must be fully Ractor-shareable"
     ensure
       ActiveSupport::Cache.send(:remove_const, :OPTION_ALIASES)
       ActiveSupport::Cache.const_set(:OPTION_ALIASES, original)
@@ -61,9 +61,9 @@ class CacheOptionAliasesShareableSpec < Minitest::Spec
   end
 
   it "registers the Cache::Coder constants" do
-    ([ "ActiveSupport::Cache::OPTION_ALIASES" ] + CODER_PATHS).each do |path|
+    (["ActiveSupport::Cache::OPTION_ALIASES"] + CODER_PATHS).each do |path|
       assert_includes RactorRailsShim::SHAREABLE_CONSTANTS, path,
-                      "#{path} must stay registered — dropping it re-breaks cache access from worker Ractors"
+        "#{path} must stay registered — dropping it re-breaks cache access from worker Ractors"
     end
   end
 
@@ -75,10 +75,10 @@ class CacheOptionAliasesShareableSpec < Minitest::Spec
       ActiveSupport::Cache::Coder::STRING_DESERIALIZERS
       ActiveSupport::Cache::Coder::STRING_ENCODINGS
     ]
-    ([ "ActiveSupport::Cache::OPTION_ALIASES" ] + coder_paths).each do |path|
+    (["ActiveSupport::Cache::OPTION_ALIASES"] + coder_paths).each do |path|
       RactorRailsShim.make_constant_shareable!(path)
       assert Ractor.shareable?(const_value(path)),
-             "#{path} must be fully Ractor-shareable after make_constant_shareable!"
+        "#{path} must be fully Ractor-shareable after make_constant_shareable!"
     end
   end
 
@@ -88,6 +88,6 @@ class CacheOptionAliasesShareableSpec < Minitest::Spec
     result = Ractor.new do
       ActiveSupport::Cache::OPTION_ALIASES[:expires_in]
     end
-    assert_equal [ :expire_in, :expired_in ], result.value
+    assert_equal [:expire_in, :expired_in], result.value
   end
 end

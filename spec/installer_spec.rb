@@ -58,7 +58,7 @@ class InstallerSpec < Minitest::Spec
     RactorRailsShim::Installer.dispatch_all_framework_patches
 
     assert_includes called, :test_installer_dispatch,
-                    "dispatcher should auto-discover _install_test_installer_dispatch_patch"
+      "dispatcher should auto-discover _install_test_installer_dispatch_patch"
   ensure
     RactorRailsShim.singleton_class.remove_method(:_install_test_installer_dispatch_patch) rescue nil
   end

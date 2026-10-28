@@ -88,7 +88,7 @@ module RactorRailsShim
           # boot-time callbacks as already-run, which is correct for a frozen
           # shared app).
           owner_label = owner.respond_to?(:name) ? owner.name : owner.class.name
-          owner_label = owner_label || "anon_#{owner.class.name}_#{owner.object_id}"
+          owner_label ||= "anon_#{owner.class.name}_#{owner.object_id}"
           RactorRailsShim::Registry.class_attributes << [owner_label, namespaced_name, key, value]
 
           # Always define the namespaced reader/writer on owner's singleton
@@ -114,14 +114,14 @@ module RactorRailsShim
           # RunMode.thread?) decides the lookup/store backend. Collapses the
           # former two-mode `if thread_mode?` branch (Issue #15).
           target.module_eval RactorRailsShim._class_attr_methods(namespaced_name, namespaced_name, missing_default),
-                              __FILE__, __LINE__ + 1
+            __FILE__, __LINE__ + 1
 
           # When owner is a module's singleton class, the original also
           # defines a public reader `def #{name}` on owner directly. Override
           # it with the strategy-routed version.
           if owner.singleton_class? && owner.attached_object.is_a?(Module)
             owner.module_eval RactorRailsShim._class_attr_methods(name, namespaced_name, missing_default),
-                                __FILE__, __LINE__ + 1
+              __FILE__, __LINE__ + 1
           end
 
           # When owner IS a singleton class (e.g. called from class << self),
@@ -133,7 +133,7 @@ module RactorRailsShim
           # too so the nested `def #{name}` can resolve it.
           if owner.singleton_class?
             owner.singleton_class.module_eval RactorRailsShim._class_attr_methods(namespaced_name, namespaced_name, missing_default),
-                                               __FILE__, __LINE__ + 1
+              __FILE__, __LINE__ + 1
           end
         end
 

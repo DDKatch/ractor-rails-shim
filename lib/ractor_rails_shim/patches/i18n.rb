@@ -277,7 +277,7 @@ module RactorRailsShim
           backend.available_locales rescue nil
           const_set(:I18N_BACKEND_CLASS, backend.class) unless RactorRailsShim.const_defined?(:I18N_BACKEND_CLASS)
           raw_lp = (backend.respond_to?(:instance_variable_get) && backend.instance_variable_get(:@load_path)) ||
-                    (::I18n.respond_to?(:load_path) && ::I18n.load_path) || []
+            (::I18n.respond_to?(:load_path) && ::I18n.load_path) || []
           shareable_lp = Ractor.make_shareable(Array(raw_lp).dup) rescue Array(raw_lp).map(&:to_s).freeze
           const_set(:I18N_LOAD_PATH, shareable_lp) unless RactorRailsShim.const_defined?(:I18N_LOAD_PATH)
         rescue StandardError

@@ -79,7 +79,7 @@ class ApplyShareableConstantsRetrySpec < Minitest::Spec
 
     RactorRailsShim::ConstantShareabilizer.apply!
     refute RactorRailsShim::ConstantShareabilizer.applied? &&
-          RactorRailsShim::ConstantShareabilizer.applied?
+      RactorRailsShim::ConstantShareabilizer.applied?
 
     # Now define the constant and call again → it should be made shareable
     # and the flag set.

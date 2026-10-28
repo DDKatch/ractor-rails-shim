@@ -58,9 +58,9 @@ class MattrSplitSpec < Minitest::Spec
     unshareable = []
     RactorRailsShim._seed_mattr_default(key, unshareable)
     assert_nil RactorRailsShim::SHAREABLE_MATTR_DEFAULTS[key],
-               "unshareable default must not enter the shareable subset"
+      "unshareable default must not enter the shareable subset"
     assert_equal unshareable, RactorRailsShim::MATTR_DEFAULTS[key],
-                 "unshareable default still goes into the full registry"
+      "unshareable default still goes into the full registry"
   ensure
     RactorRailsShim::MATTR_DEFAULTS.delete(key) if key
     Object.send(:remove_const, mod.name.to_sym) if mod

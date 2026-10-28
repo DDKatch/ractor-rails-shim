@@ -10,9 +10,9 @@ module RactorRailsShim
     "ActionDispatch::SSL::PERMANENT_REDIRECT_REQUEST_METHODS",
     "ActionDispatch::HostAuthorization::VALID_IP_HOSTNAME",
     "ActionDispatch::HostAuthorization::ALLOWED_HOSTS_IN_DEVELOPMENT",
-      "ActionDispatch::Request::HTTP_METHODS",
-      "ActionDispatch::Request::HTTP_METHOD_LOOKUP",
-      "ActionDispatch::Request::LOCALHOST",
+    "ActionDispatch::Request::HTTP_METHODS",
+    "ActionDispatch::Request::HTTP_METHOD_LOOKUP",
+    "ActionDispatch::Request::LOCALHOST",
     "ActionDispatch::DebugView::RESCUES_TEMPLATE_PATHS",
     "Mime::SET",
     "Mime::EXTENSION_LOOKUP",
@@ -21,28 +21,28 @@ module RactorRailsShim
     "Mime::Type::PARAMETER_SEPARATOR_REGEXP",
     "Mime::Type::ACCEPT_HEADER_REGEXP",
     "Mime::ALL",
-      "ActionDispatch::Response::NullContentTypeHeader",
-      "ActionDispatch::Response::NO_CONTENT_CODES",
-      "ActionDispatch::Response::RackBody::BODY_METHODS",
-        "ActionDispatch::Response::Buffer::BODY_METHODS",
-        "ActionView::Helpers::ControllerHelper::CONTROLLER_DELEGATES",
-      # Read per-request by the cache-control parser (cache_control_segments);
-      # a worker response that carries Cache-Control headers (the blob proxy
-      # route sets expires_in) reads it. An unfrozen Set is unshareable.
-      "ActionDispatch::Http::Cache::Response::SPECIAL_KEYS",
-      # Read by ActiveSupport::TimeZone.find_tzinfo on every zone creation —
-      # worker-side `Time.zone` / `use_zone` resolve zones through the
-      # patched TimeZone.[] (per-Ractor IES cache) whose `create` lands
-      # here. An unfrozen Hash is unshareable.
-      "ActiveSupport::TimeZone::MAPPING",
-      ])
+    "ActionDispatch::Response::NullContentTypeHeader",
+    "ActionDispatch::Response::NO_CONTENT_CODES",
+    "ActionDispatch::Response::RackBody::BODY_METHODS",
+    "ActionDispatch::Response::Buffer::BODY_METHODS",
+    "ActionView::Helpers::ControllerHelper::CONTROLLER_DELEGATES",
+    # Read per-request by the cache-control parser (cache_control_segments);
+    # a worker response that carries Cache-Control headers (the blob proxy
+    # route sets expires_in) reads it. An unfrozen Set is unshareable.
+    "ActionDispatch::Http::Cache::Response::SPECIAL_KEYS",
+    # Read by ActiveSupport::TimeZone.find_tzinfo on every zone creation —
+    # worker-side `Time.zone` / `use_zone` resolve zones through the
+    # patched TimeZone.[] (per-Ractor IES cache) whose `create` lands
+    # here. An unfrozen Hash is unshareable.
+    "ActiveSupport::TimeZone::MAPPING"
+  ])
 
   # Source-location constants used by make_app_shareable!'s proc-replacement
   # graph traversal (moved here from make_shareable.rb so each concern's pieces
   # live together).
-  SSL_LOC = "/active_dispatch/middleware/ssl.rb".freeze
-  COOKIE_LOC = "/session/cookie_store.rb".freeze
-  MAPPER_LOC = "/action_dispatch/routing/mapper.rb".freeze
+  SSL_LOC = "/active_dispatch/middleware/ssl.rb"
+  COOKIE_LOC = "/session/cookie_store.rb"
+  MAPPER_LOC = "/action_dispatch/routing/mapper.rb"
 
   class << self
     # Shareable callable replacements for ActionDispatch/ActionController
@@ -275,12 +275,10 @@ module RactorRailsShim
       if defined?(::ActionDispatch::Journey::Router::Utils)
         utu = ::ActionDispatch::Journey::Router::Utils
         utu.constants.each do |c|
-          begin
-            v = utu.const_get(c)
-            Ractor.make_shareable(v) if v && !Ractor.shareable?(v)
-          rescue StandardError
-            nil
-          end
+          v = utu.const_get(c)
+          Ractor.make_shareable(v) if v && !Ractor.shareable?(v)
+        rescue StandardError
+          nil
         end
       end
       # `RouteSet::RESERVED_OPTIONS` (route_set.rb:838) is a mutable Array used
@@ -481,7 +479,8 @@ module RactorRailsShim
             # which calls `optimize_helper?` -> `route.glob?` -> `route.path.ast.glob?`
             # and `route.path.ast` is nil by the time routes are finalized post-boot).
             helper = ::ActionDispatch::Routing::RouteSet::NamedRouteCollection::UrlHelper.new(
-              route, route.defaults, route_name)
+              route, route.defaults, route_name
+            )
             named.define_url_helper(path_mod, :"#{route_name}_path", helper, ::ActionDispatch::Routing::RouteSet::PATH) if path_mod
             named.define_url_helper(url_mod, :"#{route_name}_url", helper, ::ActionDispatch::Routing::RouteSet::UNKNOWN) if url_mod
           end
@@ -650,7 +649,7 @@ module RactorRailsShim
 
           def requirements_for_missing_keys_check
             return @requirements_for_missing_keys_check if defined?(@requirements_for_missing_keys_check) && @requirements_for_missing_keys_check
-            built = requirements.transform_values { |regex| /\A#\{regex\}\Z/ }
+            built = requirements.transform_values { |regex| /\A#\{regex}\Z/ }
             frozen? ? built : (@requirements_for_missing_keys_check ||= built)
           end
 
@@ -661,7 +660,7 @@ module RactorRailsShim
               spec.find_all(&:symbol?).each do |node|
                 node = node.to_sym
                 if @requirements.key?(node)
-                  re = /#\{Regexp.union(@requirements[node])\}|/
+                  re = /#\{Regexp.union(@requirements[node])}|/
                   offs.push((re.match("").length - 1) + offs.last)
                 else
                   offs << offs.last
@@ -709,7 +708,7 @@ module RactorRailsShim
       # Ractor::IsolationError. It is a stateless dummy node, so this is
       # behavior-preserving.
       if defined?(::ActionDispatch::Journey::GTG::Builder) &&
-         ::ActionDispatch::Journey::GTG::Builder.const_defined?(:DUMMY_END_NODE)
+          ::ActionDispatch::Journey::GTG::Builder.const_defined?(:DUMMY_END_NODE)
         node = ::ActionDispatch::Journey::GTG::Builder.const_get(:DUMMY_END_NODE)
         _swallow("make journey dummy end node shareable") { Ractor.make_shareable(node) }
       end
@@ -772,7 +771,7 @@ module RactorRailsShim
           routes.simulator
           _warm_path_patterns!(routes)
         end
-      rescue StandardError => e
+      rescue StandardError
         # best-effort
       end
     end
@@ -825,7 +824,7 @@ module RactorRailsShim
           end
           ::Ractor.make_shareable(shareable) rescue nil
           _reassign_shareable_const(:SHAREABLE_MIME_TYPES, shareable)
-        rescue StandardError => e
+        rescue StandardError
           # best-effort
         end
       end

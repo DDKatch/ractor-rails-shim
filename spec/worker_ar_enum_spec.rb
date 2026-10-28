@@ -108,17 +108,17 @@ class WorkerArEnumSpec < Minitest::Spec
     env_tmpl = Ractor.make_shareable({
       "REQUEST_METHOD" => "GET", "PATH_INFO" => "/up", "SCRIPT_NAME" => "",
       "QUERY_STRING" => "", "SERVER_NAME" => "localhost", "SERVER_PORT" => "9293",
-      "HTTP_HOST" => "localhost", "rack.url_scheme" => "http",
+      "HTTP_HOST" => "localhost", "rack.url_scheme" => "http"
     })
 
     r = Ractor.new(worker, env_tmpl) do |wa, e|
       rack_env = e.to_h.merge(
         "rack.input" => StringIO.new(""),
         "rack.errors" => StringIO.new(""),
-        "rack.version" => [3, 0],
+        "rack.version" => [3, 0]
       )
       up_status, _, _ = wa.call(rack_env)
-      results = { up_status: up_status }
+      results = {up_status: up_status}
 
       # EnumType registration (worker attribute rebuild replays the shared
       # pending mods — the EnumTypeDecorator builds a fresh EnumType here)
@@ -151,12 +151,10 @@ class WorkerArEnumSpec < Minitest::Spec
       WorkerArEnumSpec.probe(results, :scope_negative) { Post.not_moderated.to_a.size }
       # invalid value must raise like main (EnumType#assert_valid_value)
       WorkerArEnumSpec.probe(results, :invalid_raises) do
-        begin
-          Post.new.state = :bogus
-          "no_raise"
-        rescue ArgumentError
-          "RAISE: ArgumentError"
-        end
+        Post.new.state = :bogus
+        "no_raise"
+      rescue ArgumentError
+        "RAISE: ArgumentError"
       end
 
       [up_status, results]
@@ -175,20 +173,20 @@ class WorkerArEnumSpec < Minitest::Spec
     refute results.key?(:invalid_raises_err), "invalid assign failed: #{results[:invalid_raises_err]}"
 
     assert_equal "ActiveRecord::Enum::EnumType", results[:type],
-                 "worker must rebuild the EnumType attribute registration"
+      "worker must rebuild the EnumType attribute registration"
     assert_equal "draft", results[:new_state],
-                 "worker state reader must cast the column default through EnumType"
+      "worker state reader must cast the column default through EnumType"
     assert_equal "moderated", results[:assign_label],
-                 "worker `state = :moderated` must cast through EnumType (was nil before the fix)"
+      "worker `state = :moderated` must cast through EnumType (was nil before the fix)"
     assert_equal "moderated", results[:bang],
-                 "worker `moderated!` must persist the enum label"
+      "worker `moderated!` must persist the enum label"
     assert_equal [true, false], results[:pred_after_bang],
-                 "worker predicates must compare through state_for_database"
+      "worker predicates must compare through state_for_database"
     assert_equal 1, results[:states],
-                 "worker `Post.states` must return the frozen labels/values hash"
+      "worker `Post.states` must return the frozen labels/values hash"
     assert_kind_of Integer, results[:scope_positive]
     assert_kind_of Integer, results[:scope_negative]
     assert_equal "RAISE: ArgumentError", results[:invalid_raises],
-                 "worker invalid enum assignment must raise ArgumentError like main"
+      "worker invalid enum assignment must raise ArgumentError like main"
   end
 end

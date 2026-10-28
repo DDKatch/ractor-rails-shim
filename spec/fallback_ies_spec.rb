@@ -24,14 +24,14 @@ class FallbackIESSpec < Minitest::Spec
 
   def run_subprocess_assertions(script)
     out, err, status = Open3.capture3(
-      { "RUBYOPT" => "-I#{SHIM_LIB}" },
+      {"RUBYOPT" => "-I#{SHIM_LIB}"},
       "ruby", "-e", script
     )
     [out, err, status]
   end
 
   it "FallbackIES is an alias for Storage::ThreadLocal" do
-    script = <<~'RUBY'
+    script = <<~RUBY
       require "ractor_rails_shim/roles/fallback_ies"
       puts RactorRailsShim::FallbackIES.equal?(RactorRailsShim::Storage::ThreadLocal)
     RUBY
@@ -41,7 +41,7 @@ class FallbackIESSpec < Minitest::Spec
   end
 
   it "round-trips a value and supports key?/delete/clear" do
-    script = <<~'RUBY'
+    script = <<~RUBY
       require "ractor_rails_shim/roles/fallback_ies"
       IES = RactorRailsShim::FallbackIES
       IES[:foo] = "bar"
@@ -65,7 +65,7 @@ class FallbackIESSpec < Minitest::Spec
   end
 
   it "isolates state per thread" do
-    script = <<~'RUBY'
+    script = <<~RUBY
       require "ractor_rails_shim/roles/fallback_ies"
       IES = RactorRailsShim::FallbackIES
       IES[:shared] = "main"
@@ -85,7 +85,7 @@ class FallbackIESSpec < Minitest::Spec
   it "when AS is absent, ActiveSupport::IsolatedExecutionState is NOT defined" do
     # The shim no longer opens the ActiveSupport namespace to alias the
     # fallback. Confirm AS::IES stays undefined when only the shim is loaded.
-    script = <<~'RUBY'
+    script = <<~RUBY
       require "ractor_rails_shim/roles/fallback_ies"
       puts defined?(ActiveSupport::IsolatedExecutionState).inspect
       puts defined?(ActiveSupport).inspect
@@ -102,7 +102,7 @@ class FallbackIESSpec < Minitest::Spec
   it "the real AS::IsolatedExecutionState is used when AS IS available" do
     # Sanity check: when AS is loaded, Storage::IES delegates to the real one,
     # and RactorRailsShim.storage is Storage::IES (not the fallback).
-    script = <<~'RUBY'
+    script = <<~RUBY
       require "active_support/isolated_execution_state"
       require "ractor_rails_shim/roles/fallback_ies"
       puts RactorRailsShim.storage.equal?(RactorRailsShim::Storage::IES)

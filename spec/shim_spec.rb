@@ -28,9 +28,7 @@ module FakeRails
       @application ||= "default-app-from-#{Ractor.current}"
     end
 
-    def application=(val)
-      @application = val
-    end
+    attr_writer :application
   end
 
   # Set some values in main Ractor (simulates boot)
@@ -80,15 +78,13 @@ class ShimSpec < Minitest::Spec
   # get deep-copied when sent to a ractor, so the ivar read wouldn't raise.
   it "class ivar read from a worker Ractor raises IsolationError (no shim)" do
     port = Ractor::Port.new
-    r = Ractor.new(port) do |p|
-      begin
-        UnpatchedFakeRails.cache # reads @cache on the shared constant
-        p.send(:no_error)
-      rescue Ractor::IsolationError => e
-        p.send(:isolation_error)
-      rescue => e
-        p.send(:"other_#{e.class}: #{e.message[0,50]}")
-      end
+    Ractor.new(port) do |p|
+      UnpatchedFakeRails.cache # reads @cache on the shared constant
+      p.send(:no_error)
+    rescue Ractor::IsolationError
+      p.send(:isolation_error)
+    rescue => e
+      p.send(:"other_#{e.class}: #{e.message[0, 50]}")
     end
     result = port.receive
     assert_equal :isolation_error, result, "got #{result.inspect}"
@@ -115,15 +111,13 @@ class ShimSpec < Minitest::Spec
     RUBY
 
     port = Ractor::Port.new
-    r = Ractor.new(port) do |p|
-      begin
-        v = FakeRails.cache # now reads from IES, no IsolationError
-        FakeRails.cache = "worker-cache"
-        v2 = FakeRails.cache
-        p.send({ read: v, after_set: v2 })
-      rescue => e
-        p.send("err: #{e.class}: #{e.message[0,80]}")
-      end
+    Ractor.new(port) do |p|
+      v = FakeRails.cache # now reads from IES, no IsolationError
+      FakeRails.cache = "worker-cache"
+      v2 = FakeRails.cache
+      p.send({read: v, after_set: v2})
+    rescue => e
+      p.send("err: #{e.class}: #{e.message[0, 80]}")
     end
 
     result = port.receive
@@ -139,11 +133,11 @@ class ShimSpec < Minitest::Spec
     Thread.current[:active_support_execution_state] = nil
 
     port = Ractor::Port.new
-    r = Ractor.new(port) do |p|
+    Ractor.new(port) do |p|
       v = ActiveSupport::IsolatedExecutionState[:ractor_shim_test]
       ActiveSupport::IsolatedExecutionState[:ractor_shim_test] = "from-worker"
       v2 = ActiveSupport::IsolatedExecutionState[:ractor_shim_test]
-      p.send({ initial: v, after_set: v2 })
+      p.send({initial: v, after_set: v2})
     end
 
     result = port.receive
@@ -156,17 +150,15 @@ class ShimSpec < Minitest::Spec
     # FakeActiveRecord.connection_handler was defined with mattr_accessor,
     # which the shim rewrote. Worker should be able to read/set it.
     port = Ractor::Port.new
-    r = Ractor.new(port) do |p|
-      begin
-        v = FakeActiveRecord.connection_handler
-        FakeActiveRecord.connection_handler = "worker-handler"
-        v2 = FakeActiveRecord.connection_handler
-        p.send({ read: v, after_set: v2 })
-      rescue Ractor::IsolationError => e
-        p.send("isolation_err: #{e.message[0,80]}")
-      rescue => e
-        p.send("err: #{e.class}: #{e.message[0,80]}")
-      end
+    Ractor.new(port) do |p|
+      v = FakeActiveRecord.connection_handler
+      FakeActiveRecord.connection_handler = "worker-handler"
+      v2 = FakeActiveRecord.connection_handler
+      p.send({read: v, after_set: v2})
+    rescue Ractor::IsolationError => e
+      p.send("isolation_err: #{e.message[0, 80]}")
+    rescue => e
+      p.send("err: #{e.class}: #{e.message[0, 80]}")
     end
 
     result = port.receive
@@ -181,7 +173,7 @@ class ShimSpec < Minitest::Spec
     ActiveSupport::IsolatedExecutionState[:ractor_shim_main_test] = "main-value"
 
     port = Ractor::Port.new
-    r = Ractor.new(port) do |p|
+    Ractor.new(port) do |p|
       ActiveSupport::IsolatedExecutionState[:ractor_shim_main_test] = "worker-value"
       p.send(:done)
     end
@@ -206,12 +198,10 @@ class ShimSpec < Minitest::Spec
 
     # A worker Ractor can read the constant without IsolationError
     port = Ractor::Port.new
-    r = Ractor.new(port) do |p|
-      begin
-        p.send([:ok, ShimTestMod::LIST])
-      rescue Ractor::IsolationError => e
-        p.send([:err, e.message[0, 50]])
-      end
+    Ractor.new(port) do |p|
+      p.send([:ok, ShimTestMod::LIST])
+    rescue Ractor::IsolationError => e
+      p.send([:err, e.message[0, 50]])
     end
     result = port.receive
     assert_equal :ok, result.first, "worker read failed: #{result.inspect}"
@@ -236,17 +226,15 @@ class ShimSpec < Minitest::Spec
     Object.const_set(:ShimTestAttrClass, klass)
 
     port = Ractor::Port.new
-    r = Ractor.new(port) do |p|
-      begin
-        v = ShimTestAttrClass.setting        # reader: nil in worker (own IES slot empty)
-        ShimTestAttrClass.setting = "worker" # writer: string-eval'd, works cross-Ractor
-        v2 = ShimTestAttrClass.setting
-        p.send([:ok, v.inspect, v2])
-      rescue RuntimeError => e
-        p.send([:runtime, e.message[0, 80]])
-      rescue Ractor::IsolationError => e
-        p.send([:isolation, e.message[0, 80]])
-      end
+    Ractor.new(port) do |p|
+      v = ShimTestAttrClass.setting        # reader: nil in worker (own IES slot empty)
+      ShimTestAttrClass.setting = "worker" # writer: string-eval'd, works cross-Ractor
+      v2 = ShimTestAttrClass.setting
+      p.send([:ok, v.inspect, v2])
+    rescue RuntimeError => e
+      p.send([:runtime, e.message[0, 80]])
+    rescue Ractor::IsolationError => e
+      p.send([:isolation, e.message[0, 80]])
     end
     result = port.receive
     assert_equal :ok, result.first, "class_attribute cross-ractor failed: #{result.inspect}"
@@ -269,14 +257,14 @@ class ShimSpec < Minitest::Spec
     RactorRailsShim::SHAREABLE_CONSTANTS.replace([]) # vacuous: all resolve → flag sets
 
     refute RactorRailsShim::ConstantShareabilizer.applied?,
-           "setup: flag should be unset before first run"
+      "setup: flag should be unset before first run"
 
     RactorRailsShim::ConstantShareabilizer.apply!
 
     assert RactorRailsShim::ConstantShareabilizer.applied?,
-           "flag should be defined after first run"
+      "flag should be defined after first run"
     assert RactorRailsShim::ConstantShareabilizer.applied?,
-           "flag should be truthy after first run"
+      "flag should be truthy after first run"
   ensure
     RactorRailsShim::SHAREABLE_CONSTANTS.replace(saved) if saved
     RactorRailsShim::ConstantShareabilizer.reset_applied!

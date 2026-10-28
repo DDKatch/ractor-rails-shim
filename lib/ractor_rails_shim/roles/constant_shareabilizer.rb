@@ -47,7 +47,7 @@ module RactorRailsShim
     # path strings. Passing `nil` for any (or calling
     # `reset_configuration`) restores the facade-lookup default.
     def self.configure(funnel: nil, register_patch: nil, introspectable: nil,
-                       noop_lock_class: nil, shareable_constants_registry: nil)
+      noop_lock_class: nil, shareable_constants_registry: nil)
       @funnel = funnel
       @register_patch = register_patch
       @introspectable = introspectable
@@ -57,8 +57,8 @@ module RactorRailsShim
 
     # Restore the default (facade-lookup) collaborators. Test seam.
     def self.reset_configuration
-    @applied = false
-    @funnel = nil
+      @applied = false
+      @funnel = nil
       @register_patch = nil
       @introspectable = nil
       @noop_lock_class = nil
@@ -188,7 +188,7 @@ module RactorRailsShim
         # (BasicObject subclasses). Replace with a frozen Symbol sentinel —
         # it's compared with `equal?`, and a frozen Symbol is always
         # shareable.
-        Ractor.make_shareable(:"__shim_unshareable_sentinel__")
+        Ractor.make_shareable(:__shim_unshareable_sentinel__)
       else
         funnel.call("make_value_shareable #{val.class}") { Ractor.make_shareable(val) }
       end

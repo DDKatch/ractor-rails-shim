@@ -13,7 +13,7 @@ require_relative "../lib/ractor_rails_shim/patches"
 class PreSpawnStepsSpec < Minitest::Spec
   it "RactorRailsShim::PreSpawnSteps is defined" do
     assert defined?(RactorRailsShim::PreSpawnSteps),
-           "PreSpawnSteps should be defined"
+      "PreSpawnSteps should be defined"
   end
 
   it "PreSpawnSteps.apply_shareable_constants is callable" do

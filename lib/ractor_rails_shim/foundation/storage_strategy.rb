@@ -28,7 +28,7 @@ module RactorRailsShim
     # stored in ractor-local IES (IsolatedExecutionState) so each Ractor
     # carries its own copy (no cross-ractor shareability concern — and class
     # variables are illegal from non-main Ractors).
-    CA_KEY_CACHE_KEY = :"__ractor_rails_shim_ca_key_cache__"
+    CA_KEY_CACHE_KEY = :__ractor_rails_shim_ca_key_cache__
 
     # Per-receiver class_attribute storage-key cache. Maps
     # `(attribute-symbol, receiver-object_id) -> storage-key-symbol` so the

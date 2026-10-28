@@ -21,7 +21,7 @@ module RactorRailsShim
       # rerouted by the shim — tag them so the user knows they're
       # auto-fixable. Class-level instance variables are NOT auto-fixed.
       def tag
-        kind == :cvar ? " (mattr/cattr — shim targets)" : ""
+        (kind == :cvar) ? " (mattr/cattr — shim targets)" : ""
       end
     end
 
@@ -51,13 +51,13 @@ module RactorRailsShim
             next if ivar == :@_sandbox # Rails internal, ignored
             begin
               val = mod.instance_variable_get(ivar)
-            rescue StandardError => e
+            rescue StandardError
               next
             end
 
             shareable = begin
               Ractor.shareable?(val)
-            rescue StandardError => e
+            rescue StandardError
               false
             end
             next if shareable
@@ -84,13 +84,13 @@ module RactorRailsShim
             mod.class_variables.each do |cvar|
               begin
                 val = mod.class_variable_get(cvar)
-              rescue StandardError => e
+              rescue StandardError
                 next
               end
 
               shareable = begin
                 Ractor.shareable?(val)
-              rescue StandardError => e
+              rescue StandardError
                 false
               end
               next if shareable
@@ -109,7 +109,7 @@ module RactorRailsShim
                 kind: :cvar
               )
             end
-          rescue StandardError => e
+          rescue StandardError
             # Some modules raise on class_variables enumeration; skip.
             next
           end
@@ -121,9 +121,11 @@ module RactorRailsShim
       # Scan only Rails framework modules (Railties, ActiveRecord, etc.)
       # — the ones the shim targets. Useful for "is Rails itself clean?"
       def scan_rails
-        scan.select { |f| f.owner.start_with?("Rails", "ActiveRecord", "ActiveSupport",
-          "ActionController", "ActionView", "ActionDispatch", "ActionMailer",
-          "ActiveJob", "ActionCable", "ActionText", "ActionMailbox", "ActiveStorage") }
+        scan.select { |f|
+          f.owner.start_with?("Rails", "ActiveRecord", "ActiveSupport",
+            "ActionController", "ActionView", "ActionDispatch", "ActionMailer",
+            "ActiveJob", "ActionCable", "ActionText", "ActionMailbox", "ActiveStorage")
+        }
       end
 
       # Scan app + gem classes outside the Rails framework.
@@ -148,10 +150,10 @@ module RactorRailsShim
         lines << ""
 
         %i[rails app].each do |group|
-          grp = group == :rails ? rails_findings : app_findings
+          grp = (group == :rails) ? rails_findings : app_findings
           next if grp.empty?
 
-          label = group == :rails ? "Rails framework" : "app + gems"
+          label = (group == :rails) ? "Rails framework" : "app + gems"
           lines << "=== #{label} (#{grp.size}) ==="
           grp.first(50).each do |f|
             lines << "  #{f.owner}#{f.ivar} = #{f.value_class}#{f.tag}"
@@ -177,7 +179,7 @@ module RactorRailsShim
         end
 
         out = lines.join("\n")
-        $stderr.puts(out) if print
+        warn(out) if print
         out
       end
 
@@ -202,7 +204,7 @@ module RactorRailsShim
           end
         end
         nil
-      rescue StandardError => e
+      rescue StandardError
         nil
       end
     end

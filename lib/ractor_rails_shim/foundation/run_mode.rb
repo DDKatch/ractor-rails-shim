@@ -25,7 +25,7 @@ module RactorRailsShim
     # SERVER values that select thread-server (Puma/Falcon/Thin/Webrick) mode
     # instead of the default Ractor mode. Matched case-insensitively. Kept as a
     # Regex to mirror the original `core.rb:189` predicate exactly.
-    THREAD_SERVER_RE = /puma|falcon|thin|webrick|thread/i.freeze
+    THREAD_SERVER_RE = /puma|falcon|thin|webrick|thread/i
 
     class << self
       # The resolved mode: true for thread-server mode, false for Ractor mode.

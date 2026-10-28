@@ -19,7 +19,6 @@
 # Run: ruby -Ilib -Ispec -e 'require "minitest/autorun"; require File.expand_path("spec/mattr_writer_spec.rb", dir__)'
 
 require "minitest/autorun"
-require "set"
 require "active_support/class_attribute"
 require "active_support/execution_wrapper"
 require_relative "../lib/ractor_rails_shim/roles/fallback_ies"

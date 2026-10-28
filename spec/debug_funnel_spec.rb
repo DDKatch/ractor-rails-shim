@@ -12,7 +12,6 @@
 # Run: ruby -Ilib -Ispec spec/debug_funnel_spec.rb
 
 require "minitest/autorun"
-require "set"
 require "active_support/isolated_execution_state"
 require "active_support/logger"
 require "active_support/broadcast_logger"
@@ -48,7 +47,7 @@ class DebugFunnelSpec < Minitest::Spec
   it "_swallow returns nil on exception and is silent by default" do
     RactorRailsShim.debug = false
     out = capture_stderr do
-      assert_nil RactorRailsShim._swallow("test") { raise RuntimeError, "boom" }
+      assert_nil RactorRailsShim._swallow("test") { raise "boom" }
     end
     assert_empty out, "no stderr output when debug? is false"
   ensure
@@ -59,7 +58,7 @@ class DebugFunnelSpec < Minitest::Spec
     RactorRailsShim.debug = true
     out = capture_stderr do
       RactorRailsShim._swallow("freeze AR ivar Post@column_defaults") do
-        raise RuntimeError, "can't freeze a Proc"
+        raise "can't freeze a Proc"
       end
     end
     assert_includes out, "[ractor_rails_shim]"
@@ -74,7 +73,7 @@ class DebugFunnelSpec < Minitest::Spec
     RactorRailsShim.debug = true
     long_msg = "x" * 500
     out = capture_stderr do
-      RactorRailsShim._swallow("lbl") { raise RuntimeError, long_msg }
+      RactorRailsShim._swallow("lbl") { raise long_msg.to_s }
     end
     # The line should not contain the full 500-char message.
     refute_includes out, long_msg
@@ -128,7 +127,7 @@ class DebugFunnelSpec < Minitest::Spec
     label = "freeze declared callbacks"
     RactorRailsShim.singleton_class.send(:alias_method, :_orig_const_set, :const_set)
     RactorRailsShim.define_singleton_method(:const_set) do |*a|
-      raise RuntimeError, "forced-const-set-failure"
+      raise "forced-const-set-failure"
     end
     _with_silent_const_path(label) do
       RactorRailsShim::CallbackCapture.freeze_declared_callbacks!
@@ -150,12 +149,12 @@ class DebugFunnelSpec < Minitest::Spec
     RactorRailsShim.singleton_class.define_singleton_method(:Ractor) do
       Module.new do
         def self.make_shareable(_)
-          raise RuntimeError, "forced-make-shareable-failure"
+          raise "forced-make-shareable-failure"
         end
       end
     end
     yield
-  ensure
+
     # Restore by removing the singleton override; Ractor is global so we
     # can't actually stub it cleanly — instead use a different mechanism
     # below. This helper is unused in practice; kept for documentation.
@@ -168,7 +167,7 @@ class DebugFunnelSpec < Minitest::Spec
   def _with_stubbed_make_shareable_raising
     ::Ractor.singleton_class.send(:alias_method, :_orig_make_shareable, :make_shareable)
     ::Ractor.define_singleton_method(:make_shareable) do |_|
-      raise RuntimeError, "forced-make-shareable-failure"
+      raise "forced-make-shareable-failure"
     end
     yield
   ensure
@@ -183,7 +182,9 @@ class DebugFunnelSpec < Minitest::Spec
     label = "replace lock ivar"
     parent = Class.new do
       attr_reader :lock
-      def initialize; @lock = Mutex.new; end
+      def initialize
+        @lock = Mutex.new
+      end
     end.new
     parent.freeze
     _with_silent_const_path(label) do
@@ -198,7 +199,9 @@ class DebugFunnelSpec < Minitest::Spec
     label = "replace proc ivar"
     parent = Class.new do
       attr_reader :p
-      def initialize; @p = ->(*) { :x }; end
+      def initialize
+        @p = ->(*) { :x }
+      end
     end.new
     parent.freeze
     _with_silent_const_path(label) do
@@ -215,7 +218,9 @@ class DebugFunnelSpec < Minitest::Spec
     label = "neutralize logger ivar"
     app = Class.new do
       attr_reader :logger
-      def initialize; @logger = Object.new; end
+      def initialize
+        @logger = Object.new
+      end
     end.new
     app.freeze
     _with_silent_const_path(label) do
@@ -237,19 +242,40 @@ class DebugFunnelSpec < Minitest::Spec
     had_devise = defined?(::Devise)
 
     mapping = Object.new
-    def mapping.name; :users; end
-    def mapping.to; Class.new; end
+    def mapping.name
+      :users
+    end
+
+    def mapping.to
+      Class.new
+    end
+
     def mapping.instance_variable_get(iv)
       case iv.to_s
       when /router_name|singular|scoped_path|path|path_prefix|format|sign_out_via|failure_app/ then nil
       else super
       end
     end
-    def mapping.modules; []; end
-    def mapping.strategies; []; end
-    def mapping.routes; []; end
-    def mapping.used_helpers; []; end
-    def mapping.controllers; raise RuntimeError, "forced-controllers-failure"; end
+
+    def mapping.modules
+      []
+    end
+
+    def mapping.strategies
+      []
+    end
+
+    def mapping.routes
+      []
+    end
+
+    def mapping.used_helpers
+      []
+    end
+
+    def mapping.controllers
+      raise "forced-controllers-failure"
+    end
 
     label = "devise mapping controllers"
     snap_cls = RactorRailsShim.singleton_class.const_get(:DeviseMappingSnapshot)

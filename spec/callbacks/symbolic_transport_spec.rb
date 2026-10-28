@@ -137,7 +137,7 @@ class SymbolicTransportSpec < Minitest::Spec
     # The parent declares a before filter; the child does not. Replay must walk up
     # and find the parent's declaration.
     source = {
-      20 => [{ chain_kind: :save, phase: :before, filter: :parent_hook, only: nil, except: nil }]
+      20 => [{chain_kind: :save, phase: :before, filter: :parent_hook, only: nil, except: nil}]
     }
     ctx = build_context([10, 20], source)
     t = RactorRailsShim::Callbacks::SymbolicTransport.new(source: source)
@@ -147,7 +147,7 @@ class SymbolicTransportSpec < Minitest::Spec
 
   it "invokes after filters in after-phase, not before-phase" do
     source = {
-      10 => [{ chain_kind: :save, phase: :after, filter: :after_hook, only: nil, except: nil }]
+      10 => [{chain_kind: :save, phase: :after, filter: :after_hook, only: nil, except: nil}]
     }
     ctx = build_context([10], source)
     t = RactorRailsShim::Callbacks::SymbolicTransport.new(source: source)
@@ -159,41 +159,49 @@ class SymbolicTransportSpec < Minitest::Spec
 
   it "respects :only constraints (filter runs only for matching action)" do
     source = {
-      10 => [{ chain_kind: :process_action, phase: :before, filter: :only_index, only: [:index].freeze, except: nil }]
+      10 => [{chain_kind: :process_action, phase: :before, filter: :only_index, only: [:index].freeze, except: nil}]
     }
     t = RactorRailsShim::Callbacks::SymbolicTransport.new(source: source)
 
     matching = build_context([10], source)
-    def matching.action_name; :index; end
+    def matching.action_name
+      :index
+    end
     t.before(matching, :process_action)
     assert_includes matching.invoked, :only_index
 
     skipped = build_context([10], source)
-    def skipped.action_name; :show; end
+    def skipped.action_name
+      :show
+    end
     t.before(skipped, :process_action)
     refute_includes skipped.invoked, :only_index
   end
 
   it "respects :except constraints" do
     source = {
-      10 => [{ chain_kind: :process_action, phase: :before, filter: :except_show, only: nil, except: [:show].freeze }]
+      10 => [{chain_kind: :process_action, phase: :before, filter: :except_show, only: nil, except: [:show].freeze}]
     }
     t = RactorRailsShim::Callbacks::SymbolicTransport.new(source: source)
 
     skipped = build_context([10], source)
-    def skipped.action_name; :show; end
+    def skipped.action_name
+      :show
+    end
     t.before(skipped, :process_action)
     refute_includes skipped.invoked, :except_show
 
     run = build_context([10], source)
-    def run.action_name; :index; end
+    def run.action_name
+      :index
+    end
     t.before(run, :process_action)
     assert_includes run.invoked, :except_show
   end
 
   it "skips filters whose method is undefined on the context (respond_to? guard)" do
     source = {
-      10 => [{ chain_kind: :save, phase: :before, filter: :no_such_method, only: nil, except: nil }]
+      10 => [{chain_kind: :save, phase: :before, filter: :no_such_method, only: nil, except: nil}]
     }
     # StrictContext reports :no_such_method as unimplemented, so the transport's
     # respond_to? guard must skip it instead of calling method_missing.
@@ -208,8 +216,8 @@ class SymbolicTransportSpec < Minitest::Spec
     # Rails accumulates superclass filters before subclass ones; replay walks
     # ancestors from the instance class UP, prepending so superclass runs first.
     source = {
-      10 => [{ chain_kind: :save, phase: :before, filter: :child_hook, only: nil, except: nil }],
-      20 => [{ chain_kind: :save, phase: :before, filter: :parent_hook, only: nil, except: nil }]
+      10 => [{chain_kind: :save, phase: :before, filter: :child_hook, only: nil, except: nil}],
+      20 => [{chain_kind: :save, phase: :before, filter: :parent_hook, only: nil, except: nil}]
     }
     ctx = build_context([10, 20], source)
     t = RactorRailsShim::Callbacks::SymbolicTransport.new(source: source)
@@ -226,9 +234,9 @@ class SymbolicTransportSpec < Minitest::Spec
     # nil. Filters on the same class MUST run in declaration order.
     source = {
       10 => [
-        { chain_kind: :process_action, phase: :before, filter: :set_post, only: nil, except: nil },
-        { chain_kind: :process_action, phase: :before, filter: :set_comment, only: nil, except: nil },
-        { chain_kind: :process_action, phase: :before, filter: :authenticate_user!, only: nil, except: nil }
+        {chain_kind: :process_action, phase: :before, filter: :set_post, only: nil, except: nil},
+        {chain_kind: :process_action, phase: :before, filter: :set_comment, only: nil, except: nil},
+        {chain_kind: :process_action, phase: :before, filter: :authenticate_user!, only: nil, except: nil}
       ]
     }
     ctx = build_context([10], source)
@@ -242,10 +250,10 @@ class SymbolicTransportSpec < Minitest::Spec
     # :child_b. Rails order: parent_hook, child_a, child_b.
     # The old reverse_each bug would yield: child_b, child_a, parent_hook.
     source = {
-      20 => [{ chain_kind: :save, phase: :before, filter: :parent_hook, only: nil, except: nil }],
+      20 => [{chain_kind: :save, phase: :before, filter: :parent_hook, only: nil, except: nil}],
       10 => [
-        { chain_kind: :save, phase: :before, filter: :child_a, only: nil, except: nil },
-        { chain_kind: :save, phase: :before, filter: :child_b, only: nil, except: nil }
+        {chain_kind: :save, phase: :before, filter: :child_a, only: nil, except: nil},
+        {chain_kind: :save, phase: :before, filter: :child_b, only: nil, except: nil}
       ]
     }
     ctx = build_context([10, 20], source)
@@ -256,8 +264,8 @@ class SymbolicTransportSpec < Minitest::Spec
 
   it "does not run filters declared for a different chain kind" do
     source = {
-      10 => [{ chain_kind: :save, phase: :before, filter: :save_hook, only: nil, except: nil }],
-      20 => [{ chain_kind: :destroy, phase: :before, filter: :destroy_hook, only: nil, except: nil }]
+      10 => [{chain_kind: :save, phase: :before, filter: :save_hook, only: nil, except: nil}],
+      20 => [{chain_kind: :destroy, phase: :before, filter: :destroy_hook, only: nil, except: nil}]
     }
     ctx = build_context([10, 20], source)
     t = RactorRailsShim::Callbacks::SymbolicTransport.new(source: source)
@@ -280,7 +288,7 @@ class SymbolicTransportSpec < Minitest::Spec
 
     def send(name, *args, &block)
       if @unshareable_filters.include?(name)
-        raise RuntimeError, "defined with an un-shareable Proc in a different Ractor"
+        raise "defined with an un-shareable Proc in a different Ractor"
       end
       super
     end
@@ -297,8 +305,8 @@ class SymbolicTransportSpec < Minitest::Spec
   it "skips unshareable-Proc filters and continues the chain" do
     source = {
       10 => [
-        { chain_kind: :save, phase: :before, filter: :autosave_associated_records_for_category, only: nil, except: nil },
-        { chain_kind: :save, phase: :before, filter: :normalize_title, only: nil, except: nil }
+        {chain_kind: :save, phase: :before, filter: :autosave_associated_records_for_category, only: nil, except: nil},
+        {chain_kind: :save, phase: :before, filter: :normalize_title, only: nil, except: nil}
       ]
     }
     klass = build_klass_chain([10])
@@ -313,7 +321,7 @@ class SymbolicTransportSpec < Minitest::Spec
 
   it "re-raises non-unshareable errors from filter dispatch" do
     source = {
-      10 => [{ chain_kind: :save, phase: :before, filter: :boom, only: nil, except: nil }]
+      10 => [{chain_kind: :save, phase: :before, filter: :boom, only: nil, except: nil}]
     }
     klass = build_klass_chain([10])
 
@@ -321,7 +329,7 @@ class SymbolicTransportSpec < Minitest::Spec
       def send(name, *args, &block)
         raise NoMethodError, "totally different error"
       end
-      alias __send__ send
+      alias_method :__send__, :send
     end.new(klass)
 
     t = RactorRailsShim::Callbacks::SymbolicTransport.new(source: source, kinds: [:save])
@@ -336,8 +344,8 @@ class SymbolicTransportSpec < Minitest::Spec
   it "halts the chain when a filter returns exactly false" do
     source = {
       10 => [
-        { chain_kind: :save, phase: :before, filter: :false_hook, only: nil, except: nil },
-        { chain_kind: :save, phase: :before, filter: :later_hook, only: nil, except: nil }
+        {chain_kind: :save, phase: :before, filter: :false_hook, only: nil, except: nil},
+        {chain_kind: :save, phase: :before, filter: :later_hook, only: nil, except: nil}
       ]
     }
     klass = build_klass_chain([10])
@@ -345,9 +353,9 @@ class SymbolicTransportSpec < Minitest::Spec
     ctx = Class.new(FakeContext) do
       def send(name, *args, &block)
         @invoked << name
-        name == :false_hook ? false : :ok
+        (name == :false_hook) ? false : :ok
       end
-      alias __send__ send
+      alias_method :__send__, :send
     end.new(klass)
 
     t = RactorRailsShim::Callbacks::SymbolicTransport.new(source: source, kinds: [:save])
@@ -358,8 +366,8 @@ class SymbolicTransportSpec < Minitest::Spec
   it "halts the chain when the context is performed? after a filter" do
     source = {
       10 => [
-        { chain_kind: :process_action, phase: :before, filter: :render_hook, only: nil, except: nil },
-        { chain_kind: :process_action, phase: :before, filter: :later_hook, only: nil, except: nil }
+        {chain_kind: :process_action, phase: :before, filter: :render_hook, only: nil, except: nil},
+        {chain_kind: :process_action, phase: :before, filter: :later_hook, only: nil, except: nil}
       ]
     }
     klass = build_klass_chain([10])
@@ -370,7 +378,7 @@ class SymbolicTransportSpec < Minitest::Spec
         @performed = true if name == :render_hook # simulates render in the filter
         :ok
       end
-      alias __send__ send
+      alias_method :__send__, :send
 
       def performed?
         @performed == true
@@ -385,8 +393,8 @@ class SymbolicTransportSpec < Minitest::Spec
   it "does not halt when a filter returns a truthy non-false value" do
     source = {
       10 => [
-        { chain_kind: :save, phase: :before, filter: :hook_one, only: nil, except: nil },
-        { chain_kind: :save, phase: :before, filter: :hook_two, only: nil, except: nil }
+        {chain_kind: :save, phase: :before, filter: :hook_one, only: nil, except: nil},
+        {chain_kind: :save, phase: :before, filter: :hook_two, only: nil, except: nil}
       ]
     }
     klass = build_klass_chain([10])
@@ -421,7 +429,7 @@ class SymbolicTransportSpec < Minitest::Spec
         only: nil, except: nil
       }]
     }
-    klass = build_klass_chain([10])
+    build_klass_chain([10])
     ctx = build_context([10], source)
     t = RactorRailsShim::Callbacks::SymbolicTransport.new(source: source, kinds: [:validate])
     refute t.before(ctx, :validate), "a validator entry must never halt the chain"
@@ -436,7 +444,7 @@ class SymbolicTransportSpec < Minitest::Spec
       10 => [{
         chain_kind: :validate, phase: :before,
         filter: "RrsSpecEachValidator",
-        validator_attributes: [:title, :body], validator_options: { minimum: 10 }.freeze,
+        validator_attributes: [:title, :body], validator_options: {minimum: 10}.freeze,
         only: nil, except: nil
       }]
     }
@@ -448,7 +456,8 @@ class SymbolicTransportSpec < Minitest::Spec
 
   it "ignores the validator's return value (signals via errors, not halt)" do
     falsy_validator = Class.new do
-      def initialize(options = {}); end
+      def initialize(options = {})
+      end
 
       def validate(record)
         false # must NOT halt the chain
@@ -482,12 +491,16 @@ class SymbolicTransportSpec < Minitest::Spec
     t = RactorRailsShim::Callbacks::SymbolicTransport.new(source: source, kinds: [:validate])
 
     create_ctx = build_context([10], source)
-    def create_ctx.validation_context; :create; end
+    def create_ctx.validation_context
+      :create
+    end
     t.before(create_ctx, :validate)
     assert_equal ["RrsSpecEachValidator"], create_ctx.validated_by
 
     update_ctx = build_context([10], source)
-    def update_ctx.validation_context; :update; end
+    def update_ctx.validation_context
+      :update
+    end
     t.before(update_ctx, :validate)
     assert_nil update_ctx.validated_by
   end
@@ -504,29 +517,37 @@ class SymbolicTransportSpec < Minitest::Spec
     t = RactorRailsShim::Callbacks::SymbolicTransport.new(source: source, kinds: [:validate])
 
     destroy_ctx = build_context([10], source)
-    def destroy_ctx.validation_context; :destroy; end
+    def destroy_ctx.validation_context
+      :destroy
+    end
     t.before(destroy_ctx, :validate)
     assert_nil destroy_ctx.validated_by
 
     create_ctx = build_context([10], source)
-    def create_ctx.validation_context; :create; end
+    def create_ctx.validation_context
+      :create
+    end
     t.before(create_ctx, :validate)
     assert_equal ["RrsSpecEachValidator"], create_ctx.validated_by
   end
 
   it "runs on:-gated symbolic entries only in the matching validation context" do
     source = {
-      10 => [{ chain_kind: :validate, phase: :before, filter: :custom_check, only: nil, except: nil, on: [:create].freeze, except_on: nil }]
+      10 => [{chain_kind: :validate, phase: :before, filter: :custom_check, only: nil, except: nil, on: [:create].freeze, except_on: nil}]
     }
     t = RactorRailsShim::Callbacks::SymbolicTransport.new(source: source, kinds: [:validate])
 
     create_ctx = build_context([10], source)
-    def create_ctx.validation_context; :create; end
+    def create_ctx.validation_context
+      :create
+    end
     t.before(create_ctx, :validate)
     assert_includes create_ctx.invoked, :custom_check
 
     update_ctx = build_context([10], source)
-    def update_ctx.validation_context; :update; end
+    def update_ctx.validation_context
+      :update
+    end
     t.before(update_ctx, :validate)
     refute_includes update_ctx.invoked, :custom_check
   end
@@ -536,8 +557,8 @@ class SymbolicTransportSpec < Minitest::Spec
   it "compiles the chain once per (class, kind) and replays identically on repeated calls" do
     source = {
       10 => [
-        { chain_kind: :save, phase: :before, filter: :b1, only: nil, except: nil, on: nil, except_on: nil },
-        { chain_kind: :save, phase: :after, filter: :a1, only: nil, except: nil, on: nil, except_on: nil }
+        {chain_kind: :save, phase: :before, filter: :b1, only: nil, except: nil, on: nil, except_on: nil},
+        {chain_kind: :save, phase: :after, filter: :a1, only: nil, except: nil, on: nil, except_on: nil}
       ]
     }
     t = RactorRailsShim::Callbacks::SymbolicTransport.new(source: source, kinds: [:save])
@@ -561,15 +582,19 @@ class SymbolicTransportSpec < Minitest::Spec
   it "still gates only:/except: per request on a compiled chain" do
     source = {
       10 => [
-        { chain_kind: :process_action, phase: :before, filter: :guard_show, only: [:show].freeze, except: nil, on: nil, except_on: nil }
+        {chain_kind: :process_action, phase: :before, filter: :guard_show, only: [:show].freeze, except: nil, on: nil, except_on: nil}
       ]
     }
     t = RactorRailsShim::Callbacks::SymbolicTransport.new(source: source, kinds: [:process_action])
 
     index_ctx = build_context([10], source)
-    def index_ctx.action_name; :index; end
+    def index_ctx.action_name
+      :index
+    end
     show_ctx = build_context([10], source)
-    def show_ctx.action_name; :show; end
+    def show_ctx.action_name
+      :show
+    end
 
     2.times do
       t.before(index_ctx, :process_action)
@@ -586,7 +611,7 @@ class SymbolicTransportSpec < Minitest::Spec
     # replay. Replacing an already-compiled table on a LIVE transport is
     # deliberately not detected — re-prepare rebuilds the registry
     # (Callbacks.reset_registry).
-    table = { 10 => [{ chain_kind: :save, phase: :before, filter: :late_capture, only: nil, except: nil, on: nil, except_on: nil }] }
+    table = {10 => [{chain_kind: :save, phase: :before, filter: :late_capture, only: nil, except: nil, on: nil, except_on: nil}]}
     current = nil
     t = RactorRailsShim::Callbacks::SymbolicTransport.new(source: -> { current }, kinds: [:save])
 

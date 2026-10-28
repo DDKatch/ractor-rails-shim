@@ -71,14 +71,14 @@ class PublicSurfaceSpec < Minitest::Spec
   GENUINE_PUBLIC.each do |m|
     it "RactorRailsShim.#{m} is defined (genuine public entry)" do
       assert RactorRailsShim.respond_to?(m),
-             "RactorRailsShim.#{m} should be defined (genuine public entry)"
+        "RactorRailsShim.#{m} should be defined (genuine public entry)"
     end
   end
 
   GENUINE_PRIVATE.each do |m|
     it "RactorRailsShim.#{m} is defined (genuine private/utility entry)" do
       assert RactorRailsShim.respond_to?(m, true),
-             "RactorRailsShim.#{m} should be defined (private)"
+        "RactorRailsShim.#{m} should be defined (private)"
     end
   end
 
@@ -122,7 +122,7 @@ class PublicSurfaceSpec < Minitest::Spec
   DELETED.each do |m|
     it "RactorRailsShim.#{m} is NOT defined (deleted in Issue #31)" do
       refute RactorRailsShim.respond_to?(m, true),
-             "RactorRailsShim.#{m} should be deleted (was a facade delegation)"
+        "RactorRailsShim.#{m} should be deleted (was a facade delegation)"
     end
   end
 end

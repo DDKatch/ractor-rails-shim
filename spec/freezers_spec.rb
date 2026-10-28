@@ -62,23 +62,34 @@ class FreezersSpec < Minitest::Spec
 
     # Make FakeARBase look like AR::Base for the duration of the test:
     # define .descendants and the warmer methods as recorders.
-    def fake_ar.descendants; [FakeARConcrete, FakeARAbstract]; end
+    def fake_ar.descendants
+      [FakeARConcrete, FakeARAbstract]
+    end
     warmer_methods.each do |m|
-      fake_ar.define_singleton_method(m) { called[:FakeARBase] ||= []; called[:FakeARBase] << m }
+      fake_ar.define_singleton_method(m) {
+        called[:FakeARBase] ||= []
+        called[:FakeARBase] << m
+      }
     end
 
     concrete = Class.new
     Object.const_set(:FakeARConcrete, concrete)
     concrete.define_singleton_method(:abstract_class?) { false }
     warmer_methods.each do |m|
-      concrete.define_singleton_method(m) { called[:FakeARConcrete] ||= []; called[:FakeARConcrete] << m }
+      concrete.define_singleton_method(m) {
+        called[:FakeARConcrete] ||= []
+        called[:FakeARConcrete] << m
+      }
     end
 
     abstract = Class.new
     Object.const_set(:FakeARAbstract, abstract)
     abstract.define_singleton_method(:abstract_class?) { true }
     warmer_methods.each do |m|
-      abstract.define_singleton_method(m) { called[:FakeARAbstract] ||= []; called[:FakeARAbstract] << m }
+      abstract.define_singleton_method(m) {
+        called[:FakeARAbstract] ||= []
+        called[:FakeARAbstract] << m
+      }
     end
 
     # Stub defined?(::ActiveRecord::Base) by aliasing. The method checks
@@ -112,9 +123,12 @@ class FreezersSpec < Minitest::Spec
     # debug=true the failure should surface with the CacheWarmer label.
     fake_ar = Module.new
     Object.const_set(:FakeARBase2, fake_ar) unless defined?(FakeARBase2)
-    def fake_ar.descendants; []; end
+    def fake_ar.descendants
+      []
+    end
+
     def fake_ar.timestamp_attributes_for_create_in_model
-      raise RuntimeError, "forced-warmer-failure"
+      raise "forced-warmer-failure"
     end
     # Other warmers are no-ops.
     (RactorRailsShim::Freezers::CacheWarmer::WARMER_METHODS - [:timestamp_attributes_for_create_in_model]).each do |m|
@@ -170,11 +184,13 @@ class FreezersSpec < Minitest::Spec
     # Hash. After the call, the ivar value must be Ractor.shareable?.
     fake_ar = Module.new
     Object.const_set(:FakeARBase3, fake_ar) unless defined?(FakeARBase3)
-    def fake_ar.descendants; [FakeARModel3]; end
+    def fake_ar.descendants
+      [FakeARModel3]
+    end
 
     model = Class.new
     Object.const_set(:FakeARModel3, model)
-    model.instance_variable_set(:@unshareable_cache, { a: 1 })
+    model.instance_variable_set(:@unshareable_cache, {a: 1})
     refute Ractor.shareable?(model.instance_variable_get(:@unshareable_cache))
 
     ar_module = Module.new
@@ -197,12 +213,14 @@ class FreezersSpec < Minitest::Spec
     # be shareable. Pin that abstract classes are NOT skipped.
     fake_ar = Module.new
     Object.const_set(:FakeARBase4, fake_ar) unless defined?(FakeARBase4)
-    def fake_ar.descendants; [FakeARAbstract4]; end
+    def fake_ar.descendants
+      [FakeARAbstract4]
+    end
 
     abstract = Class.new
     Object.const_set(:FakeARAbstract4, abstract)
     abstract.define_singleton_method(:abstract_class?) { true }
-    abstract.instance_variable_set(:@abstract_cache, { b: 2 })
+    abstract.instance_variable_set(:@abstract_cache, {b: 2})
     refute Ractor.shareable?(abstract.instance_variable_get(:@abstract_cache))
 
     ar_module = Module.new
@@ -222,8 +240,10 @@ class FreezersSpec < Minitest::Spec
   it "ClassIvarFreezer.call skips ivars that are already shareable" do
     fake_ar = Module.new
     Object.const_set(:FakeARBase5, fake_ar) unless defined?(FakeARBase5)
-    def fake_ar.descendants; []; end
-    fake_ar.instance_variable_set(:@already_shareable, Ractor.make_shareable({ x: 1 }))
+    def fake_ar.descendants
+      []
+    end
+    fake_ar.instance_variable_set(:@already_shareable, Ractor.make_shareable({x: 1}))
 
     ar_module = Module.new
     Object.const_set(:ActiveRecord, ar_module) unless defined?(::ActiveRecord)
@@ -242,7 +262,9 @@ class FreezersSpec < Minitest::Spec
     # not propagated. Under debug=true the failure surfaces with the label.
     fake_ar = Module.new
     Object.const_set(:FakeARBase6, fake_ar) unless defined?(FakeARBase6)
-    def fake_ar.descendants; []; end
+    def fake_ar.descendants
+      []
+    end
     # A Proc is intrinsically unshareable; Ractor.make_shareable raises.
     fake_ar.instance_variable_set(:@unfreezable, ->(*) { :x })
 
@@ -284,7 +306,7 @@ class FreezersSpec < Minitest::Spec
   it "GlobalClassIvarFreezer.call makes unshareable global class-ivars shareable" do
     # Use a real global class (Time) — set a temporary unshareable ivar, freeze,
     # then verify it's shareable and clean up. Time is always defined.
-    Time.instance_variable_set(:@_shim_test_global_ivar, { tz: "UTC" })
+    Time.instance_variable_set(:@_shim_test_global_ivar, {tz: "UTC"})
     refute Ractor.shareable?(Time.instance_variable_get(:@_shim_test_global_ivar))
 
     RactorRailsShim::Freezers::GlobalClassIvarFreezer.call
@@ -296,7 +318,7 @@ class FreezersSpec < Minitest::Spec
   end
 
   it "GlobalClassIvarFreezer.call skips already-shareable global ivars" do
-    Time.instance_variable_set(:@_shim_test_shareable_ivar, Ractor.make_shareable({ x: 1 }))
+    Time.instance_variable_set(:@_shim_test_shareable_ivar, Ractor.make_shareable({x: 1}))
     # Must not raise; already-shareable values are left as-is.
     RactorRailsShim::Freezers::GlobalClassIvarFreezer.call
     assert Ractor.shareable?(Time.instance_variable_get(:@_shim_test_shareable_ivar))
@@ -354,7 +376,7 @@ class FreezersSpec < Minitest::Spec
   it "GlobalConstantFreezer.call drops non-shareable Hash values and freezes" do
     mod = Module.new
     Object.const_set(:ShimGCFTestMod, mod)
-    mod.const_set(:DATE_FORMATS, { db: "%Y-%m-%d", custom: ->(*) { "x" } })
+    mod.const_set(:DATE_FORMATS, {db: "%Y-%m-%d", custom: ->(*) { "x" }})
     refute Ractor.shareable?(mod.const_get(:DATE_FORMATS, false))
 
     _with_gc_targets(["ShimGCFTestMod"]) do
@@ -393,7 +415,7 @@ class FreezersSpec < Minitest::Spec
   it "GlobalConstantFreezer.call skips already-shareable constants" do
     mod = Module.new
     Object.const_set(:ShimGCFShareableMod, mod)
-    mod.const_set(:DATE_FORMATS, Ractor.make_shareable({ a: 1 }))
+    mod.const_set(:DATE_FORMATS, Ractor.make_shareable({a: 1}))
 
     _with_gc_targets(["ShimGCFShareableMod"]) do
       RactorRailsShim::Freezers::GlobalConstantFreezer.call
@@ -427,7 +449,7 @@ class FreezersSpec < Minitest::Spec
   it "GlobalConstantFreezer.call iterates newly added targets" do
     mod = Module.new
     Object.const_set(:ShimGCFAddTargetMod, mod)
-    mod.const_set(:DATE_FORMATS, { added: :yes })
+    mod.const_set(:DATE_FORMATS, {added: :yes})
     original_targets = RactorRailsShim::Freezers::GlobalConstantFreezer::TARGETS.dup
     RactorRailsShim::Freezers::GlobalConstantFreezer::TARGETS.replace(["ShimGCFAddTargetMod"])
     RactorRailsShim::Freezers::GlobalConstantFreezer.call
@@ -535,7 +557,10 @@ class FreezersSpec < Minitest::Spec
 
   it "CacheWarmer.call funnels per-method failures through an injected funnel" do
     funneled = []
-    funnel = ->(label, &blk) { funneled << label; blk&.call rescue StandardError; }
+    funnel = ->(label, &blk) {
+      funneled << label
+      blk&.call rescue StandardError
+    }
     RactorRailsShim::Freezers::CacheWarmer.configure(funnel: funnel)
     fake_base = Class.new
     fake_base.define_singleton_method(:sequence_name) { raise "boom" }
@@ -549,7 +574,7 @@ class FreezersSpec < Minitest::Spec
     fake_ar.const_set(:Base, fake_base)
     RactorRailsShim::Freezers::CacheWarmer.call
     assert(funneled.any? { |l| l.include?("warm AR cache") },
-           "expected a warm-AR-cache funnel label, got #{funneled.inspect}")
+      "expected a warm-AR-cache funnel label, got #{funneled.inspect}")
   ensure
     RactorRailsShim::Freezers::CacheWarmer.reset_configuration
     Object.send(:remove_const, :ActiveRecord) if Object.const_defined?(:ActiveRecord) && !prev_ar
@@ -565,7 +590,10 @@ class FreezersSpec < Minitest::Spec
 
   it "ClassIvarFreezer.call funnels ivar-freeze failures through an injected funnel" do
     funneled = []
-    funnel = ->(label, &blk) { funneled << label; blk&.call rescue StandardError; }
+    funnel = ->(label, &blk) {
+      funneled << label
+      blk&.call rescue StandardError
+    }
     RactorRailsShim::Freezers::ClassIvarFreezer.configure(funnel: funnel)
     fake_base = Class.new
     fake_base.instance_variable_set(:@proc, ->(*) { :x })
@@ -579,7 +607,7 @@ class FreezersSpec < Minitest::Spec
     fake_ar.const_set(:Base, fake_base)
     RactorRailsShim::Freezers::ClassIvarFreezer.call
     assert(funneled.any? { |l| l.include?("freeze AR ivar") },
-           "expected a freeze-AR-ivar funnel label, got #{funneled.inspect}")
+      "expected a freeze-AR-ivar funnel label, got #{funneled.inspect}")
   ensure
     RactorRailsShim::Freezers::ClassIvarFreezer.reset_configuration
     Object.send(:remove_const, :ActiveRecord) if Object.const_defined?(:ActiveRecord) && !prev_ar
@@ -596,7 +624,10 @@ class FreezersSpec < Minitest::Spec
 
   it "GlobalClassIvarFreezer.call resolves targets via an injected safe_const_get" do
     resolved = []
-    scg = ->(name) { resolved << name; nil }
+    scg = ->(name) {
+      resolved << name
+      nil
+    }
     RactorRailsShim::Freezers::GlobalClassIvarFreezer.configure(safe_const_get: scg)
     RactorRailsShim::Freezers::GlobalClassIvarFreezer.call
     assert_includes resolved, "Time"
@@ -616,7 +647,10 @@ class FreezersSpec < Minitest::Spec
 
   it "GlobalConstantFreezer.call resolves targets via an injected safe_const_get" do
     resolved = []
-    scg = ->(name) { resolved << name; nil }
+    scg = ->(name) {
+      resolved << name
+      nil
+    }
     RactorRailsShim::Freezers::GlobalConstantFreezer.configure(safe_const_get: scg)
     RactorRailsShim::Freezers::GlobalConstantFreezer.call
     assert_includes resolved, "Time"
@@ -635,10 +669,13 @@ class FreezersSpec < Minitest::Spec
 
   it "MessagesConstantsFreezer.call resolves via an injected safe_const_get" do
     resolved = []
-    scg = ->(name, **kw) { resolved << name; nil }
+    scg = ->(name, **kw) {
+      resolved << name
+      nil
+    }
     RactorRailsShim::Freezers::MessagesConstantsFreezer.configure(safe_const_get: scg)
     RactorRailsShim::Freezers::MessagesConstantsFreezer.define_singleton_method(:msgpack_available?) { true }
-    RactorRailsShim::Freezers::MessagesConstantsFreezer.define_singleton_method(:_load_message_pack) { }
+    RactorRailsShim::Freezers::MessagesConstantsFreezer.define_singleton_method(:_load_message_pack) {}
     RactorRailsShim::Freezers::MessagesConstantsFreezer.call
     assert_includes resolved, "ActiveSupport::Messages::Metadata"
   ensure
@@ -647,10 +684,10 @@ class FreezersSpec < Minitest::Spec
 
   it "reset_configuration restores the facade-lookup defaults for all Freezers" do
     funnel_only = [RactorRailsShim::Freezers::CacheWarmer,
-                   RactorRailsShim::Freezers::ClassIvarFreezer]
+      RactorRailsShim::Freezers::ClassIvarFreezer]
     both = [RactorRailsShim::Freezers::GlobalClassIvarFreezer]
     scg_only = [RactorRailsShim::Freezers::GlobalConstantFreezer,
-                RactorRailsShim::Freezers::MessagesConstantsFreezer]
+      RactorRailsShim::Freezers::MessagesConstantsFreezer]
 
     funnel_only.each do |f|
       f.configure(funnel: ->(l, &b) { b&.call })
@@ -659,7 +696,7 @@ class FreezersSpec < Minitest::Spec
       assert_equal RactorRailsShim::Funnel.method(:swallow), f.funnel
     end
     both.each do |f|
-      f.configure(funnel: ->(l, &b) { b&.call }, safe_const_get: ->(n, **k) { nil })
+      f.configure(funnel: ->(l, &b) { b&.call }, safe_const_get: ->(n, **k) {})
       refute_equal RactorRailsShim::Funnel.method(:swallow), f.funnel
       refute_equal RactorRailsShim::ConstantShareabilizer.method(:safe_const_get), f.safe_const_get
       f.reset_configuration
@@ -667,18 +704,18 @@ class FreezersSpec < Minitest::Spec
       assert_equal RactorRailsShim::ConstantShareabilizer.method(:safe_const_get), f.safe_const_get
     end
     scg_only.each do |f|
-      f.configure(safe_const_get: ->(n, **k) { nil })
+      f.configure(safe_const_get: ->(n, **k) {})
       refute_equal RactorRailsShim::ConstantShareabilizer.method(:safe_const_get), f.safe_const_get
       f.reset_configuration
       assert_equal RactorRailsShim::ConstantShareabilizer.method(:safe_const_get), f.safe_const_get
     end
   ensure
     [RactorRailsShim::Freezers::CacheWarmer,
-     RactorRailsShim::Freezers::ClassIvarFreezer,
-     RactorRailsShim::Freezers::GlobalClassIvarFreezer,
-     RactorRailsShim::Freezers::GlobalConstantFreezer,
-     RactorRailsShim::Freezers::MessagesConstantsFreezer,
-     RactorRailsShim::Freezers::ShareableClassIvarFreezer].each { |f| f.reset_configuration }
+      RactorRailsShim::Freezers::ClassIvarFreezer,
+      RactorRailsShim::Freezers::GlobalClassIvarFreezer,
+      RactorRailsShim::Freezers::GlobalConstantFreezer,
+      RactorRailsShim::Freezers::MessagesConstantsFreezer,
+      RactorRailsShim::Freezers::ShareableClassIvarFreezer].each { |f| f.reset_configuration }
   end
 
   # --- ShareableClassIvarFreezer: SHAREABLE_CLASS_IVARS freeze ---
@@ -690,7 +727,7 @@ class FreezersSpec < Minitest::Spec
   it "ShareableClassIvarFreezer.call makes listed ivars shareable" do
     target = Module.new
     Object.const_set(:ShivFreezeIvarTest, target)
-    target.instance_variable_set(:@test_ivar, { foo: :bar })
+    target.instance_variable_set(:@test_ivar, {foo: :bar})
     RactorRailsShim::SHAREABLE_CLASS_IVARS << ["ShivFreezeIvarTest", :@test_ivar]
     # Not shareable before call
     refute Ractor.shareable?(target.instance_variable_get(:@test_ivar))
@@ -724,15 +761,18 @@ class FreezersSpec < Minitest::Spec
 
   it "ShareableClassIvarFreezer.call funnels through injected funnel" do
     funneled = []
-    funnel = ->(label, &blk) { funneled << label; blk&.call rescue StandardError; }
+    funnel = ->(label, &blk) {
+      funneled << label
+      blk&.call rescue StandardError
+    }
     RactorRailsShim::Freezers::ShareableClassIvarFreezer.configure(funnel: funnel)
     target = Module.new
     Object.const_set(:ShivFreezeFunnelTest, target)
-    target.instance_variable_set(:@fiv, { a: 1 })
+    target.instance_variable_set(:@fiv, {a: 1})
     RactorRailsShim::SHAREABLE_CLASS_IVARS << ["ShivFreezeFunnelTest", :@fiv]
     RactorRailsShim::Freezers::ShareableClassIvarFreezer.call
     assert funneled.any? { |l| l.include?("freeze global ivar") },
-           "funnel should have been called with freeze label"
+      "funnel should have been called with freeze label"
   ensure
     RactorRailsShim::SHAREABLE_CLASS_IVARS.delete(["ShivFreezeFunnelTest", :@fiv])
     Object.send(:remove_const, :ShivFreezeFunnelTest) if defined?(ShivFreezeFunnelTest)
@@ -793,13 +833,16 @@ class FreezersSpec < Minitest::Spec
 
   it "GlobalConstantFreezer.call funnels errors through an injected funnel" do
     funneled = []
-    funnel = ->(label, &blk) { funneled << label; blk&.call rescue StandardError; }
+    funnel = ->(label, &blk) {
+      funneled << label
+      blk&.call rescue StandardError
+    }
     RactorRailsShim::Freezers::GlobalConstantFreezer.configure(funnel: funnel)
     # Stub safe_const_get to return a module whose const_set raises
     mod = Module.new
-    mod.const_set(:DATE_FORMATS, { bad: ->(*) { :x } })
+    mod.const_set(:DATE_FORMATS, {bad: ->(*) { :x }})
     Object.const_set(:ShimGCFunnelTest, mod)
-    scg = ->(name) { name == "ShimGCFunnelTest" ? mod : nil }
+    scg = ->(name) { (name == "ShimGCFunnelTest") ? mod : nil }
     RactorRailsShim::Freezers::GlobalConstantFreezer.configure(safe_const_get: scg, funnel: funnel)
     # The call should not raise — errors are funneled
     RactorRailsShim::Freezers::GlobalConstantFreezer.call
@@ -872,10 +915,10 @@ class ActionDispatchStrategySpec < Minitest::Spec
     noop = Class.new
     RactorRailsShim::ActionDispatchStrategy.configure(noop_proc_class: noop)
     refute_equal RactorRailsShim.singleton_class.const_get(:NoOpProc),
-                 RactorRailsShim::ActionDispatchStrategy.noop_proc_class
+      RactorRailsShim::ActionDispatchStrategy.noop_proc_class
     RactorRailsShim::ActionDispatchStrategy.reset_configuration
     assert_equal RactorRailsShim.singleton_class.const_get(:NoOpProc),
-                 RactorRailsShim::ActionDispatchStrategy.noop_proc_class
+      RactorRailsShim::ActionDispatchStrategy.noop_proc_class
   ensure
     RactorRailsShim::ActionDispatchStrategy.reset_configuration
   end
@@ -901,7 +944,7 @@ class WorkerAppFactorySpec < Minitest::Spec
 
   it "configure accepts autoloaders, const_get, worker_app_class" do
     fakeautoloaders = Object.new
-    fakeconst_get = ->(name) { nil }
+    fakeconst_get = ->(name) {}
     fake_wa_class = Class.new
     RactorRailsShim::WorkerAppFactory.configure(
       autoloaders: fakeautoloaders, const_get: fakeconst_get,

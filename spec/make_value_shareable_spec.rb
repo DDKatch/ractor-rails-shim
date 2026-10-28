@@ -117,7 +117,9 @@ class MakeValueShareableSpec < Minitest::Spec
 
   it "returns a shareable NoOpLock for a duck-typed lock (responds to :synchronize)" do
     fake_lock_class = Class.new do
-      def synchronize; yield; end
+      def synchronize
+        yield
+      end
     end
     result = RactorRailsShim::ConstantShareabilizer.make_value_shareable(fake_lock_class.new)
     assert_kind_of NoOpLock, result
@@ -125,7 +127,10 @@ class MakeValueShareableSpec < Minitest::Spec
   end
 
   it "does NOT treat a plain object without :synchronize as a lock" do
-    plain = Class.new { def foo; end }.new
+    plain = Class.new {
+      def foo
+      end
+    }.new
     result = RactorRailsShim::ConstantShareabilizer.make_value_shareable(plain)
     # Not a lock → routed to make_shareable (deep-frozen), not NoOpLock.
     refute_kind_of NoOpLock, result

@@ -49,7 +49,9 @@ class ARModelWalkerSpec < Minitest::Spec
     fake_base = Class.new
     fake_ar.const_set(:Base, fake_base)
     fake_base.instance_variable_set(:@__descendants, descendants)
-    def fake_base.descendants; @__descendants; end
+    def fake_base.descendants
+      @__descendants
+    end
 
     yield fake_base
   ensure
@@ -218,7 +220,10 @@ class ARModelWalkerSpec < Minitest::Spec
 
   it "each_model funnels per-class failures through an injected funnel" do
     funneled = []
-    funnel = ->(label, &blk) { funneled << label; blk&.call rescue StandardError; }
+    funnel = ->(label, &blk) {
+      funneled << label
+      blk&.call rescue StandardError
+    }
     RactorRailsShim::ARModelWalker.configure(funnel: funnel)
     bad = Class.new
     with_fake_ar([bad]) do |base|
@@ -233,7 +238,7 @@ class ARModelWalkerSpec < Minitest::Spec
   it "an injected funnel lets the walk continue past a raising model" do
     good = Class.new
     bad = Class.new
-    funnel = ->(label, &blk) { blk&.call rescue StandardError; }
+    funnel = ->(label, &blk) { blk&.call rescue StandardError }
     RactorRailsShim::ARModelWalker.configure(funnel: funnel)
     with_fake_ar([good, bad]) do |base|
       call_count = 0

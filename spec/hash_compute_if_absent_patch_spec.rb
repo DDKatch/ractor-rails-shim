@@ -18,9 +18,9 @@ class HashComputeIfAbsentPatchSpec < Minitest::Spec
   # The role object exists and exposes the install entry point.
   it "is a module under Patches with an .install method" do
     assert RactorRailsShim::Patches.const_defined?(:HashComputeIfAbsent, false),
-           "RactorRailsShim::Patches::HashComputeIfAbsent should be defined"
+      "RactorRailsShim::Patches::HashComputeIfAbsent should be defined"
     assert RactorRailsShim::Patches::HashComputeIfAbsent.respond_to?(:install),
-           "Patches::HashComputeIfAbsent.install should be defined"
+      "Patches::HashComputeIfAbsent.install should be defined"
   end
 
   # Idempotency: first call installs, second call is a no-op (does not re-prepend).
@@ -32,7 +32,7 @@ class HashComputeIfAbsentPatchSpec < Minitest::Spec
     assert r1, "first install should return truthy"
     assert r2, "second install should still return truthy (no-op)"
     assert RactorRailsShim::Patches::HashComputeIfAbsent.installed?,
-           "installed? should be true after install"
+      "installed? should be true after install"
   ensure
     RactorRailsShim::Patches::HashComputeIfAbsent.reset_installed_for_test!
   end
@@ -52,10 +52,13 @@ class HashComputeIfAbsentPatchSpec < Minitest::Spec
   it "installs a working Hash#compute_if_absent" do
     RactorRailsShim::Patches::HashComputeIfAbsent.install
     assert ::Hash.method_defined?(:compute_if_absent),
-           "Hash#compute_if_absent should be defined after install"
+      "Hash#compute_if_absent should be defined after install"
     h = {}
     calls = 0
-    v = h.compute_if_absent(:k) { calls += 1; "v" }
+    v = h.compute_if_absent(:k) {
+      calls += 1
+      "v"
+    }
     assert_equal "v", v
     assert_equal 1, calls
   end

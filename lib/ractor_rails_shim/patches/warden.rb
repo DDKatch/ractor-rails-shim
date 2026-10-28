@@ -16,12 +16,12 @@ module RactorRailsShim
     "Devise::URLS",
     "Devise::STRATEGIES",
     "Devise::CONTROLLERS",
-    "Devise::MODULES",
+    "Devise::MODULES"
   ])
 
   # Source-location constant for the Devise scope constraint Proc (moved from
   # make_shareable.rb so the Devise-related callable lives with the Devise patch).
-  DEVISE_SCOPE_LOC = "/devise/rails/routes.rb".freeze
+  DEVISE_SCOPE_LOC = "/devise/rails/routes.rb"
 
   class << self
     def _install_warden_hooks_patch
@@ -175,7 +175,7 @@ module RactorRailsShim
     # Proc once in main with a mock request to capture the mapping, then
     # make it shareable and wrap it in a DeviseMappingCallable.
     def _devise_mapping_replacement(proc_obj, _parent)
-      mock_env = { "devise.mapping" => nil }
+      mock_env = {"devise.mapping" => nil}
       mock_req = Struct.new(:env).new(mock_env)
       begin
         proc_obj.call(mock_req)

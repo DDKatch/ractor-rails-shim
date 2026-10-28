@@ -35,7 +35,7 @@ module RactorRailsShim
       # Lazily-memoized class ivars that must exist pre-freeze for
       # worker-side enqueue. Keep minimal: only what the enqueue path reads.
       PREWARM_METHODS = Ractor.make_shareable([
-        ["SolidQueue::Batch", :migrated?],
+        ["SolidQueue::Batch", :migrated?]
       ].freeze)
 
       # The execution models that declared `assumes_attributes_from_job

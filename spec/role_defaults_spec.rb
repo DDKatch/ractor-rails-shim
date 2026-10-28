@@ -14,7 +14,7 @@ class RoleDefaultsSpec < Minitest::Spec
   # RoleDefaults exists as a module
   it "is a module" do
     assert RactorRailsShim.const_defined?(:RoleDefaults, false),
-           "RactorRailsShim::RoleDefaults should be defined"
+      "RactorRailsShim::RoleDefaults should be defined"
     assert_kind_of Module, RactorRailsShim::RoleDefaults
   end
 
@@ -23,21 +23,21 @@ class RoleDefaultsSpec < Minitest::Spec
     dummy = Module.new
     dummy.extend RactorRailsShim::RoleDefaults
     assert_equal RactorRailsShim::Funnel.method(:swallow),
-                 dummy.default_funnel
+      dummy.default_funnel
   end
 
   it "default_safe_const_get resolves to ConstantShareabilizer.method(:safe_const_get)" do
     dummy = Module.new
     dummy.extend RactorRailsShim::RoleDefaults
     assert_equal RactorRailsShim::ConstantShareabilizer.method(:safe_const_get),
-                 dummy.default_safe_const_get
+      dummy.default_safe_const_get
   end
 
   it "default_reassign_shareable_const resolves to RactorRailsShim.method(:_reassign_shareable_const)" do
     dummy = Module.new
     dummy.extend RactorRailsShim::RoleDefaults
     assert_equal RactorRailsShim.method(:_reassign_shareable_const),
-                 dummy.default_reassign_shareable_const
+      dummy.default_reassign_shareable_const
   end
 
   # Verify extend + override pattern works as documented
@@ -45,6 +45,7 @@ class RoleDefaultsSpec < Minitest::Spec
     custom_funnel = ->(label, &blk) { blk&.call }
     dummy = Module.new do
       extend RactorRailsShim::RoleDefaults
+
       @funnel = nil
 
       def self.configure(funnel: nil)

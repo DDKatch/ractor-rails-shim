@@ -124,7 +124,7 @@ module RactorRailsShim
         # boots that stub `Rails` must not trigger a wrap.
         return nil unless (::Rails.application rescue nil)
 
-        store = (::Rails.cache rescue nil)
+        store = ::Rails.cache rescue nil
         return nil if store.nil?
 
         wrap!(store)
@@ -168,7 +168,7 @@ module RactorRailsShim
         {
           store_id: store.object_id,
           class_name: store.class.name,
-          options: options,
+          options: options
         }.tap { |spec| ::Ractor.make_shareable(spec) }
       end
 
@@ -192,8 +192,8 @@ module RactorRailsShim
       # Deep-copy `value` into a shareable twin, or UNSHAREABLE.
       def shareable_copy(value)
         return value if value.nil? || value == true || value == false ||
-                        value.is_a?(Symbol) || value.is_a?(Numeric) ||
-                        value.is_a?(Module)
+          value.is_a?(Symbol) || value.is_a?(Numeric) ||
+          value.is_a?(Module)
 
         copy = begin
           value.dup
@@ -260,16 +260,16 @@ module RactorRailsShim
       # untouched.
       def reassign_rails_cache!(store, proxy)
         if defined?(::Rails) && ::Rails.respond_to?(:cache)
-          current = (::Rails.cache rescue nil)
+          current = ::Rails.cache rescue nil
           ::Rails.cache = proxy if current.equal?(store)
         end
 
         return unless defined?(::ActionController::Base)
 
-        config = (::ActionController::Base.config rescue nil)
+        config = ::ActionController::Base.config rescue nil
         return unless config && config.respond_to?(:cache_store)
 
-        current = (config.cache_store rescue nil)
+        current = config.cache_store rescue nil
         config.cache_store = proxy if current.equal?(store)
       end
 

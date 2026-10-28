@@ -14,7 +14,6 @@
 # Run: bundle exec ruby -Ilib -Ispec spec/callback_capture_spec.rb
 
 require "minitest/autorun"
-require "set"
 require "active_support/isolated_execution_state"
 require "active_support/callbacks"
 require_relative "../lib/ractor_rails_shim/roles/fallback_ies"
@@ -141,7 +140,7 @@ class CallbackCaptureSpec < Minitest::Spec
     RactorRailsShim::CallbackCapture.reset_installed!
     RactorRailsShim::CallbackCapture.install_callback_declaration_capture!
     assert RactorRailsShim::CallbackCapture.installed?,
-           "flag should be set after install"
+      "flag should be set after install"
     # Second call must not raise and must remain installed.
     RactorRailsShim::CallbackCapture.install_callback_declaration_capture!
     assert RactorRailsShim::CallbackCapture.installed?
@@ -151,7 +150,7 @@ class CallbackCaptureSpec < Minitest::Spec
     # patched (not double-patched) method. Best-effort: if the alias was
     # already in place before this test, leave it.
     if defined?(::ActiveSupport::Callbacks::ClassMethods) &&
-       ::ActiveSupport::Callbacks::ClassMethods.method_defined?(:_rrs_orig_set_callback)
+        ::ActiveSupport::Callbacks::ClassMethods.method_defined?(:_rrs_orig_set_callback)
       # already installed by a prior load — leave as-is
     end
   end
@@ -176,7 +175,7 @@ class CallbackCaptureSpec < Minitest::Spec
     RactorRailsShim::CallbackCapture.install_callback_declaration_capture!
     # The saved original must NOT be the interceptor (which would recurse).
     refute mod.instance_method(:set_callback).equal?(mod.instance_method(:_rrs_orig_set_callback)),
-           "re-install aliased the interceptor onto _rrs_orig_set_callback (would recurse)"
+      "re-install aliased the interceptor onto _rrs_orig_set_callback (would recurse)"
     # If a prior install had already saved the original, it must be stable.
     assert_equal saved_orig, mod.instance_method(:_rrs_orig_set_callback) if saved_orig
   end
@@ -187,12 +186,13 @@ class CallbackCaptureSpec < Minitest::Spec
     RactorRailsShim::CallbackCapture.install_callback_declaration_capture!
     klass = Class.new do
       include ::ActiveSupport::Callbacks
+
       define_callbacks :probe
     end
     # The interceptor falls through to _rrs_orig_set_callback for non-
     # :process_action names. If re-install double-aliased, this recurses
     # with SystemStackError (which errors the test).
-    klass.set_callback(:probe, :before) { }
+    klass.set_callback(:probe, :before) {}
     pass "set_callback did not stack-overflow after re-install"
   end
 
@@ -248,7 +248,7 @@ class CallbackCaptureSpec < Minitest::Spec
     RactorRailsShim::CallbackCapture.reset_installed!
     RactorRailsShim::CallbackCapture.install_callback_declaration_capture!
     assert_includes RactorRailsShim::VersionPolicy::PATCH_VERSIONS, :action_filter_introspection,
-                    "install should register :action_filter_introspection"
+      "install should register :action_filter_introspection"
     assert_equal ["8.1"], RactorRailsShim::VersionPolicy::PATCH_VERSIONS[:action_filter_introspection]
   ensure
     RactorRailsShim::VersionPolicy::PATCH_VERSIONS.delete(:action_filter_introspection)
@@ -335,9 +335,15 @@ class CallbackCaptureSpec < Minitest::Spec
 
   it "freeze_declared_callbacks! funnels through an injected funnel" do
     funneled = []
-    funnel = ->(label, &blk) { funneled << label; blk&.call rescue StandardError; }
+    funnel = ->(label, &blk) {
+      funneled << label
+      blk&.call rescue StandardError
+    }
     reassigned = []
-    reassign = ->(sym, val) { reassigned << [sym, val]; val }
+    reassign = ->(sym, val) {
+      reassigned << [sym, val]
+      val
+    }
     RactorRailsShim::CallbackCapture.configure(
       funnel: funnel, reassign_shareable_const: reassign
     )
@@ -345,7 +351,7 @@ class CallbackCaptureSpec < Minitest::Spec
     RactorRailsShim::CallbackCapture.configure(
       funnel: funnel, reassign_shareable_const: reassign
     )
-    RactorRailsShim::CallbackCapture.instance_variable_set(:@declared_callbacks, { 1 => [{ kind: :before, filter: :x, only: nil, except: nil }] })
+    RactorRailsShim::CallbackCapture.instance_variable_set(:@declared_callbacks, {1 => [{kind: :before, filter: :x, only: nil, except: nil}]})
     RactorRailsShim::CallbackCapture.freeze_declared_callbacks!
     assert_includes funneled, "freeze declared callbacks"
     refute_empty reassigned, "reassign_shareable_const should have been called"
@@ -357,12 +363,15 @@ class CallbackCaptureSpec < Minitest::Spec
 
   it "freeze_declared_callbacks! reassigns via an injected reassign_shareable_const" do
     reassigned = []
-    reassign = ->(sym, val) { reassigned << val; val }
+    reassign = ->(sym, val) {
+      reassigned << val
+      val
+    }
     RactorRailsShim::CallbackCapture.configure(
-      funnel: ->(label, &blk) { blk&.call rescue StandardError; },
+      funnel: ->(label, &blk) { blk&.call rescue StandardError },
       reassign_shareable_const: reassign
     )
-    table = { 99 => [{ kind: :after, filter: :y, only: nil, except: nil }] }
+    table = {99 => [{kind: :after, filter: :y, only: nil, except: nil}]}
     RactorRailsShim::CallbackCapture.instance_variable_set(:@declared_callbacks, table)
     RactorRailsShim::CallbackCapture.freeze_declared_callbacks!
     assert_equal 1, reassigned.size
@@ -390,7 +399,7 @@ class CallbackCaptureSpec < Minitest::Spec
     RactorRailsShim::CallbackCapture.configure(
       funnel: ->(label, &blk) { blk&.call },
       reassign_shareable_const: ->(s, v) { v },
-      register_patch: ->(n, v) { }
+      register_patch: ->(n, v) {}
     )
     refute_equal RactorRailsShim::Funnel.method(:swallow), RactorRailsShim::CallbackCapture.funnel
     refute_equal RactorRailsShim.method(:_reassign_shareable_const), RactorRailsShim::CallbackCapture.reassign_shareable_const
@@ -407,34 +416,34 @@ class CallbackCaptureSpec < Minitest::Spec
   # --- decode_callback_conditions / normalize_context_keys (row 1) ---
 
   it "decode_callback_conditions passes Symbol if:/unless: through" do
-    result = RactorRailsShim::CallbackCapture.decode_callback_conditions({ if: :paid?, unless: :frozen_guard })
+    result = RactorRailsShim::CallbackCapture.decode_callback_conditions({if: :paid?, unless: :frozen_guard})
     assert_equal [:paid?, :frozen_guard, nil, nil, true], result
   end
 
   it "decode_callback_conditions captures on:/except_on: as shareable context keys" do
-    result = RactorRailsShim::CallbackCapture.decode_callback_conditions({ if: [->(m) { true }], on: :create })
+    result = RactorRailsShim::CallbackCapture.decode_callback_conditions({if: [->(m) { true }], on: :create})
     assert_equal [nil, nil, :create, nil, true], result
 
-    result2 = RactorRailsShim::CallbackCapture.decode_callback_conditions({ on: %i[create update], except_on: :destroy })
+    result2 = RactorRailsShim::CallbackCapture.decode_callback_conditions({on: %i[create update], except_on: :destroy})
     assert_equal [nil, nil, %i[create update], :destroy, true], result2
     assert Ractor.shareable?(result2[2])
     assert Ractor.shareable?(result2[3])
   end
 
   it "decode_callback_conditions flags an unresolvable user Proc (all_resolvable false)" do
-    result = RactorRailsShim::CallbackCapture.decode_callback_conditions({ if: ->(m) { true } })
+    result = RactorRailsShim::CallbackCapture.decode_callback_conditions({if: ->(m) { true }})
     assert_equal [nil, nil, nil, nil, false], result
 
-    result2 = RactorRailsShim::CallbackCapture.decode_callback_conditions({ if: [->(m) { true }] })
+    result2 = RactorRailsShim::CallbackCapture.decode_callback_conditions({if: [->(m) { true }]})
     assert_equal [nil, nil, nil, nil, false], result2
 
-    result3 = RactorRailsShim::CallbackCapture.decode_callback_conditions({ unless: ->(m) { true } })
+    result3 = RactorRailsShim::CallbackCapture.decode_callback_conditions({unless: ->(m) { true }})
     assert_equal [nil, nil, nil, nil, false], result3
   end
 
   it "decode_callback_conditions treats non-Proc constraint objects as resolvable (only:/except: ActionFilters)" do
     fake_filter = Object.new # ActionFilter stand-in: neither Symbol nor Proc
-    result = RactorRailsShim::CallbackCapture.decode_callback_conditions({ if: [fake_filter] })
+    result = RactorRailsShim::CallbackCapture.decode_callback_conditions({if: [fake_filter]})
     assert_equal [nil, nil, nil, nil, true], result
   end
 
@@ -456,7 +465,7 @@ class CallbackCaptureSpec < Minitest::Spec
     attr_reader :options
 
     def initialize
-      @options = { minimum: 10, if: :allow_short? }
+      @options = {minimum: 10, if: :allow_short?}
     end
 
     def attributes
@@ -473,7 +482,7 @@ class CallbackCaptureSpec < Minitest::Spec
     refute_nil descriptor
     assert_equal "RrsSpecDescriptorValidator", descriptor[:validator]
     assert_equal [:body], descriptor[:attributes]
-    assert_equal({ minimum: 10, if: :allow_short? }, descriptor[:options])
+    assert_equal({minimum: 10, if: :allow_short?}, descriptor[:options])
     assert descriptor.frozen?
     assert Ractor.shareable?(descriptor)
   end
@@ -481,7 +490,7 @@ class CallbackCaptureSpec < Minitest::Spec
   it "build_validator_descriptor returns nil for an unshareable validator (proc options)" do
     proc_validator = Class.new(RrsSpecDescriptorValidator) do
       def initialize
-        @options = { minimum: 10, if: ->(m) { true } } # unshareable Proc
+        @options = {minimum: 10, if: ->(m) { true }} # unshareable Proc
       end
 
       def self.name
@@ -507,14 +516,15 @@ class CallbackCaptureSpec < Minitest::Spec
     RactorRailsShim::CallbackCapture.reset_declared_callbacks!
     descriptor = RactorRailsShim::CallbackCapture.build_validator_descriptor(RrsSpecDescriptorValidator.new)
     RactorRailsShim::CallbackCapture.record_declared_validator_callback(
-      98765, :validate, :before, descriptor, nil, nil, :create, nil)
+      98765, :validate, :before, descriptor, nil, nil, :create, nil
+    )
     table = RactorRailsShim::CallbackCapture.instance_variable_get(:@declared_callbacks)
     entry = table[98765].last
     assert_equal :validate, entry[:chain_kind]
     assert_equal :before, entry[:phase]
     assert_equal "RrsSpecDescriptorValidator", entry[:filter]
     assert_equal [:body], entry[:validator_attributes]
-    assert_equal({ minimum: 10, if: :allow_short? }, entry[:validator_options])
+    assert_equal({minimum: 10, if: :allow_short?}, entry[:validator_options])
     assert_equal :create, entry[:on]
     assert_nil entry[:only]
   ensure
@@ -525,7 +535,8 @@ class CallbackCaptureSpec < Minitest::Spec
     RactorRailsShim::CallbackCapture.reset_declared_callbacks!
     descriptor = RactorRailsShim::CallbackCapture.build_validator_descriptor(RrsSpecDescriptorValidator.new)
     RactorRailsShim::CallbackCapture.record_declared_validator_callback(
-      4321, :validate, :before, descriptor, :allow_short?, nil, nil, nil)
+      4321, :validate, :before, descriptor, :allow_short?, nil, nil, nil
+    )
     RactorRailsShim::CallbackCapture.record_declared_callback(4321, :save, :before, :normalize_title, nil, nil)
     RactorRailsShim::CallbackCapture.freeze_declared_callbacks!
     table = RactorRailsShim::SHAREABLE_DECLARED_CALLBACKS

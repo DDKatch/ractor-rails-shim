@@ -50,12 +50,12 @@ module RactorRailsShim
       # Ractor's slot is empty). Builders reference Zeitwerk constants by
       # full path so they're resolvable from any Ractor.
       ivars = {
-        loaders:                  [:ractor_rails_shim_zw_loaders,    "Zeitwerk::Registry::Loaders.new"],
-        gem_loaders_by_root_file: [:ractor_rails_shim_zw_gem,        "{}"],
-        autoloads:                [:ractor_rails_shim_zw_autoloads,  "Zeitwerk::Registry::Autoloads.new"],
-        explicit_namespaces:      [:ractor_rails_shim_zw_explicit,   "Zeitwerk::Registry::ExplicitNamespaces.new"],
-        inceptions:               [:ractor_rails_shim_zw_inceptions, "Zeitwerk::Registry::Inceptions.new"],
-        mutex:                    [:ractor_rails_shim_zw_mutex,      "Mutex.new"],
+        loaders: [:ractor_rails_shim_zw_loaders, "Zeitwerk::Registry::Loaders.new"],
+        gem_loaders_by_root_file: [:ractor_rails_shim_zw_gem, "{}"],
+        autoloads: [:ractor_rails_shim_zw_autoloads, "Zeitwerk::Registry::Autoloads.new"],
+        explicit_namespaces: [:ractor_rails_shim_zw_explicit, "Zeitwerk::Registry::ExplicitNamespaces.new"],
+        inceptions: [:ractor_rails_shim_zw_inceptions, "Zeitwerk::Registry::Inceptions.new"],
+        mutex: [:ractor_rails_shim_zw_mutex, "Mutex.new"]
       }
 
       # Redefine each reader (and the mutex, which is read directly as @mutex)
@@ -106,8 +106,8 @@ module RactorRailsShim
               next if existing_loader == loader
               existing_loader.__roots.each_key do |existing_root_dir|
                 next if !new_root_dir.start_with?(existing_root_dir) && !existing_root_dir.start_with?(new_root_dir)
-                new_root_dir_slash = new_root_dir + '/'
-                existing_root_dir_slash = existing_root_dir + '/'
+                new_root_dir_slash = new_root_dir + "/"
+                existing_root_dir_slash = existing_root_dir + "/"
                 next if !new_root_dir_slash.start_with?(existing_root_dir_slash) && !existing_root_dir_slash.start_with?(new_root_dir_slash)
                 next if loader.__ignores?(existing_root_dir)
                 break if existing_loader.__ignores?(new_root_dir)

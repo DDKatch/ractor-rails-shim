@@ -24,7 +24,7 @@ module RactorRailsShim
     "ActionView::Helpers::TagHelper::PRE_CONTENT_STRINGS",
     "ActionView::Helpers::AssetUrlHelper::ASSET_EXTENSIONS",
     "ActionView::Helpers::UrlHelper::BUTTON_TAG_METHOD_VERBS",
-    "ActionView::Helpers::UrlHelper::STRINGIFIED_COMMON_METHODS",
+    "ActionView::Helpers::UrlHelper::STRINGIFIED_COMMON_METHODS"
   ])
 
   class << self
@@ -164,26 +164,19 @@ module RactorRailsShim
         if Ractor.main?
           registry = {}
           ::AbstractController::Base.descendants.each do |ctrl|
-            begin
-              routes = ctrl.respond_to?(:_routes) ? ctrl._routes : nil
-              routes = ::Rails.application.routes if routes.nil? && ::Rails.respond_to?(:application) && ::Rails.application
-              vcc = rcm.instance_method(:build_view_context_class).bind(ctrl).call(
-                ::ActionView::LookupContext::DetailsKey.view_context_class,
-                ctrl.respond_to?(:supports_path?) ? ctrl.supports_path? : true,
-                routes,
-                ctrl.respond_to?(:_helpers) ? ctrl._helpers : nil
-              )
-              registry[ctrl] = vcc if vcc
-            rescue StandardError => e
-              # skip controllers that can't build (e.g. abstract)
-            end
+            routes = ctrl.respond_to?(:_routes) ? ctrl._routes : nil
+            routes = ::Rails.application.routes if routes.nil? && ::Rails.respond_to?(:application) && ::Rails.application
+            vcc = rcm.instance_method(:build_view_context_class).bind_call(ctrl, ::ActionView::LookupContext::DetailsKey.view_context_class, ctrl.respond_to?(:supports_path?) ? ctrl.supports_path? : true, routes, ctrl.respond_to?(:_helpers) ? ctrl._helpers : nil)
+            registry[ctrl] = vcc if vcc
+          rescue StandardError
+            # skip controllers that can't build (e.g. abstract)
           end
           registry.delete_if { |_, v| v.nil? }
           registry.freeze
           begin
             Ractor.make_shareable(registry)
             self._view_context_registry = registry
-          rescue StandardError => e
+          rescue StandardError
             # If the registry can't be made shareable, leave it — workers fall
             # back to the empty-cache base.
           end
@@ -228,7 +221,7 @@ module RactorRailsShim
         RUBY
       end
       vcc_key = :ractor_rails_shim_lookup_context_view_context_class
-      vcc_key_str = vcc_key.inspect
+      vcc_key.inspect
       CLASS_ATTRIBUTES << ["ActionView::LookupContext::DetailsKey", :view_context_class, vcc_key, nil]
       # Build it now in main and stash in IES so the fallback builder picks it up.
       if Ractor.main? && defined?(::ActionView::Base)
@@ -239,12 +232,7 @@ module RactorRailsShim
         # route url_helpers. build_view_context_class is a ClassMethods method on
         # controllers, so invoke it via the unbound method bound to
         # ActionController::Base.
-        fallback = rcm.instance_method(:build_view_context_class).bind(::ActionController::Base).call(
-          ::ActionView::LookupContext::DetailsKey.view_context_class,
-          true,
-          (defined?(::Rails) && ::Rails.respond_to?(:application) && ::Rails.application) ? ::Rails.application.routes : nil,
-          nil
-        )
+        fallback = rcm.instance_method(:build_view_context_class).bind_call(::ActionController::Base, ::ActionView::LookupContext::DetailsKey.view_context_class, true, (defined?(::Rails) && ::Rails.respond_to?(:application) && ::Rails.application) ? ::Rails.application.routes : nil, nil)
         fallback = _swallow("make view context fallback shareable") { Ractor.make_shareable(fallback) }
         self._view_context_fallback = fallback
       end
@@ -314,7 +302,7 @@ module RactorRailsShim
       th_key = :ractor_rails_shim_av_template_handlers
       dth_key = :ractor_rails_shim_av_default_template_handlers
       th_key_str = th_key.inspect
-      dth_key_str = dth_key.inspect
+      dth_key.inspect
       # The handler registry lives in class variables (@@template_handlers,
       # @@default_template_handlers, @@template_extensions) whose values are
       # mutable Hashes holding handler instances — and an unshareable `:ruby`
@@ -540,7 +528,7 @@ module RactorRailsShim
         converted = 0
         resolvers.uniq.each do |r|
           if r.instance_variable_defined?(:@unbound_templates) &&
-             r.instance_variable_get(:@unbound_templates).is_a?(::Concurrent::Map)
+              r.instance_variable_get(:@unbound_templates).is_a?(::Concurrent::Map)
             r.instance_variable_set(:@unbound_templates, {})
             converted += 1
           end
@@ -757,9 +745,11 @@ module RactorRailsShim
         def safe_list_sanitizer
           Ractor.current[:__rrs_safe_list_sanitizer__] ||= sanitizer_vendor.safe_list_sanitizer.new
         end
+
         def full_sanitizer
           Ractor.current[:__rrs_full_sanitizer__] ||= sanitizer_vendor.full_sanitizer.new
         end
+
         def link_sanitizer
           Ractor.current[:__rrs_link_sanitizer__] ||= sanitizer_vendor.link_sanitizer.new
         end
@@ -782,7 +772,7 @@ module RactorRailsShim
       mod.module_eval do
         def document_klass
           store = (Ractor.current[:__rrs_loofah_doc_klass__] ||= {})
-          store[self.object_id] ||=
+          store[object_id] ||=
             if Loofah.html5_support? && self == Loofah::HTML5::DocumentFragment
               Loofah::HTML5::Document
             elsif self == Loofah::HTML4::DocumentFragment
@@ -793,6 +783,5 @@ module RactorRailsShim
         end
       end
     end
-
   end
 end

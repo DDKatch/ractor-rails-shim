@@ -148,7 +148,7 @@ class ConstantShareabilizerSpec < Minitest::Spec
 
   it "safe_const_get resolves a nested constant path" do
     assert_equal ActiveSupport::IsolatedExecutionState,
-                 RactorRailsShim::ConstantShareabilizer.safe_const_get("ActiveSupport::IsolatedExecutionState")
+      RactorRailsShim::ConstantShareabilizer.safe_const_get("ActiveSupport::IsolatedExecutionState")
   end
 
   it "safe_const_get returns nil for a missing constant" do
@@ -162,7 +162,7 @@ class ConstantShareabilizerSpec < Minitest::Spec
     Object.const_set(:InheritTestCS, child) unless Object.const_defined?(:InheritTestCS)
     begin
       assert_nil RactorRailsShim::ConstantShareabilizer.safe_const_get("InheritTestCS::CHILD", inherit: false),
-                 "inherit: false must not resolve inherited constants"
+        "inherit: false must not resolve inherited constants"
     ensure
       Object.send(:remove_const, :InheritTestCS)
     end
@@ -201,12 +201,12 @@ class ConstantShareabilizerSpec < Minitest::Spec
     RactorRailsShim::SHAREABLE_CONSTANTS.replace([]) # vacuous: all resolve → flag sets
 
     refute RactorRailsShim::ConstantShareabilizer.applied?,
-           "setup: flag should be unset before first run"
+      "setup: flag should be unset before first run"
 
     RactorRailsShim::ConstantShareabilizer.apply!
 
     assert RactorRailsShim::ConstantShareabilizer.applied?,
-           "flag should be truthy after first run"
+      "flag should be truthy after first run"
   ensure
     RactorRailsShim::SHAREABLE_CONSTANTS.replace(saved) if saved
     RactorRailsShim::ConstantShareabilizer.reset_applied!
@@ -220,7 +220,7 @@ class ConstantShareabilizerSpec < Minitest::Spec
     RactorRailsShim::ConstantShareabilizer.apply!
 
     refute RactorRailsShim::ConstantShareabilizer.applied?,
-           "flag should stay unset so a later call retries the now-loadable constants"
+      "flag should stay unset so a later call retries the now-loadable constants"
   ensure
     RactorRailsShim::SHAREABLE_CONSTANTS.replace(saved) if saved
     RactorRailsShim::ConstantShareabilizer.reset_applied!
@@ -230,7 +230,7 @@ class ConstantShareabilizerSpec < Minitest::Spec
 
   it "shareable_constants returns SHAREABLE_CONSTANTS" do
     assert_same RactorRailsShim::SHAREABLE_CONSTANTS,
-                RactorRailsShim::ConstantShareabilizer.shareable_constants
+      RactorRailsShim::ConstantShareabilizer.shareable_constants
   end
 
   # --- Facade delegation ---
@@ -357,7 +357,10 @@ class ConstantShareabilizerSpec < Minitest::Spec
 
   it "make_value_shareable funnels through an injected funnel (labeled)" do
     funneled = []
-    funnel = ->(label, &blk) { funneled << label; blk&.call rescue StandardError; }
+    funnel = ->(label, &blk) {
+      funneled << label
+      blk&.call rescue StandardError
+    }
     RactorRailsShim::ConstantShareabilizer.configure(funnel: funnel)
     RactorRailsShim::ConstantShareabilizer.make_value_shareable(->(*) { :x })
     refute_empty funneled
@@ -427,7 +430,7 @@ class ConstantShareabilizerSpec < Minitest::Spec
     assert Ractor.shareable?(mod::LIST), "injected-registry constant should be made shareable"
     # The done flag set because every path resolved.
     assert RactorRailsShim::ConstantShareabilizer.applied?,
-           "done flag should be set when all injected paths resolve"
+      "done flag should be set when all injected paths resolve"
   ensure
     Object.send(:remove_const, :ShimCSInject) if defined?(ShimCSInject)
     RactorRailsShim::ConstantShareabilizer.reset_applied!
@@ -437,7 +440,7 @@ class ConstantShareabilizerSpec < Minitest::Spec
   it "reset_configuration restores the facade-lookup defaults" do
     RactorRailsShim::ConstantShareabilizer.configure(
       funnel: ->(label, &blk) { blk&.call },
-      register_patch: ->(n, v) { },
+      register_patch: ->(n, v) {},
       introspectable: ->(v) { true },
       noop_lock_class: Class.new,
       shareable_constants_registry: []

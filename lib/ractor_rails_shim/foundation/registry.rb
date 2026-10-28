@@ -34,9 +34,9 @@ module RactorRailsShim
 
     class << self
       attr_reader :class_attributes, :mattr_defaults, :class_attr_values,
-                  :shareable_mattr_defaults, :shareable_constants,
-                  :shareable_class_ivars, :abstract_registry,
-                  :view_context_registry, :shareable_fallback
+        :shareable_mattr_defaults, :shareable_constants,
+        :shareable_class_ivars, :abstract_registry,
+        :view_context_registry, :shareable_fallback
 
       # Swap the frozen (shareable) registries. The value MUST already be
       # frozen + Ractor.make_shareable. Each reassign_* updates the

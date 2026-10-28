@@ -16,7 +16,6 @@
 # Run: bundle exec ruby -Ilib -Ispec spec/shareability_traversal_spec.rb
 
 require "minitest/autorun"
-require "set"
 require "active_support/isolated_execution_state"
 require "concurrent"
 require_relative "../lib/ractor_rails_shim/roles/fallback_ies"
@@ -76,13 +75,15 @@ class ShareabilityTraversalSpec < Minitest::Spec
       @cache = Concurrent::Map.new
       @cache[:foo] = "bar"
       @children = [ChildWithLock.new, ChildWithLock.new]
-      @lookup = { nested: ChildWithLock.new }
+      @lookup = {nested: ChildWithLock.new}
     end
     attr_reader :lock, :monitor, :cache, :children, :lookup
   end
 
   class ChildWithLock
-    def initialize; @inner_lock = Mutex.new; end
+    def initialize
+      @inner_lock = Mutex.new
+    end
     attr_reader :inner_lock
   end
 
@@ -132,7 +133,9 @@ class ShareabilityTraversalSpec < Minitest::Spec
 
   it "replace_unshareable_procs! walks Set members and replaces nested Procs" do
     proc_holder = Class.new do
-      def initialize; @p = ->(*) { :set_proc }; end
+      def initialize
+        @p = ->(*) { :set_proc }
+      end
       attr_reader :p
     end.new
     set_holder = Set.new([proc_holder])
@@ -147,7 +150,7 @@ class ShareabilityTraversalSpec < Minitest::Spec
       shared = ->(*) { :shared }
       @a = shared
       @b = [@a, @a]
-      @c = { nested: @a, other: @a }
+      @c = {nested: @a, other: @a}
     end
   end
 
@@ -176,9 +179,29 @@ class ShareabilityTraversalSpec < Minitest::Spec
     # app.routes.* (each rescued nil). A stub object responding to env_config
     # and routes should not raise.
     obj = Object.new
-    def obj.env_config; nil; end
-    def obj.app_env_config; nil; end
-    def obj.routes; o = Object.new; def o.url_helpers; nil; end; def o.named_routes; nil; end; def o.helpers; nil; end; o; end
+    def obj.env_config
+      nil
+    end
+
+    def obj.app_env_config
+      nil
+    end
+
+    def obj.routes
+      o = Object.new
+      def o.url_helpers
+        nil
+      end
+
+      def o.named_routes
+        nil
+      end
+
+      def o.helpers
+        nil
+      end
+      o
+    end
     assert_nil RactorRailsShim::ShareabilityTraversal.precompute_lazy_ivars(obj)
   end
 
@@ -239,7 +262,7 @@ class ShareabilityTraversalSpec < Minitest::Spec
     ffs = ->(mw) { :ffs }
     dmr = ->(p, pr) { :dmr }
     srf = ->(p) { :srf }
-    funnel = ->(label, &blk) { blk&.call rescue StandardError; }
+    funnel = ->(label, &blk) { blk&.call rescue StandardError }
     RactorRailsShim::ShareabilityTraversal.configure(
       funnel: funnel, find_files_server: ffs,
       devise_mapping_replacement: dmr, strategy_replacement_for: srf
@@ -274,8 +297,8 @@ class ShareabilityTraversalSpec < Minitest::Spec
   it "configure injects the LOC-string collaborators via locs:" do
     t = RactorRailsShim::ShareabilityTraversal
     locs = t::Locs.new(ssl: "/x/ssl.rb", files: "/x/files.rb",
-                       cookie: "/x/cookie.rb", devise_scope: "/x/devise.rb",
-                       mapper: "/x/mapper.rb")
+      cookie: "/x/cookie.rb", devise_scope: "/x/devise.rb",
+      mapper: "/x/mapper.rb")
     t.configure(locs: locs)
     assert_equal "/x/ssl.rb", t.ssl_loc
     assert_equal "/x/files.rb", t.files_loc
@@ -288,7 +311,10 @@ class ShareabilityTraversalSpec < Minitest::Spec
 
   it "replace_locks_and_concurrent_maps! funnels through an injected funnel" do
     funneled = []
-    funnel = ->(label, &blk) { funneled << label; blk&.call rescue StandardError; }
+    funnel = ->(label, &blk) {
+      funneled << label
+      blk&.call rescue StandardError
+    }
     RactorRailsShim::ShareabilityTraversal.configure(funnel: funnel)
     holder = Object.new
     holder.instance_variable_set(:@lock, Mutex.new)
@@ -302,26 +328,29 @@ class ShareabilityTraversalSpec < Minitest::Spec
     fake_lock_class = Class.new
     RactorRailsShim::ShareabilityTraversal.configure(
       noop_lock_class: fake_lock_class,
-      funnel: ->(label, &blk) { blk&.call rescue StandardError; }
+      funnel: ->(label, &blk) { blk&.call rescue StandardError }
     )
     holder = Object.new
     holder.instance_variable_set(:@lock, Mutex.new)
     RactorRailsShim::ShareabilityTraversal.replace_locks_and_concurrent_maps!(holder)
     assert_kind_of fake_lock_class, holder.instance_variable_get(:@lock),
-                   "Mutex should be replaced with an instance of the injected lock class"
+      "Mutex should be replaced with an instance of the injected lock class"
   ensure
     RactorRailsShim::ShareabilityTraversal.reset_configuration
   end
 
   it "replace_unshareable_procs! routes proc-ivar swaps through an injected funnel" do
     funneled = []
-    funnel = ->(label, &blk) { funneled << label; blk&.call rescue StandardError; }
+    funnel = ->(label, &blk) {
+      funneled << label
+      blk&.call rescue StandardError
+    }
     noop_proc_class = Class.new
     RactorRailsShim::ShareabilityTraversal.configure(
       funnel: funnel, noop_proc_class: noop_proc_class
     )
     holder = Object.new
-    holder.instance_variable_set(:@proc, Proc.new { })
+    holder.instance_variable_set(:@proc, proc {})
     RactorRailsShim::ShareabilityTraversal.replace_unshareable_procs!(holder)
     assert_includes funneled, "replace proc ivar"
   ensure
@@ -332,14 +361,14 @@ class ShareabilityTraversalSpec < Minitest::Spec
     noop_proc_class = Class.new
     RactorRailsShim::ShareabilityTraversal.configure(
       noop_proc_class: noop_proc_class,
-      funnel: ->(label, &blk) { blk&.call rescue StandardError; }
+      funnel: ->(label, &blk) { blk&.call rescue StandardError }
     )
     holder = Object.new
-    p = Proc.new { }
+    p = proc {}
     holder.instance_variable_set(:@proc, p)
     RactorRailsShim::ShareabilityTraversal.replace_unshareable_procs!(holder)
     assert_kind_of noop_proc_class, holder.instance_variable_get(:@proc),
-                   "unknown Proc should be replaced with an instance of the injected noop_proc_class"
+      "unknown Proc should be replaced with an instance of the injected noop_proc_class"
   ensure
     RactorRailsShim::ShareabilityTraversal.reset_configuration
   end
@@ -348,12 +377,12 @@ class ShareabilityTraversalSpec < Minitest::Spec
     sc = RactorRailsShim.singleton_class
     t = RactorRailsShim::ShareabilityTraversal
     locs = t::Locs.new(ssl: "a", files: "b", cookie: "c",
-                       devise_scope: "d", mapper: "e")
+      devise_scope: "d", mapper: "e")
     t.configure(
       funnel: ->(label, &blk) { blk&.call },
-      find_files_server: ->(mw) { },
-      devise_mapping_replacement: ->(p, pr) { },
-      strategy_replacement_for: ->(p) { },
+      find_files_server: ->(mw) {},
+      devise_mapping_replacement: ->(p, pr) {},
+      strategy_replacement_for: ->(p) {},
       noop_lock_class: Class.new, noop_proc_class: Class.new,
       callable_class: Class.new, callable_const_class: Class.new,
       request_callable_class: Class.new,
@@ -395,7 +424,7 @@ class ShareabilityTraversalSpec < Minitest::Spec
 
   it "each_ivar_and_child walks Hash entries via CONTAINER_WALKERS" do
     t = RactorRailsShim::ShareabilityTraversal
-    h = { a: 1, b: :sym }
+    h = {a: 1, b: :sym}
     children = []
     t.each_ivar_and_child(h) { |v, iv| children << [v, iv] }
     # Hash yields keys and values
@@ -439,6 +468,7 @@ class ShareabilityTraversalSpec < Minitest::Spec
     t = RactorRailsShim::ShareabilityTraversal
     custom = Class.new do
       include Enumerable
+
       def each(&b)
         yield :from_custom
         yield :also_custom
@@ -493,7 +523,11 @@ class ShareabilityTraversalSpec < Minitest::Spec
     # A frozen object with a ivar that raises on get (simulate via a
     # class overriding instance_variable_get).
     kl = Class.new do
-      def initialize; @ok = 1; @bad = 2; end
+      def initialize
+        @ok = 1
+        @bad = 2
+      end
+
       def instance_variable_get(name)
         raise StandardError if name == :@bad
         super
@@ -518,7 +552,9 @@ class ShareabilityTraversalSpec < Minitest::Spec
   it "each_ivar rescues when instance_variables itself raises (BasicObject)" do
     t = RactorRailsShim::ShareabilityTraversal
     basic = Class.new(BasicObject) do
-      def instance_variables; raise StandardError; end
+      def instance_variables
+        raise StandardError
+      end
     end.new
     pairs = []
     t.each_ivar(basic) { |iv, v| pairs << [iv, v] }
@@ -530,15 +566,15 @@ class ShareabilityTraversalSpec < Minitest::Spec
     excluded = t::CONTAINER_WALKERS.keys + [String]
     excluded.each do |klass|
       instance = case klass
-                 when String then "x"
-                 when Struct then Struct.new(:a).new
-                 when Set then Set.new
-                 when Hash then {}
-                 when Array then []
-                 else klass.new
-                 end
+      when String then "x"
+      when Struct then Struct.new(:a).new
+      when Set then Set.new
+      when Hash then {}
+      when Array then []
+      else klass.new
+      end
       refute t.enumerable_but_not_basic?(instance),
-             "#{klass} is in CONTAINER_WALKERS (or String) and must be excluded"
+        "#{klass} is in CONTAINER_WALKERS (or String) and must be excluded"
     end
   end
 
@@ -602,10 +638,13 @@ class ShareabilityTraversalSpec < Minitest::Spec
     t = RactorRailsShim::ShareabilityTraversal
     # A Proc whose source_location ends with ssl_loc and ivar :@exclude
     # should get the CallableConst replacement, not NoOpProc.
-    callable_const_class = Class.new { def initialize(_arg); end }
+    callable_const_class = Class.new {
+      def initialize(_arg)
+      end
+    }
     t.configure(
       callable_const_class: callable_const_class,
-      funnel: ->(label, &blk) { blk&.call rescue StandardError; }
+      funnel: ->(label, &blk) { blk&.call rescue StandardError }
     )
     parent = Object.new
     parent.instance_variable_set(:@redirect, false)
@@ -621,10 +660,10 @@ class ShareabilityTraversalSpec < Minitest::Spec
     noop_proc_class = Class.new
     t.configure(
       noop_proc_class: noop_proc_class,
-      funnel: ->(label, &blk) { blk&.call rescue StandardError; }
+      funnel: ->(label, &blk) { blk&.call rescue StandardError }
     )
     parent = Object.new
-    unknown_proc = eval("lambda { }", TOPLEVEL_BINDING, "/some/unknown/file.rb", 1)
+    unknown_proc = eval("lambda { }", TOPLEVEL_BINDING, __FILE__, __LINE__)
     t.replace_one_proc(unknown_proc, parent, :@whatever, nil)
     assert_kind_of noop_proc_class, parent.instance_variable_get(:@whatever)
   ensure
@@ -662,8 +701,8 @@ class ShareabilityTraversalSpec < Minitest::Spec
   it "configure accepts a locs: kwarg (Locs value object)" do
     t = RactorRailsShim::ShareabilityTraversal
     locs = t::Locs.new(ssl: "/x/ssl.rb", files: "/x/files.rb",
-                       cookie: "/x/cookie.rb", devise_scope: "/x/ds.rb",
-                       mapper: "/x/mapper.rb")
+      cookie: "/x/cookie.rb", devise_scope: "/x/ds.rb",
+      mapper: "/x/mapper.rb")
     t.configure(locs: locs)
     assert_equal "/x/ssl.rb", t.ssl_loc
     assert_equal "/x/files.rb", t.files_loc
@@ -688,7 +727,7 @@ class ShareabilityTraversalSpec < Minitest::Spec
   it "reset_configuration restores the default Locs" do
     t = RactorRailsShim::ShareabilityTraversal
     t.configure(locs: t::Locs.new(ssl: "a", files: "b", cookie: "c",
-                                    devise_scope: "d", mapper: "e"))
+      devise_scope: "d", mapper: "e"))
     refute_equal RactorRailsShim::SSL_LOC, t.ssl_loc
     t.reset_configuration
     assert_equal RactorRailsShim::SSL_LOC, t.ssl_loc

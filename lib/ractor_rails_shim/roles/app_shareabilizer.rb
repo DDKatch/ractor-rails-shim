@@ -58,14 +58,14 @@ module RactorRailsShim
     @reassign_shareable_const = nil
 
     def self.configure(apply_shareable_constants: nil, install_all_framework_patches: nil,
-                       precompute_lazy_ivars: nil, precompute_propshaft: nil,
-                       generate_ar_attribute_methods: nil, warm_attribute_method_patterns: nil,
-                       warm_cache_serializer_fallbacks: nil, prewarm_solid_queue: nil, freeze_json_coder: nil, reemit_proc_layouts: nil, freeze_proc_layout_registry: nil,
-                       freeze_declared_callbacks: nil, freeze_shareable_class_ivars: nil,
-                       warm_journey_routes: nil, neutralize_logger_io: nil,
-                       replace_unshareable_procs: nil, replace_locks_and_concurrent_maps: nil,
-                       build_shareable_fallback: nil, make_shareable_fn: nil,
-                       reassign_shareable_const: nil)
+      precompute_lazy_ivars: nil, precompute_propshaft: nil,
+      generate_ar_attribute_methods: nil, warm_attribute_method_patterns: nil,
+      warm_cache_serializer_fallbacks: nil, prewarm_solid_queue: nil, freeze_json_coder: nil, reemit_proc_layouts: nil, freeze_proc_layout_registry: nil,
+      freeze_declared_callbacks: nil, freeze_shareable_class_ivars: nil,
+      warm_journey_routes: nil, neutralize_logger_io: nil,
+      replace_unshareable_procs: nil, replace_locks_and_concurrent_maps: nil,
+      build_shareable_fallback: nil, make_shareable_fn: nil,
+      reassign_shareable_const: nil)
       @apply_shareable_constants = apply_shareable_constants
       @install_all_framework_patches = install_all_framework_patches
       @precompute_lazy_ivars = precompute_lazy_ivars

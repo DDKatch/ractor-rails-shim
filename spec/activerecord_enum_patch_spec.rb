@@ -18,12 +18,12 @@ require_relative "../lib/ractor_rails_shim/patches"
 class ActiverecordEnumPatchSpec < Minitest::Spec
   it "defines the redefinition entrypoint _redefine_ar_enum_methods!" do
     assert RactorRailsShim.respond_to?(:_redefine_ar_enum_methods!, true),
-           "_redefine_ar_enum_methods! must be defined"
+      "_redefine_ar_enum_methods! must be defined"
   end
 
   it "defines the pending-mods sharing entrypoint _share_ar_pending_attribute_modifications!" do
     assert RactorRailsShim.respond_to?(:_share_ar_pending_attribute_modifications!, true),
-           "_share_ar_pending_attribute_modifications! must be defined"
+      "_share_ar_pending_attribute_modifications! must be defined"
   end
 
   it "no-ops cleanly when ActiveRecord is not loaded" do
@@ -35,7 +35,7 @@ class ActiverecordEnumPatchSpec < Minitest::Spec
 
   it "EnumTypeDecorator is constructible from shareable inputs and freezes cleanly" do
     decorator = RactorRailsShim.singleton_class.const_get(:EnumTypeDecorator)
-                                   .new("state", { "draft" => 0, "moderated" => 1 }, true)
+      .new("state", {"draft" => 0, "moderated" => 1}, true)
     assert_equal "state", decorator.instance_variable_get(:@enum_name)
     # All inputs are shareable (String / frozen labels hash / bool), so the
     # instance itself must freeze+share — workers construct EnumTypes from

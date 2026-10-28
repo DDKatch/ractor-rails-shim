@@ -26,14 +26,14 @@ module RactorRailsShim
         # the same way — but the main-ractor fallback must read @@sym, and
         # the seed must run in the main ractor at define-time (via super).
         def mattr_accessor(*syms, instance_reader: true, instance_writer: true,
-                           instance_accessor: true, default: nil, **kwargs, &block)
+          instance_accessor: true, default: nil, **kwargs, &block)
           shareable = kwargs[:shareable]
           mod_name = name
 
           # Compute the default value the same way Rails does, so we can
           # seed worker-ractor IES slots with it (workers can't read @@sym).
           # The block form is evaluated once here (in main ractor) like Rails.
-          sym_default = block_given? && default.nil? ? yield : default
+          sym_default = (block_given? && default.nil?) ? yield : default
 
           super # define the methods via the original path (sets @@sym)
 
@@ -145,10 +145,10 @@ module RactorRailsShim
         # model's schema.
         def mattr_reader(*syms, instance_reader: true, instance_accessor: true, default: nil, location: nil)
           mod_name = name
-          sym_default = block_given? && default.nil? ? yield : default
+          sym_default = (block_given? && default.nil?) ? yield : default
 
           super # defines the original `def self.<sym>; @@<sym>; end` readers
-                # and seeds @@<sym> with sym_default (via class_variable_set).
+          # and seeds @@<sym> with sym_default (via class_variable_set).
 
           syms.each do |sym|
             key = :"ractor_rails_shim_mattr_#{mod_name}_#{sym}"

@@ -35,7 +35,7 @@ class FrameworkPatchDispatchSpec < Minitest::Spec
     RactorRailsShim::Installer.dispatch_all_framework_patches
 
     assert_includes called, :test_auto_dispatch,
-                    "dispatcher should auto-discover _install_test_auto_dispatch_patch"
+      "dispatcher should auto-discover _install_test_auto_dispatch_patch"
   ensure
     RactorRailsShim.singleton_class.remove_method(:_install_test_auto_dispatch_patch) rescue nil
   end
@@ -51,7 +51,7 @@ class FrameworkPatchDispatchSpec < Minitest::Spec
     # These are called from their parent install methods, not the dispatcher.
     NON_DISPATCHED.each do |m|
       refute dispatcher_source.include?(m.to_s),
-             "#{m} should not be called from dispatch_all_framework_patches"
+        "#{m} should not be called from dispatch_all_framework_patches"
     end
   end
 
@@ -60,7 +60,7 @@ class FrameworkPatchDispatchSpec < Minitest::Spec
     # not list individual method names.
     hardcoded = dispatcher_source.scan(/^\s+_install_\w+_patch$/)
     assert hardcoded.empty?,
-           "dispatcher should not hardcode _install_*_patch calls, found: #{hardcoded.inspect}"
+      "dispatcher should not hardcode _install_*_patch calls, found: #{hardcoded.inspect}"
   end
 
   # --- Behavioral equivalence: same set of patches dispatched as before ---
@@ -215,9 +215,9 @@ class FrameworkPatchDispatchSpec < Minitest::Spec
     expected_set = ORIGINALLY_DISPATCHED.sort
 
     assert_equal expected_set, called_set,
-                 "dispatched patches must match the original hardcoded list " \
-                 "(missing: #{(expected_set - called_set).inspect}, " \
-                 "extra: #{(called_set - expected_set).inspect})"
+      "dispatched patches must match the original hardcoded list " \
+      "(missing: #{(expected_set - called_set).inspect}, " \
+      "extra: #{(called_set - expected_set).inspect})"
   ensure
     # Restore each original method. define_singleton_method with the saved
     # Method object re-binds it without re-executing the patch file's

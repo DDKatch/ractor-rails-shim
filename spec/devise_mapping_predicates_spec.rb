@@ -190,8 +190,8 @@ class DeviseMappingPredicatesSpec < Minitest::Spec
     fake_devise.const_set(:FailureApp, Class.new)
     fake_devise.const_set(:NO_INPUT, [].freeze)
     custom = %i[database_authenticatable rememberable omniauthable recoverable
-                registerable validatable confirmable lockable timeoutable
-                trackable my_extra_module]
+      registerable validatable confirmable lockable timeoutable
+      trackable my_extra_module]
     fake_devise.const_set(:MODULES, custom)
     Object.const_set(:Devise, fake_devise)
     had_devise = true

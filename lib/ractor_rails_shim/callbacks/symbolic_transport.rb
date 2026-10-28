@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require "set"
-
 # Callbacks::SymbolicTransport — replays captured SYMBOLIC callback filters
 # (method-name filters such as `before_save :normalize_title`) for ANY callback
 # kind. This is the generic half of "a solution for any callback": a callback
@@ -221,7 +219,10 @@ module RactorRailsShim
             if context.respond_to?(filter, true)
               yielded = false
               yielded_value = nil
-              context.send(filter) { yielded = true; yielded_value = inner.call }
+              context.send(filter) {
+                yielded = true
+                yielded_value = inner.call
+              }
               yielded ? yielded_value : nil
             else
               inner.call
@@ -236,7 +237,7 @@ module RactorRailsShim
       # Frozen empty chain shared by every miss (no captured table, no
       # matching entries).
       EMPTY_CHAIN = Struct.new(:before, :after, :around)
-                         .new([].freeze, [].freeze, [].freeze).freeze
+        .new([].freeze, [].freeze, [].freeze).freeze
 
       # The chain for (context's class, kind): three frozen, chain-ordered
       # entry arrays — superclass filters before subclass filters, declaration
@@ -296,12 +297,12 @@ module RactorRailsShim
               after_entries << entry if entry[:chain_kind] == kind
             when :around
               around_entries << entry if entry[:chain_kind] == kind &&
-                                         entry[:filter].is_a?(::Symbol)
+                entry[:filter].is_a?(::Symbol)
             end
           end
         end
         chain = CompiledChain.new(before_entries.freeze, after_entries.freeze,
-                                  around_entries.freeze).freeze
+          around_entries.freeze).freeze
         (@compiled[cid] ||= {})[kind] = chain
         chain
       end
@@ -412,11 +413,11 @@ module RactorRailsShim
       def condition_allows?(context, entry)
         if entry[:if_cond]
           return false unless context.respond_to?(entry[:if_cond], true) &&
-                              context.send(entry[:if_cond])
+            context.send(entry[:if_cond])
         end
         if entry[:unless_cond]
           return false if context.respond_to?(entry[:unless_cond], true) &&
-                           context.send(entry[:unless_cond])
+            context.send(entry[:unless_cond])
         end
         true
       rescue StandardError

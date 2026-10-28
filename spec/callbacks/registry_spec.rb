@@ -43,7 +43,10 @@ class RegistrySpec < Minitest::Spec
   it "yields the block unchanged when no transport applies" do
     registry = RactorRailsShim::Callbacks::Registry.new
     ran = false
-    result = registry.replay(:ctx, :save) { ran = true; :done }
+    result = registry.replay(:ctx, :save) {
+      ran = true
+      :done
+    }
     assert ran
     assert_equal :done, result
   end
@@ -52,7 +55,10 @@ class RegistrySpec < Minitest::Spec
     log = []
     registry = RactorRailsShim::Callbacks::Registry.new([FakeTransport.new(:save, log)])
     order = []
-    result = registry.replay(:ctx, :save) { order << :yield; :value }
+    result = registry.replay(:ctx, :save) {
+      order << :yield
+      :value
+    }
     assert_equal [:before, :save, :ctx], log[0]
     assert_equal :yield, order[0]
     assert_equal [:after, :save, :ctx], log[1]
@@ -81,14 +87,25 @@ class RegistrySpec < Minitest::Spec
   end
 
   it "delegates install + capture to every transport (open set)" do
-    install_calls = []
-    capture_calls = []
+    []
+    []
     t1 = FakeTransport.new(:save, [])
     t2 = FakeTransport.new(:destroy, [])
-    def t1.install; @installed = true; end
-    def t2.install; @installed = true; end
-    def t1.capture; @captured = true; end
-    def t2.capture; @captured = true; end
+    def t1.install
+      @installed = true
+    end
+
+    def t2.install
+      @installed = true
+    end
+
+    def t1.capture
+      @captured = true
+    end
+
+    def t2.capture
+      @captured = true
+    end
     registry = RactorRailsShim::Callbacks::Registry.new([t1, t2])
     registry.install
     registry.capture

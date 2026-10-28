@@ -16,8 +16,15 @@ class DependentAssociationTransportSpec < Minitest::Spec
   # Fake association object: records handle_dependency calls.
   class FakeAssoc
     attr_reader :name, :handled
-    def initialize(name); @name = name; @handled = 0; end
-    def handle_dependency; @handled += 1; :handled; end
+    def initialize(name)
+      @name = name
+      @handled = 0
+    end
+
+    def handle_dependency
+      @handled += 1
+      :handled
+    end
   end
 
   # Fake record: returns associations by name from an injected map, and reports
@@ -28,11 +35,13 @@ class DependentAssociationTransportSpec < Minitest::Spec
       @class_name = class_name
       @assocs = assocs
     end
+
     def class
       Class.new { define_method(:name) { @n } }.tap { |c| c.name rescue nil }
       # Minimal: expose the class NAME via a singleton, since transport uses
       # context.class.name.
     end
+
     # The transport uses context.class.name — provide it on the singleton class.
     def self.build(class_name, assocs)
       rec = new(class_name, assocs)
@@ -43,6 +52,7 @@ class DependentAssociationTransportSpec < Minitest::Spec
       end
       rec
     end
+
     def association(name)
       @assocs[name]
     end
@@ -60,11 +70,11 @@ class DependentAssociationTransportSpec < Minitest::Spec
     posts_assoc = FakeAssoc.new(:posts)
     source = {
       "User" => [
-        { name: :comments, type: :destroy, macro: :has_many },
-        { name: :posts, type: :destroy, macro: :has_many }
+        {name: :comments, type: :destroy, macro: :has_many},
+        {name: :posts, type: :destroy, macro: :has_many}
       ]
     }
-    record = FakeRecord.build("User", { comments: comments_assoc, posts: posts_assoc })
+    record = FakeRecord.build("User", {comments: comments_assoc, posts: posts_assoc})
     t = RactorRailsShim::Callbacks::DependentAssociationTransport.new(source: source)
     t.before(record, :destroy)
     assert_equal 1, comments_assoc.handled
@@ -73,8 +83,8 @@ class DependentAssociationTransportSpec < Minitest::Spec
 
   it "does nothing when the record's class has no dependent associations" do
     assoc = FakeAssoc.new(:comments)
-    source = { "User" => [{ name: :comments, type: :destroy, macro: :has_many }] }
-    record = FakeRecord.build("Post", { comments: assoc }) # Post not in source
+    source = {"User" => [{name: :comments, type: :destroy, macro: :has_many}]}
+    record = FakeRecord.build("Post", {comments: assoc}) # Post not in source
     t = RactorRailsShim::Callbacks::DependentAssociationTransport.new(source: source)
     t.before(record, :destroy)
     assert_equal 0, assoc.handled

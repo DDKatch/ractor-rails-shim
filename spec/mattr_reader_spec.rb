@@ -94,7 +94,7 @@ class MattrReaderSpec < Minitest::Spec
   it "reader returns the live class variable in the main Ractor" do
     @mod = fresh_module
     @mod.mattr_reader(:flag)
-    @mod.class_variable_set("@@flag", :from_cv)
+    @mod.class_variable_set(:@@flag, :from_cv)
     key = storage_key(@mod)
     refute RactorRailsShim.storage.key?(key), "precondition: no IES override"
     assert_equal :from_cv, @mod.flag
@@ -105,13 +105,13 @@ class MattrReaderSpec < Minitest::Spec
   it "worker reader falls back to SHAREABLE_FALLBACK built from the main value" do
     @mod = fresh_module
     @mod.mattr_reader(:flag)
-    @mod.class_variable_set("@@flag", :from_main)
+    @mod.class_variable_set(:@@flag, :from_main)
     key = storage_key(@mod)
 
     # Simulate prepare_for_ractors! capturing the main value into the
     # shareable fallback constant (frozen + shareable).
     orig_fb = RactorRailsShim::SHAREABLE_FALLBACK
-    fb = Ractor.make_shareable({ key => :from_main }.freeze)
+    fb = Ractor.make_shareable({key => :from_main}.freeze)
     RactorRailsShim._reassign_shareable_const(:SHAREABLE_FALLBACK, fb)
     refute RactorRailsShim.storage.key?(key), "precondition: no IES override"
 
@@ -120,7 +120,7 @@ class MattrReaderSpec < Minitest::Spec
       Object.const_get(cn).flag
     end.value
     assert_equal :from_main, result,
-                 "worker must read SHAREABLE_FALLBACK, not the unreadable @@flag"
+      "worker must read SHAREABLE_FALLBACK, not the unreadable @@flag"
   ensure
     RactorRailsShim._reassign_shareable_const(:SHAREABLE_FALLBACK, orig_fb) if orig_fb
   end

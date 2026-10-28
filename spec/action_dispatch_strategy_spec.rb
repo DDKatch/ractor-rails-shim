@@ -23,9 +23,9 @@ class ActionDispatchStrategySpec < Minitest::Spec
   # The role object exists and exposes the entry point.
   it "is a module under RactorRailsShim with a .replacement_for method" do
     assert RactorRailsShim.const_defined?(:ActionDispatchStrategy, false),
-           "RactorRailsShim::ActionDispatchStrategy should be defined"
+      "RactorRailsShim::ActionDispatchStrategy should be defined"
     assert RactorRailsShim::ActionDispatchStrategy.respond_to?(:replacement_for),
-           "ActionDispatchStrategy.replacement_for should be defined"
+      "ActionDispatchStrategy.replacement_for should be defined"
   end
 
   # When ActionDispatch::Routing::Mapper::Constraints is not defined,
@@ -34,7 +34,7 @@ class ActionDispatchStrategySpec < Minitest::Spec
     # Constraints is not loaded under the shim's own bundle.
     result = RactorRailsShim::ActionDispatchStrategy.replacement_for(->(*) {})
     assert_kind_of NoOpProc, result,
-                   "should return NoOpProc when Constraints is undefined"
+      "should return NoOpProc when Constraints is undefined"
   end
 
   # When Constraints IS defined, SERVE -> StrategyServe, CALL -> StrategyCall,
@@ -43,7 +43,7 @@ class ActionDispatchStrategySpec < Minitest::Spec
     stub_constraints(:SERVE, :CALL) do |constraints|
       result = RactorRailsShim::ActionDispatchStrategy.replacement_for(constraints::SERVE)
       assert_kind_of StrategyServe, result,
-                     "SERVE proc should be replaced with StrategyServe"
+        "SERVE proc should be replaced with StrategyServe"
     end
   end
 
@@ -51,7 +51,7 @@ class ActionDispatchStrategySpec < Minitest::Spec
     stub_constraints(:SERVE, :CALL) do |constraints|
       result = RactorRailsShim::ActionDispatchStrategy.replacement_for(constraints::CALL)
       assert_kind_of StrategyCall, result,
-                     "CALL proc should be replaced with StrategyCall"
+        "CALL proc should be replaced with StrategyCall"
     end
   end
 
@@ -60,7 +60,7 @@ class ActionDispatchStrategySpec < Minitest::Spec
       fake = ->(*) { :not_a_strategy }
       result = RactorRailsShim::ActionDispatchStrategy.replacement_for(fake)
       assert_kind_of NoOpProc, result,
-                     "an unrelated proc should become NoOpProc, not a Strategy"
+        "an unrelated proc should become NoOpProc, not a Strategy"
       refute_kind_of StrategyServe, result
       refute_kind_of StrategyCall, result
     end
@@ -70,7 +70,7 @@ class ActionDispatchStrategySpec < Minitest::Spec
   it "facade _strategy_replacement_for delegates to the role object" do
     result = RactorRailsShim::ActionDispatchStrategy.replacement_for(->(*) {})
     assert_kind_of NoOpProc, result,
-                   "facade delegation should return NoOpProc (no Constraints)"
+      "facade delegation should return NoOpProc (no Constraints)"
   end
 
   private
@@ -87,7 +87,7 @@ class ActionDispatchStrategySpec < Minitest::Spec
     end
     begin
       ad = Module.new
-      routing = Module.new { }
+      routing = Module.new {}
       ad.const_set(:Routing, routing)
       mapper = Module.new
       routing.const_set(:Mapper, mapper)

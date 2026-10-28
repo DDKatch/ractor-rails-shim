@@ -35,7 +35,7 @@ module RactorRailsShim
     "Devise::CONTROLLERS",
     "Devise::ROUTES",
     "Devise::STRATEGIES",
-    "Devise::URL_HELPERS",
+    "Devise::URL_HELPERS"
   ])
 
   class << self
@@ -50,7 +50,7 @@ module RactorRailsShim
       @devise_failure_app_patched = true
       _register_patch :devise_failure_app, "5.0"
       return unless defined?(::Devise::FailureApp)
-      ::Devise::FailureApp.singleton_class.module_eval <<-'RUBY', __FILE__, __LINE__ + 1
+      ::Devise::FailureApp.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def call(env)
           respond = RactorRailsShim.storage[:ractor_rails_shim_devise_failure_respond] ||= action(:respond)
           respond.call(env)
@@ -126,7 +126,7 @@ module RactorRailsShim
           Ractor.make_shareable(mailer_ref))
       end
 
-      ::Devise.singleton_class.module_eval <<-'RUBY', __FILE__, __LINE__ + 1
+      ::Devise.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def mailer
           if ::Ractor.main?
             @@mailer_ref.get
@@ -194,7 +194,7 @@ module RactorRailsShim
       # real `user_session_path`) and sends THAT to the context. Bake in
       # `action`/`module_name`/`path_or_url` as literals; `scope` is resolved
       # per-call from the argument, so interpolate it at runtime (\\#{scope}).
-      routes = ::Devise::URL_HELPERS.slice(*(::Devise.mappings.values.map(&:used_helpers).flatten.uniq))
+      routes = ::Devise::URL_HELPERS.slice(*::Devise.mappings.values.map(&:used_helpers).flatten.uniq)
       routes.each do |module_name, actions|
         [:path, :url].each do |path_or_url|
           actions.each do |action|

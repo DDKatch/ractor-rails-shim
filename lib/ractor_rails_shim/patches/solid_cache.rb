@@ -67,7 +67,7 @@ module RactorRailsShim
             pool = ::Ractor.current[:__rrs_solid_cache_background__] ||=
               ::Concurrent::FixedThreadPool.new(1, max_queue: 100, fallback_policy: :discard)
             current_shard = ::SolidCache::Entry.current_shard
-            pool << ->() do
+            pool << -> do
               __send__(:wrap_in_rails_executor) do
                 connections.with(current_shard) do
                   __send__(:setup_instrumentation, &block)

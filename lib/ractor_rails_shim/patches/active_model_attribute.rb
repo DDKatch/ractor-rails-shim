@@ -64,7 +64,7 @@ module RactorRailsShim
         else
           key = :"rrs_generated_attribute_methods_#{object_id}"
           RactorRailsShim.storage[key] ||=
-            (::RactorRailsShim::SHAREABLE_GEN_ATTR_METHODS[object_id] || ::Module.new.tap { |m| include m })
+            ::RactorRailsShim::SHAREABLE_GEN_ATTR_METHODS[object_id] || ::Module.new.tap { |m| include m }
         end
       end
 
@@ -211,19 +211,19 @@ module RactorRailsShim
           next unless defined?(::ActiveModel::Attribute)
           ::ActiveModel::Attribute.include(::RactorRailsShim::ActiveModelAttributePatch)
           if defined?(::ActiveModel::AttributeRegistration) &&
-             ::ActiveModel::AttributeRegistration.const_defined?(:ClassMethods)
+              ::ActiveModel::AttributeRegistration.const_defined?(:ClassMethods)
             ::ActiveModel::AttributeRegistration::ClassMethods.prepend(
               ::RactorRailsShim::ActiveModelAttributeRegistrationPatch
             )
           end
           if defined?(::ActiveRecord::Attributes) &&
-             ::ActiveRecord::Attributes.const_defined?(:ClassMethods)
+              ::ActiveRecord::Attributes.const_defined?(:ClassMethods)
             ::ActiveRecord::Attributes::ClassMethods.prepend(
               ::RactorRailsShim::ActiveRecordAttributesPatch
             )
           end
           if defined?(::ActiveRecord::ModelSchema) &&
-             ::ActiveRecord::ModelSchema.const_defined?(:ClassMethods)
+              ::ActiveRecord::ModelSchema.const_defined?(:ClassMethods)
             ::ActiveRecord::ModelSchema::ClassMethods.prepend(
               ::RactorRailsShim::ActiveRecordModelSchemaPatch
             )

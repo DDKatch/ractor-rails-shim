@@ -38,7 +38,7 @@ module RactorRailsShim
           return true if @installed
           return true unless defined?(::ActiveSupport::Dependencies::Interlock)
 
-          ::ActiveSupport::Dependencies.singleton_class.class_eval <<~RUBY
+          ::ActiveSupport::Dependencies.singleton_class.class_eval <<~RUBY, __FILE__, __LINE__ + 1
             def interlock
               if ::Ractor.main?
                 @interlock

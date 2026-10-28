@@ -40,7 +40,7 @@ class FallbackBuilderSpec < Minitest::Spec
   # --- shareable_copy ---
 
   it "shareable_copy returns a fresh dup for a Hash" do
-    orig = { a: 1 }
+    orig = {a: 1}
     copy = RactorRailsShim::FallbackBuilder.shareable_copy(orig)
     assert_equal orig, copy
     refute_same orig, copy, "Hash copy should be a distinct object"
@@ -62,12 +62,12 @@ class FallbackBuilderSpec < Minitest::Spec
   # --- try_make_shareable: known-unshareable skip list ---
 
   it "try_make_shareable returns nil for __callbacks (known unshareable)" do
-    val = { __callbacks: [] }
+    val = {__callbacks: []}
     assert_nil RactorRailsShim::FallbackBuilder.try_make_shareable(val, "Foo", :__callbacks)
   end
 
   it "try_make_shareable returns nil for __validators (known unshareable)" do
-    val = { x: 1 }
+    val = {x: 1}
     assert_nil RactorRailsShim::FallbackBuilder.try_make_shareable(val, "Foo", :__validators)
   end
 
@@ -110,7 +110,7 @@ class FallbackBuilderSpec < Minitest::Spec
   # no warning.
   it "try_make_shareable shares reflections when the value is shareable" do
     out = capture_stderr do
-      result = RactorRailsShim::FallbackBuilder.try_make_shareable({ a: 1 }, nil, :__class_attr__reflections)
+      result = RactorRailsShim::FallbackBuilder.try_make_shareable({a: 1}, nil, :__class_attr__reflections)
       assert Ractor.shareable?(result), "reflections value should be made shareable"
     end
     refute_includes out, "ractor-rails-shim", "reflections should not warn when shareable"
@@ -155,7 +155,7 @@ class FallbackBuilderSpec < Minitest::Spec
     saved = RactorRailsShim::CLASS_ATTRIBUTES.dup
     RactorRailsShim::CLASS_ATTRIBUTES.replace([])
 
-    result1 = RactorRailsShim::FallbackBuilder.build!
+    RactorRailsShim::FallbackBuilder.build!
     assert RactorRailsShim::FallbackBuilder.built?, "flag should be set after first build"
     result2 = RactorRailsShim::FallbackBuilder.build!
     assert_nil result2, "second build should be a no-op (return nil)"
@@ -264,8 +264,14 @@ class FallbackBuilderSpec < Minitest::Spec
     procs_called = []
     locks_called = []
     RactorRailsShim::FallbackBuilder.configure(
-      replace_unshareable_procs: ->(v) { procs_called << v; v },
-      replace_locks_and_concurrent_maps: ->(v) { locks_called << v; v }
+      replace_unshareable_procs: ->(v) {
+        procs_called << v
+        v
+      },
+      replace_locks_and_concurrent_maps: ->(v) {
+        locks_called << v
+        v
+      }
     )
     # A self-capturing Proc can't be plain-shareable, so try_make_shareable
     # falls through to the replacement traversal (which the injectables
@@ -281,7 +287,10 @@ class FallbackBuilderSpec < Minitest::Spec
   it "build! reassigns via an injected reassign_shareable_const" do
     reassigned = []
     RactorRailsShim::FallbackBuilder.configure(
-      reassign_shareable_const: ->(sym, val) { reassigned << [sym, val]; val },
+      reassign_shareable_const: ->(sym, val) {
+        reassigned << [sym, val]
+        val
+      },
       class_attributes: [],
       shareable_mattr_defaults: []
     )
@@ -295,17 +304,17 @@ class FallbackBuilderSpec < Minitest::Spec
   end
 
   it "build! iterates an injected class_attributes registry" do
-    iterated = []
+    []
     # A single class_attribute entry that yields no value (so the loop
     # runs but produces no fallback entry). The build! still completes and
     # reassigns the (empty) fallback.
     fake_registry = [["FakeOwner", :attr, :ies_key, nil]]
     RactorRailsShim::FallbackBuilder.configure(
       class_attributes: fake_registry,
-      storage: { ies_key: nil },
+      storage: {ies_key: nil},
       class_attr_values: {},
       shareable_mattr_defaults: [],
-      safe_const_get: ->(name) { nil },
+      safe_const_get: ->(name) {},
       reassign_shareable_const: ->(sym, val) { val }
     )
     RactorRailsShim::FallbackBuilder.reset_built!
@@ -327,15 +336,15 @@ class FallbackBuilderSpec < Minitest::Spec
     fake_registry = [["FakeOwner", :attr, :ies_key, nil]]
     RactorRailsShim::FallbackBuilder.configure(
       class_attributes: fake_registry,
-      storage: { ies_key: val },
+      storage: {ies_key: val},
       class_attr_values: {},
       shareable_mattr_defaults: [],
-      safe_const_get: ->(name) { nil },
+      safe_const_get: ->(name) {},
       reassign_shareable_const: ->(sym, v) { v }
     )
     RactorRailsShim::FallbackBuilder.reset_built!
     result = RactorRailsShim::FallbackBuilder.build!
-    assert_equal({ ies_key: val }, result, "fallback should read the live value from injected storage")
+    assert_equal({ies_key: val}, result, "fallback should read the live value from injected storage")
   ensure
     RactorRailsShim::FallbackBuilder.reset_built!
     RactorRailsShim::FallbackBuilder.reset_configuration
@@ -343,7 +352,7 @@ class FallbackBuilderSpec < Minitest::Spec
 
   it "reset_configuration restores the facade-lookup defaults" do
     RactorRailsShim::FallbackBuilder.configure(
-      safe_const_get: ->(p) { nil },
+      safe_const_get: ->(p) {},
       replace_unshareable_procs: ->(v) { v },
       replace_locks_and_concurrent_maps: ->(v) { v },
       reassign_shareable_const: ->(s, v) { v },
@@ -382,7 +391,7 @@ class FallbackBuilderSpec < Minitest::Spec
 
   it "ValueLookup::Ies.lookup returns the IES value" do
     t = RactorRailsShim::FallbackBuilder::ValueLookup::Ies
-    storage = { my_key: "ies_val" }
+    storage = {my_key: "ies_val"}
     assert_equal "ies_val", t.lookup("Owner", :attr, :my_key, storage: storage)
   end
 
@@ -393,13 +402,13 @@ class FallbackBuilderSpec < Minitest::Spec
 
   it "ValueLookup::ClassAttrValues.lookup returns the class_attr_values value when main" do
     t = RactorRailsShim::FallbackBuilder::ValueLookup::ClassAttrValues
-    cav = { my_key: "cav_val" }
+    cav = {my_key: "cav_val"}
     assert_equal "cav_val", t.lookup("Owner", :attr, :my_key, class_attr_values: cav, main: true)
   end
 
   it "ValueLookup::ClassAttrValues.lookup returns nil when not main" do
     t = RactorRailsShim::FallbackBuilder::ValueLookup::ClassAttrValues
-    cav = { my_key: "cav_val" }
+    cav = {my_key: "cav_val"}
     assert_nil t.lookup("Owner", :attr, :my_key, class_attr_values: cav, main: false)
   end
 
@@ -449,7 +458,7 @@ class FallbackBuilderSpec < Minitest::Spec
 
   it "value_lookup_chain reader returns DEFAULT_CHAIN when not configured" do
     assert_same RactorRailsShim::FallbackBuilder::ValueLookup::DEFAULT_CHAIN,
-                RactorRailsShim::FallbackBuilder.value_lookup_chain
+      RactorRailsShim::FallbackBuilder.value_lookup_chain
   end
 
   it "configure accepts a value_lookup_chain kwarg" do
@@ -464,7 +473,7 @@ class FallbackBuilderSpec < Minitest::Spec
     # A custom chain with a single lookup that always returns a value
     lookup = Module.new do
       def self.lookup(_owner, _attr, ies_key, **)
-        { ies_key => "chain_val" }[ies_key]
+        {ies_key => "chain_val"}[ies_key]
       end
     end
     RactorRailsShim::FallbackBuilder.configure(
@@ -473,7 +482,7 @@ class FallbackBuilderSpec < Minitest::Spec
       storage: {},
       class_attr_values: {},
       shareable_mattr_defaults: [],
-      safe_const_get: ->(name) { nil },
+      safe_const_get: ->(name) {},
       replace_unshareable_procs: ->(v) { v },
       replace_locks_and_concurrent_maps: ->(v) { v },
       reassign_shareable_const: ->(s, v) { v }
@@ -508,7 +517,7 @@ class FallbackBuilderSpec < Minitest::Spec
 
   it "ShareableCopy.call returns a fresh dup for a Hash" do
     t = RactorRailsShim::FallbackBuilder::ShareableCopy
-    orig = { a: 1 }
+    orig = {a: 1}
     copy = t.call(orig)
     assert_equal orig, copy
     refute_same orig, copy
@@ -531,7 +540,7 @@ class FallbackBuilderSpec < Minitest::Spec
 
   it "FallbackBuilder.shareable_copy delegates to ShareableCopy.call" do
     sc = RactorRailsShim::FallbackBuilder::ShareableCopy
-    orig = { a: 1 }
+    orig = {a: 1}
     copy = RactorRailsShim::FallbackBuilder.shareable_copy(orig)
     # The result should be identical to what ShareableCopy.call produces
     assert_equal sc.call(orig), copy

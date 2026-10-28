@@ -46,7 +46,7 @@ class IESAccessorSpec < Minitest::Spec
     key = storage_key_for(:reader_basic)
     RactorRailsShim::IESAccessor.define_reader(@target, :my_reader, key)
     assert @target.method_defined?(:my_reader),
-           "target should have a :my_reader method after define_reader"
+      "target should have a :my_reader method after define_reader"
   end
 
   it "define_reader returns the value from IES when present" do
@@ -70,7 +70,7 @@ class IESAccessorSpec < Minitest::Spec
     key = storage_key_for(:writer_basic)
     RactorRailsShim::IESAccessor.define_writer(@target, :my_writer, key)
     assert @target.method_defined?(:my_writer=),
-           "target should have a :my_writer= method after define_writer"
+      "target should have a :my_writer= method after define_writer"
   end
 
   it "define_writer stores the value in IES" do
@@ -117,7 +117,7 @@ class IESAccessorSpec < Minitest::Spec
   # --- key format ---
 
   it "define_accessor uses the exact key symbol provided" do
-    key = :"rrs_ies_accessor_exact_key_test"
+    key = :rrs_ies_accessor_exact_key_test
     @used_keys << key
     RactorRailsShim::IESAccessor.define_accessor(@target, :exact_key, key)
     obj = @target.new

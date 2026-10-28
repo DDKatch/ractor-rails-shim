@@ -40,11 +40,13 @@ end
 # level so its `owner` string starts with "Rails::" (defining it under
 # `CheckSpecFixtures::Rails` would prefix the owner with CheckSpecFixtures
 # and defeat the scan_rails filter).
-module Rails
-  module CheckSpecFixture
-    @thing = Mutex.new
+unless defined?(::Rails)
+  module Rails
+    module CheckSpecFixture
+      @thing = Mutex.new
+    end
   end
-end unless defined?(::Rails)
+end
 
 class CheckSpec < Minitest::Spec
   def self.test_order
@@ -84,9 +86,11 @@ class CheckSpec < Minitest::Spec
 
   it "scan_rails returns only Rails-namespaced findings" do
     rails = RactorRailsShim::Check.scan_rails
-    assert(rails.all? { |f| f.owner.start_with?("Rails", "ActiveRecord", "ActiveSupport",
-      "ActionController", "ActionView", "ActionDispatch", "ActionMailer",
-      "ActiveJob", "ActionCable", "ActionText", "ActionMailbox", "ActiveStorage") },
+    assert(rails.all? { |f|
+      f.owner.start_with?("Rails", "ActiveRecord", "ActiveSupport",
+        "ActionController", "ActionView", "ActionDispatch", "ActionMailer",
+        "ActiveJob", "ActionCable", "ActionText", "ActionMailbox", "ActiveStorage")
+    },
       "scan_rails should only return Rails-namespaced owners")
     # Our Rails-namespaced fixture should appear.
     refute_nil find(rails, "Rails::CheckSpecFixture", "@thing")
@@ -105,9 +109,11 @@ class CheckSpec < Minitest::Spec
     # across calls (autoload can create modules between scans), so calling
     # scan/scan_rails/scan_app separately yields drifting counts.
     all = RactorRailsShim::Check.scan
-    rails = all.select { |f| f.owner.start_with?("Rails", "ActiveRecord", "ActiveSupport",
-      "ActionController", "ActionView", "ActionDispatch", "ActionMailer",
-      "ActiveJob", "ActionCable", "ActionText", "ActionMailbox", "ActiveStorage") }
+    rails = all.select { |f|
+      f.owner.start_with?("Rails", "ActiveRecord", "ActiveSupport",
+        "ActionController", "ActionView", "ActionDispatch", "ActionMailer",
+        "ActiveJob", "ActionCable", "ActionText", "ActionMailbox", "ActiveStorage")
+    }
     app = all - rails
     # Same total count (partition by construction).
     assert_equal all.size, rails.size + app.size
@@ -118,7 +124,7 @@ class CheckSpec < Minitest::Spec
   end
 
   it "report returns a string and prints to $stderr when print: is true" do
-    out, err = capture_io do
+    _, err = capture_io do
       str = RactorRailsShim::Check.report(print: true)
       assert_kind_of String, str
       assert_match(/ractor-rails-shim check:/, str)
@@ -128,7 +134,7 @@ class CheckSpec < Minitest::Spec
   end
 
   it "report does not print when print: is false" do
-    out, err = capture_io do
+    _, err = capture_io do
       str = RactorRailsShim::Check.report(print: false)
       refute_empty str, "should still return the string"
     end

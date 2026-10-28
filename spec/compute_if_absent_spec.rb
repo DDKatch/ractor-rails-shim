@@ -39,48 +39,75 @@ class ComputeIfAbsentSpec < Minitest::Spec
   it "mutable Hash: stores the block result and returns it on subsequent lookups" do
     h = {}
     calls = 0
-    result = h.compute_if_absent(:k) { calls += 1; "v" }
+    result = h.compute_if_absent(:k) {
+      calls += 1
+      "v"
+    }
     assert_equal "v", result
     assert_equal 1, calls, "block should run once"
-    assert_equal "v", h.compute_if_absent(:k) { calls += 1; "v" }
+    assert_equal "v", h.compute_if_absent(:k) {
+      calls += 1
+      "v"
+    }
     assert_equal 1, calls, "block should not re-run after store"
   end
 
   it "mutable Hash: stores nil block results (matches Concurrent::Map)" do
     h = {}
     calls = 0
-    result = h.compute_if_absent(:k) { calls += 1; nil }
+    result = h.compute_if_absent(:k) {
+      calls += 1
+      nil
+    }
     assert_nil result
     assert_equal 1, calls, "block should run once"
-    assert_nil h.compute_if_absent(:k) { calls += 1; nil }
+    assert_nil h.compute_if_absent(:k) {
+      calls += 1
+      nil
+    }
     assert_equal 1, calls, "nil result must be cached — block should NOT re-run"
     assert h.key?(:k), "nil-valued key must be present after compute_if_absent"
   end
 
   it "frozen Hash: routes to per-Ractor IES and caches results" do
-    h = { existing: "present" }.freeze
+    h = {existing: "present"}.freeze
     calls = 0
     # existing key returns the value without invoking the block
-    assert_equal "present", h.compute_if_absent(:existing) { calls += 1; "x" }
+    assert_equal "present", h.compute_if_absent(:existing) {
+      calls += 1
+      "x"
+    }
     assert_equal 0, calls, "block should not run for an existing key"
 
     # missing key invokes the block, caches the result in IES
-    result = h.compute_if_absent(:missing) { calls += 1; "cached" }
+    result = h.compute_if_absent(:missing) {
+      calls += 1
+      "cached"
+    }
     assert_equal "cached", result
     assert_equal 1, calls
     # second lookup reads from IES, block does NOT re-run
-    assert_equal "cached", h.compute_if_absent(:missing) { calls += 1; "other" }
+    assert_equal "cached", h.compute_if_absent(:missing) {
+      calls += 1
+      "other"
+    }
     assert_equal 1, calls, "frozen branch must cache — block should not re-run"
   end
 
   it "frozen Hash: caches nil block results (matches Concurrent::Map)" do
     h = {}.freeze
     calls = 0
-    result = h.compute_if_absent(:nil_key) { calls += 1; nil }
+    result = h.compute_if_absent(:nil_key) {
+      calls += 1
+      nil
+    }
     assert_nil result
     assert_equal 1, calls
     # The bug: ||= skips nil, so the block would re-run. Verify it doesn't.
-    assert_nil h.compute_if_absent(:nil_key) { calls += 1; nil }
+    assert_nil h.compute_if_absent(:nil_key) {
+      calls += 1
+      nil
+    }
     assert_equal 1, calls,
       "frozen branch must cache nil results — block re-ran #{calls - 1} extra time(s)"
   end
@@ -91,8 +118,8 @@ class ComputeIfAbsentSpec < Minitest::Spec
     # must carry different content to be distinct objects with different
     # object_ids. The shim's real call sites use populated caches, so this
     # matches production.
-    h1 = { a: 1 }.freeze
-    h2 = { b: 2 }.freeze
+    h1 = {a: 1}.freeze
+    h2 = {b: 2}.freeze
     refute_equal h1.object_id, h2.object_id, "spec setup: receivers must be distinct objects"
     h1.compute_if_absent(:k) { "from-h1" }
     assert_equal "from-h1", h1.compute_if_absent(:k) { "other" }

@@ -305,7 +305,7 @@ module RactorRailsShim
       # apps can register their own entries via add_pre_touch.
       PRE_TOUCH = [
         ["ActiveSupport::Editor", :current],
-        ["Warden::Strategies", :_strategies],
+        ["Warden::Strategies", :_strategies]
       ]
 
       def self.add_pre_touch(class_name, method_name)
