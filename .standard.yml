@@ -1,0 +1,69 @@
+# Standard (standardrb) configuration.
+#
+# Cops disabled globally, with reasons — most exist because this gem
+# mirrors Rails/Rack internals or deliberately swallows exceptions to
+# keep worker-Ractor request dispatch alive:
+#
+# Style/RescueModifier
+#   Its autocorrect corrupts `(expr rescue StandardError)`: the class name
+#   is moved into the rescue BODY (becoming dead code), leaving the call
+#   unprotected. Modifier rescues stay.
+# Style/RescueStandardError
+#   Project convention (enforced by spec/rescue_style_spec.rb) requires an
+#   explicit `rescue StandardError`; Standard wants a bare `rescue`.
+# Style/SafeNavigation
+#   `x.foo if x` nil-guards are intentional; the auto-fix (`x&.foo`) also
+#   changes behavior when the receiver can be `false`.
+# Lint/ShadowedException, Lint/RescueException
+#   Rescue clauses here intentionally catch Exception subclasses (e.g.
+#   Ractor::IsolationError, Marshal errors) that are not StandardError.
+# Lint/UnreachableCode
+#   patches/turbo.rb contains deliberately-unreachable code behind
+#   version gates, kept for readability.
+# Style/IdenticalConditionalBranches
+#   patches/mail.rb mirrors ActionMailer's own branch structure.
+# Lint/BooleanSymbol, Style/YodaCondition, Style/IfWithBooleanLiteralBranches
+#   patches/activerecord.rb:1607 mirrors Rails' `:true == (…)` finder idiom.
+# Lint/OutOfRangeRegexpRef
+#   patches/i18n.rb mirrors a Rails regexp whose capture groups the cop
+#   cannot see.
+# Style/GlobalStdStream
+#   roles/logger_io_neutralizer.rb deliberately rebinds STDOUT/STDERR.
+# Lint/AssignmentInCondition
+#   patches/activerecord_reflection.rb mirrors Rails' `if (x = …)` idiom.
+# Style/ClassEqualityComparison
+#   patches/rack.rb compares classes to mirror ActionDispatch::Static.
+# Style/UnlessLogicalOperators
+#   patches/activerecord.rb intentionally mixes `&&`/`||` in one `unless`.
+# Style/RedundantStructKeywordInit
+#   keyword_init: true is kept explicit for readability.
+# Lint/BinaryOperatorWithIdenticalOperands, Lint/ConstantDefinitionInBlock,
+# Lint/Void
+#   Specs that deliberately exercise those exact shapes.
+ignore:
+  - "**/*":
+      - Style/RescueModifier
+      - Style/RescueStandardError
+      - Style/SafeNavigation
+      - Lint/ShadowedException
+      - Lint/RescueException
+      - Lint/UnreachableCode
+      - Style/IdenticalConditionalBranches
+      - Lint/BooleanSymbol
+      - Style/YodaCondition
+      - Style/IfWithBooleanLiteralBranches
+      - Lint/OutOfRangeRegexpRef
+      - Style/GlobalStdStream
+      - Lint/AssignmentInCondition
+      - Style/ClassEqualityComparison
+      - Style/UnlessLogicalOperators
+      - Style/RedundantStructKeywordInit
+      - Lint/BinaryOperatorWithIdenticalOperands
+      - Lint/ConstantDefinitionInBlock
+      - Lint/Void
+  # Specs that fake source locations for eval/class_eval (to simulate
+  # Rails-generated methods) — the cop would rewrite the fake values.
+  - spec/activerecord_autosave_patch_spec.rb:
+      - Style/EvalWithLocation
+  - spec/shareability_traversal_spec.rb:
+      - Style/EvalWithLocation

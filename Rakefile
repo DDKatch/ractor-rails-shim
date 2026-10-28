@@ -13,6 +13,12 @@ end
 
 task default: :spec
 
+# Code style linting (Standard). Config in .standard.yml; also runs as the
+# `lint` job in CI.
+task :lint do
+  sh "bundle exec standardrb --no-fix lib exe spec"
+end
+
 # Integration spec: boots a real Rails app and dispatches GET /up in a worker
 # Ractor. Requires a test app (run `./script/make_test_app.sh` first) and must
 # run under the TEST APP's bundle (so Rails is loadable). The spec self-skips
