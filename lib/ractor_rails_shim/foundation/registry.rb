@@ -28,6 +28,8 @@ module RactorRailsShim
     @shareable_mattr_defaults = {}
     @shareable_constants = []
     @shareable_class_ivars = []
+    # Per-worker re-arm blocks (see RactorRailsShim.on_worker_boot).
+    @worker_boot_blocks = []
     @abstract_registry = Ractor.make_shareable({})
     @view_context_registry = Ractor.make_shareable({})
     @shareable_fallback = Ractor.make_shareable({})
@@ -36,7 +38,8 @@ module RactorRailsShim
       attr_reader :class_attributes, :mattr_defaults, :class_attr_values,
         :shareable_mattr_defaults, :shareable_constants,
         :shareable_class_ivars, :abstract_registry,
-        :view_context_registry, :shareable_fallback
+        :view_context_registry, :shareable_fallback,
+        :worker_boot_blocks
 
       # Swap the frozen (shareable) registries. The value MUST already be
       # frozen + Ractor.make_shareable. Each reassign_* updates the
@@ -68,6 +71,7 @@ module RactorRailsShim
         @shareable_mattr_defaults = {}
         @shareable_constants = []
         @shareable_class_ivars = []
+        @worker_boot_blocks = []
         @abstract_registry = Ractor.make_shareable({})
         @view_context_registry = Ractor.make_shareable({})
         @shareable_fallback = Ractor.make_shareable({})

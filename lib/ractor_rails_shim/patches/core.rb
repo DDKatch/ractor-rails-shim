@@ -53,6 +53,19 @@ module RactorRailsShim
   # worker reading a dropped key gets nil -> Rails' default layout.
   PROC_LAYOUT_PROCS = {}
 
+  # String-source worker-boot entry: `#call` evaluates the source inside
+  # the calling worker, so every object it creates is worker-local. See
+  # `RactorRailsShim.on_worker_boot`.
+  class WorkerBootEval
+    def initialize(source)
+      @source = source.freeze
+    end
+
+    def call
+      Object.instance_eval(@source)
+    end
+  end
+
   # Shareable map of { model_object_id => Module } capturing each AR model's
   # @generated_attribute_methods module (populated by define_attribute_methods
   # in main). Worker Ractors read this to reuse the pre-built attribute methods
@@ -279,6 +292,50 @@ module RactorRailsShim
     # Delegates to RactorRailsShim::VersionPolicy.applicable.
     def applicable_patches
       RactorRailsShim::VersionPolicy.applicable
+    end
+
+    # Register a block to run in EVERY worker Ractor's one-time setup
+    # (WorkerApp#setup_once!, after constants are rebound and IES is
+    # prefilled). Use this to re-arm per-Ractor state that cannot cross the
+    # Ractor boundary as a captured main-Ractor value — e.g. Rack::Attack's
+    # DSL check blocks:
+    #
+    #   RactorRailsShim.on_worker_boot do
+    #     Rack::Attack.throttle("req/ip", limit: 300, period: 1.minute) { |req| req.ip }
+    #   end
+    #
+    # Two registration forms:
+    #   * a Ruby source STRING — evaluated Ractor-locally in every worker
+    #     (always safe; use for anything defined in a top-level initializer
+    #     binding);
+    #   * a block — it MUST be shareable (registration attempts
+    #     Ractor.make_shareable and raises Ractor::IsolationError with
+    #     guidance otherwise; blocks whose `self` is the top-level
+    #     initializer object are not shareable — prefer the string form
+    #     there, or define the block in a class/module context).
+    #
+    # Blocks run in registration order inside the calling worker; main never
+    # runs them (main keeps its own live boot state). Errors are swallowed
+    # by the funnel (visible when debug is on), matching the other freeze
+    # paths.
+    def on_worker_boot(source = nil, &block)
+      entry =
+        if source
+          raise ::ArgumentError, "pass a source string OR a block, not both" if block
+          raise ::ArgumentError, "on_worker_boot source must be a String" unless source.is_a?(::String)
+          WorkerBootEval.new(source)
+        else
+          raise ::ArgumentError, "on_worker_boot requires a source string or a block" unless block
+          begin
+            Ractor.make_shareable(block)
+          rescue ::Ractor::IsolationError => e
+            raise ::ArgumentError,
+              "on_worker_boot block is not shareable (#{e.message[0, 120]}...). " \
+              "Pass a Ruby source STRING instead: on_worker_boot('...code...')"
+          end
+        end
+      Registry.worker_boot_blocks << entry
+      entry
     end
 
     # Record that a patch was developed/tested against the given Rails version

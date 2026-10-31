@@ -288,7 +288,20 @@ module RactorRailsShim
 
       reassign_shareable_const.call(:SHAREABLE_FALLBACK, fallback)
       reassign_shareable_const.call(:SHAREABLE_MATTR_DEFAULTS, shareable_mattr_defaults)
+
+      # Snapshot the per-worker re-arm blocks (on_worker_boot) into a frozen
+      # readable constant. Registered after this point are still runnable in
+      # main's registry but won't reach already-spawned workers.
+      boot_blocks = worker_boot_blocks_for_snapshot
+      reassign_shareable_const.call(:WORKER_BOOT_BLOCKS, boot_blocks) if boot_blocks
+
       fallback
+    end
+
+    def self.worker_boot_blocks_for_snapshot
+      blocks = Registry.worker_boot_blocks
+      return nil if blocks.empty?
+      Ractor.make_shareable(blocks.dup.freeze) rescue nil
     end
 
     # Best-effort attempt to make `val` shareable (callable-replacement for

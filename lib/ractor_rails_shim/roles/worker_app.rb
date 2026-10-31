@@ -52,6 +52,7 @@ module RactorRailsShim
         rebind_constants
         RactorRailsShim.init_worker_ar_connections! if defined?(RactorRailsShim)
         prefill_ies_from_fallback!
+        run_worker_boot_blocks!
         Ractor.current[:rrs_worker_ready] = true
       end
     end
@@ -72,6 +73,33 @@ module RactorRailsShim
       fallback.each do |key, value|
         next if value.nil?
         storage[key] = value unless storage.key?(key)
+      end
+      nil
+    end
+
+    # Run the blocks registered via `RactorRailsShim.on_worker_boot`. These
+    # re-arm per-Ractor state that cannot cross the Ractor boundary (e.g.
+    # Rack::Attack's DSL check blocks — blocks created inside the worker are
+    # worker-local Procs, callable here). Blocks are shareable (frozen at
+    # registration); call order is registration order, once per worker.
+    # Workers read the frozen WORKER_BOOT_BLOCKS snapshot (reassigned at
+    # fallback-build time); main reads the live registry — though main never
+    # runs them (main keeps its own live boot state).
+    def run_worker_boot_blocks!
+      blocks =
+        if ::Ractor.main?
+          RactorRailsShim::Registry.worker_boot_blocks
+        else
+          snapshot = begin
+            ::RactorRailsShim::WORKER_BOOT_BLOCKS
+          rescue ::NameError
+            nil
+          end
+          snapshot || []
+        end
+      return nil if blocks.empty?
+      blocks.each do |block|
+        RactorRailsShim.__send__(:_swallow, "worker boot block") { block.call }
       end
       nil
     end
