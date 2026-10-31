@@ -19,6 +19,26 @@ class VersionPolicySpec < Minitest::Spec
     :alpha
   end
 
+  # PATCH_VERSIONS is a shared global registry — snapshot around each test so
+  # the .clear calls here cannot wipe entries other spec files registered
+  # (an ordering-dependent flake: later install specs would then report
+  # "patch should be registered in the version policy").
+  before do
+    @patch_versions_snapshot =
+      RactorRailsShim::VersionPolicy::PATCH_VERSIONS.to_h { |k, v| [k, v.dup] }
+  end
+
+  after do
+    # Merge-back, not clear: with interleaved (seed-order random) test
+    # execution another spec may have REGISTERED a patch between this spec's
+    # before snapshot and now — a wholesale restore would drop its
+    # registration and its install would be a guarded no-op afterwards.
+    registry = RactorRailsShim::VersionPolicy::PATCH_VERSIONS
+    (@patch_versions_snapshot || {}).each do |k, v|
+      registry[k] = ((registry[k] || []) + v).uniq
+    end
+  end
+
   # The module exists and is namespaced under RactorRailsShim.
   it "RactorRailsShim::VersionPolicy is a Module" do
     assert_kind_of Module, RactorRailsShim::VersionPolicy
