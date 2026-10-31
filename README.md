@@ -4,7 +4,7 @@ A monkey-patch shim that reroutes Rails' class-level instance variable accessors
 through `ActiveSupport::IsolatedExecutionState`, which is Ractor-safe. Lets a
 Rails app run in Ractor mode without forking Rails itself.
 
-**Status:** proof-of-concept / stopgap, currently **v0.5.1**. The goal is for
+**Status:** proof-of-concept / stopgap, currently **v0.6.0**. The goal is for
 Rails to do this upstream, at which point this gem becomes a no-op and can be
 removed (see [When to delete this gem](#when-to-delete-this-gem)).
 

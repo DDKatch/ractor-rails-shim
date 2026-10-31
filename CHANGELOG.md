@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-10-31
+
 ### Added — production-gem coverage for the reference Gemfile (`Gemfile.test_project`)
 
 Every production gem in the reference Gemfile now has a Ractor verdict, and
@@ -122,6 +124,7 @@ fixes (`spec/smoke_worker_fixes_spec.rb`):
   random) execution — this was the source of the recurring
   "prawn: patch should be registered in the version policy" flake. Both
   specs now snapshot and merge-back the registry around each test.
+
 ## [0.5.1] — 2026-10-25
 
 ### Release housekeeping
