@@ -7,6 +7,121 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — production-gem coverage for the reference Gemfile (`Gemfile.test_project`)
+
+Every production gem in the reference Gemfile now has a Ractor verdict, and
+the ones with Ractor-hostile state have targeted patches
+(`lib/ractor_rails_shim/patches/`, wired through `loader.rb`):
+
+- **faraday** — worker header keys map through a pure per-Ractor cache (the
+  upstream `KeyMap` constant holds a Hash-with-default-Proc + captured
+  Mutex); middleware/adapter registries captured at boot and promoted
+  per-Ractor (every module extending `Faraday::MiddlewareRegistry`, not just
+  Middleware/Adapter — a default-stack `Faraday.new` resolves
+  `:url_encoded` on `Faraday::Request`); `Middleware.default_options`,
+  `Env.member_set` and the `Utils` memos are per-Ractor (redefined on the
+  singleton class — the module is `module_function`); a worker branch for
+  `default_connection_options`; `NO_ARGUMENT`/`default_adapter_options`
+  frozen; `Handler#klass` uses plain `const_get` off-main.
+- **json-schema** — the heaviest hand-written class-variable surface in the
+  set: `@@mutex` skipped off-main (class-variable reads are forbidden in
+  workers entirely, so workers lock-free build their per-instance schema
+  state), `@@default_opts` frozen (dup-merged per validation), `@@schemas`
+  cached per-Ractor, the draft validators captured frozen, and the Proc
+  cvars (`@@serializer`, `@@fake_uuid_generator`) +
+  `@@json_backend`/`@@schema_reader` re-built Ractor-locally;
+  `@@use_multi_json` snapshotted (frozen `JSON_USE_MULTI_JSON`,
+  `multi_json_deprecation_warning!` worker-safe); `TYPE_CLASS_MAPPINGS` and
+  the RFC4122 Nil UUID frozen for the validate/`fake_uuid` paths.
+- **rack-attack** — module state (configuration/cache/discriminator
+  normalizer) served per-Ractor; `BaseProxy.@@proxies` snapshotted into the
+  frozen `RACK_ATTACK_PROXIES` constant with a worker branch on `proxies`
+  (class-variable reads are forbidden off-main even when the value is
+  shareable — freezing in place is not enough); worker-safe
+  `Cache.default_store` (`::Object.const_get` — bare `Rails` does not
+  resolve in eval'd worker code); real default-responder lambdas per worker,
+  including the `retry-after` throttle-header path; the middleware `#call`
+  resolves the configuration through the module accessor off-main.
+  Limitation documented: DSL check blocks are main-Ractor Procs — re-arm
+  them per worker via the new `RactorRailsShim.on_worker_boot` hook.
+- **on_worker_boot hook** (`WorkerApp#setup_once!` + `Registry`): register
+  blocks (shareable block form, or an always-safe Ruby source string) that
+  run once per worker Ractor to re-arm state that cannot cross the
+  boundary.
+- **jbuilder** — frozen `template_lookup_options`, sentinel-default
+  `Jbuilder.new` (no cvar reads off-main), boot DSL captured and replayed
+  per worker (jbuilder 2.15+ inherits BasicObject).
+- **simple_form** — per-Ractor `discovery_cache`, frozen `@@wrappers`
+  snapshot, Ractor-local lambdas for the Proc-valued `label_text` /
+  `field_error_proc` mattrs.
+- **fast_jsonapi** — frozen capture of each serializer class's 12-piece
+  serialization metadata; un-freezable attribute procs degrade to nil.
+- **sprockets-rails** — frozen manifest snapshot (`#assets`/`#files`) served
+  to worker views, fresh `precompiled_asset_checker`, manifest-only asset
+  resolution off-main.
+- **telegram-bot** — per-Ractor `Client`s from a frozen `bots_config`;
+  worker-safe `default_async_job` (no runtime `const_set`);
+  `UpdatesPoller` registry Ractor-local.
+- **mailgun-ruby** — the eight module config ivars frozen in place at
+  freeze time via `SHAREABLE_CLASS_IVARS` (accessors unchanged).
+- **prawn** — per-Ractor AFM font-data cache, metrics path, and
+  `Repeater.count`; `image_handler`/`Document.extensions` frozen in place.
+- **async-http** — the six runtime-read constants deep-frozen.
+- **translit** — the Russian conversion map pre-warmed + frozen.
+- **unicode_normalize (stdlib)** — `String#unicode_normalize` crashes in
+  workers out of the box (the `Regexp.compile` regexps are unfrozen, and
+  `NF_HASH_C`/`NF_HASH_D` are default-proc Hashes the stdlib mutates, so
+  they cannot be frozen). Regexps + `UNICODE_ENCODINGS` frozen in place;
+  `normalize`/`normalized?` get worker branches that gsub/scan with blocks
+  (per-Ractor memo Hashes in the shim storage, `MAX_HASH_LENGTH` cap
+  preserved); main keeps the upstream memoizing hashes verbatim. Any code
+  path that normalizes user input in a worker (Addressable URI handling,
+  transliteration, …) benefits.
+
+Audit results for the remaining gems are recorded in COMPATIBILITY.md
+("Test project coverage"): devise, devise-jwt, mission_control-jobs,
+redcarpet, pg, bcrypt, the net-* protocol gems, and the asset-pipeline gems
+need no patch; activeadmin, aws-sdk-s3, ferrum, and sitemap_generator are
+design-incompatible with a frozen shared app and belong in a separate
+process.
+
+### Fixed — real-gem worker smoke round (`smoke_worker_fixes_spec.rb`)
+
+The unit suites passed while the real gems still died in worker Ractors;
+running the patches against the actual gems surfaced five worker-only crash
+paths that no no-gem spec could reach. All replayed as specs next to the
+fixes (`spec/smoke_worker_fixes_spec.rb`):
+
+- **rack-attack** — `BaseProxy.proxies` read `@@proxies` in workers
+  (`Ractor::IsolationError`; freezing the value does not help — cvar reads
+  are forbidden off-main regardless of shareability). Fixed via the
+  `RACK_ATTACK_PROXIES` snapshot + worker branch described above; main's
+  own `@@proxies` stays mutable so late-registered proxies still register.
+- **rack-attack** — the worker `set_defaults` `throttled_responder` was a
+  placeholder lambda with no body; workers now build the real upstream
+  responder (429 + `Retry later`, optional `retry-after` header from
+  `rack.attack.match_data`).
+- **json-schema** — worker `initialize` called a never-defined
+  `_shim_lock` helper; the worker branch now builds its per-instance
+  schema state without a lock (main keeps `@@mutex`).
+- **faraday** — the `Utils` memo redefinitions landed as plain instance
+  methods on a `module_function` module, so the callable singleton copies
+  kept the upstream `@ivar ||=` bodies and workers died setting the module
+  ivar; the redefinitions now target `Faraday::Utils.singleton_class`.
+- **faraday** — `default_connection_options` memoized into a module ivar
+  off-main on the first `Faraday.new`; workers get a per-Ractor
+  ConnectionOptions instead.
+- **faraday** — the middleware-registry snapshot only captured
+  `Faraday::Middleware`/`Faraday::Adapter`; a default-stack
+  `Faraday.new` (no block) needs `Faraday::Request`'s `:url_encoded`
+  registration off-main. The snapshot now walks every module extending
+  `MiddlewareRegistry` via `ObjectSpace`.
+- **version-policy specs** — `version_policy_spec` / `version_spec` called
+  `PATCH_VERSIONS.clear` on the shared global registry, wiping entries
+  registered by other spec files depending on interleaved (seed-order
+  random) execution — this was the source of the recurring
+  "prawn: patch should be registered in the version policy" flake. Both
+  specs now snapshot and merge-back the registry around each test.
 ## [0.5.1] — 2026-10-25
 
 ### Release housekeeping

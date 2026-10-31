@@ -97,6 +97,64 @@ bundle exec ractor-rails-check --app   # app + gems (excludes Rails framework)
 bundle exec ractor-rails-check        # everything
 ```
 
+## Test project coverage (`Gemfile.test_project`)
+
+Every gem in the reference production Gemfile, with the shim's verdict. Gems
+outside the production path (dev/test groups, deploy CLIs) are listed at the
+end for completeness. Statuses follow the legend above.
+
+| Gem | Status | Notes |
+|---|---|---|
+| benchmark, base64 | ✅ | Stdlib shims (needed on Ruby 4.0 — see the Gemfile comment). No class-level state. |
+| rails (~> 8.1.3) | ✅ verified | The shim's whole purpose; see the `rails` row above. |
+| pg | ✅ | Connections are per-Ractor via AR's connection handler (shim-routed). |
+| falcon (~> 0.55) | n/a | The server is the host process's job. In `:ractor` mode kino serves; Falcon backs the `:threaded` path with its own fiber-aware boot. Not part of the app graph. |
+| redcarpet | ✅ | C extension, instance state only; `Markdown.new` per render. |
+| async-http (~> 0.64) | ✅ patched | Six runtime-read constants (SCHEMES, HTTP2 CLIENT/SERVER_SETTINGS, HANDLERS, NO_RESPONSE, PROHIBITED_GET_HEADERS) are deep-frozen via the shareable-constants pipeline. Client/pool state is per-instance, built inside the requesting Ractor. |
+| async-http-faraday | ✅ | Adapter registered into Faraday's registry at boot (Classes/Symbols — shareable); per-thread client cache is Ractor-local. |
+| async-redis | ✅ | All state instance-level; each Ractor builds its own client/pool. |
+| sass-rails / sassc-rails | ✅ | Compile-time only. Assets are precompiled at deploy; no request-time class state. Don't compile SCSS lazily inside a worker. |
+| jbuilder | ✅ patched | `template_lookup_options` frozen; `Jbuilder.new` redefined with sentinel defaults; boot `key_format`/`ignore_nil`/`deep_format_keys` captured into shareable constants and replayed per worker (fresh formatter Mutex + cache each). |
+| devise | ✅ verified | Existing patch. |
+| devise-jwt | ✅ (see note) | No class/module state in-gem. Request-time JWT logic lives in the `warden-jwt_auth` dependency (config object via dry-configurable) — audit `warden-jwt_auth` before serving JWT auth from workers. |
+| rack-attack | ⚠️ patched (with limitation) | Module state (configuration/cache/normalizer) routed per-Ractor; `@@proxies` snapshotted into the frozen `RACK_ATTACK_PROXIES` constant with a worker branch on `BaseProxy.proxies` (cvar reads are forbidden off-main even when the value is shareable — freezing in place is not enough); worker-safe `Cache.default_store` (bare `Rails` does not resolve in eval'd worker code) and real default-responder lambdas per worker (including the `retry-after` throttle header path); middleware `#call` worker branch. **Limitation:** DSL check blocks (throttle/blocklist/safelist/track) are main-Ractor Procs and cannot cross the boundary — workers run a default DSL-less config unless the app re-arms via `RactorRailsShim.on_worker_boot`. Counters still work (external store). |
+| net-imap / net-pop / net-smtp | ✅ | Instance-level protocol clients. |
+| matrix / mutex_m | ✅ | Plain libs. |
+| redis | ⚠️ guidance | Per-Ractor clients (see the `redis` row above); ActionCable's server instance is already shim-routed via the ActionCable patch. |
+| bcrypt | ✅ | C extension, instance state. |
+| sprockets-rails | ⚠️ patched | Worker views get a frozen manifest snapshot (`SPROCKETS_MANIFEST_SNAPSHOT` answering `#assets`/`#files`), a fresh `precompiled_asset_checker` lambda, and manifest-only asset resolution (`resolve_assets_with → [:manifest]` off-main). Compilation stays in main/CI. |
+| image_processing (~> 1.2) | ✅ | Instance transformers (mini_magick / vips); built per request. |
+| aws-sdk-s3 | ❌ | Process-singleton config (`Aws.config`); run in a separate process (job/supervisor). |
+| bootsnap | ✅ | Boot-time only (see above). |
+| activeadmin | ❌ | The whole `ActiveAdmin::Application` graph is built from main-Ractor DSL blocks (Resources/Namespaces/Procs). Serve admin pages in the main process; per-worker rebuild is possible but re-executes app DSL per worker. |
+| bootstrap / webpacker | ✅ | Asset gems (compile-time). Webpacker's runtime reads (manifest.json) are boot-time-only in production. |
+| fast_jsonapi | ⚠️ patched (partial) | Serializer class metadata (12 attr_accessors per class) captured frozen + replayed per worker. Attribute/relationship procs that DON'T freeze cleanly are omitted (the field serializes to nil instead of crashing). |
+| slim | ⚠️ partial | Slim's own pipeline is instance-based; the embedded-engine registry (`Slim::Embedded@engines` — Hash of Procs) and Temple's class-level option tables are the shared-state edges. Templates compiled lazily in a worker hit the registry read. Follow-up: audit Temple's option storage. |
+| simple_form | ✅ patched | `FormBuilder.discovery_cache` per-Ractor; `@@wrappers` captured into a frozen snapshot (`SIMPLE_FORM_WRAPPERS`); worker readers for the two Proc-valued mattrs (`label_text`, `field_error_proc`) return Ractor-local lambdas with the same bodies. |
+| sitemap_generator | ❌ (rake) | `SitemapGenerator::Sitemap` is one live mutable singleton in a constant (file I/O, name reservation, `instance_eval` of the user's sitemap.rb). Run `sitemap:refresh` in rake/main Ractor; keep the gem off the worker request path. |
+| tzinfo | ✅ patched | Existing `tzinfo_data_source` patch. |
+| translit | ✅ patched | The lazily-built Russian map is pre-warmed + deep-frozen; `Translit.russian` serves the frozen constant (no module-ivar write off-main). |
+| telegram-bot | ✅ patched | `Telegram.bots`/`bot` clients built per-Ractor from the frozen `bots_config`; `default_async_job` worker branch (no runtime const_set); `UpdatesPoller` registry Ractor-local. |
+| faraday | ✅ patched | Worker header keys map through a pure per-Ractor cache (upstream KeyMap holds a captured Mutex); middleware/adapter registries captured + promoted per-Ractor (**all** modules extending `Faraday::MiddlewareRegistry` — `Request`/`Response` register the default-rack-builder stack symbols, so a bare `Faraday.new` without a block must resolve `:url_encoded` off-main); `default_options`/`Env.member_set` per-Ractor; the `Utils` memo readers redefined on the singleton class (the module is `module_function` — instance-level defs would never override the callable singleton copies); `default_connection_options` gets a worker branch (the upstream reader sets a module ivar, which workers can only read); `NO_ARGUMENT`/`default_adapter_options` frozen; `Handler#klass` plain `const_get` off-main. |
+| ferrum | ❌ (separate process) | Headless-Chrome driver — a driver process by design; never on the worker request path. |
+| json-schema | ✅ patched | The heaviest cvar surface in the set: `@@mutex` untouched on main and skipped off-main (workers build their per-instance schema state lock-free — cvar reads are forbidden in workers even for a frozen NoOpLock); `@@default_opts` frozen + dup-merged; `@@schemas` per-Ractor; `@@validators`/`@@default_validator` captured frozen; `@@schema_reader`/`@@serializer`/`@@fake_uuid_generator`/`@@json_backend` per-Ractor; `@@use_multi_json` snapshotted (`JSON_USE_MULTI_JSON`, falling back to `Object.const_defined?(:MultiJson)`); `TYPE_CLASS_MAPPINGS` and `JSON::Util::UUID::Nil` frozen for the validate path. Schemas re-parse per Ractor (cache miss, not a crash). |
+| prawn (~> 2.5) | ✅ patched | AFM font-data cache + metrics path per-Ractor (parsing is Ractor-safe); `Repeater.count` per-Ractor; `image_handler`/`Document.extensions` frozen in place at freeze time. |
+| prawn-table (~> 0.2) | ✅ | Instance-level memoization only; tables/cells built inside the rendering Ractor. |
+| mailgun-ruby (~> 1.2) | ✅ patched | All eight config ivars registered in `SHAREABLE_CLASS_IVARS` — frozen in place at freeze time, so the original accessors return shareable values in workers; each Ractor builds its own Faraday connection. |
+| solid_queue (~> 1.7) | ✅ patched | Existing `solid_queue` patch (worker-side enqueue). The supervisor process runs separately. |
+| mission_control-jobs | ✅ (see note) | All global state is mattr_accessor (shim-routed). The VALUES (applications/logger/importmap) are main-Ractor objects — populate per-Ractor slots via shim config if workers serve the Jobs UI. |
+| feelings | ✅ patched | `judge`/`random`/`registry` per-Ractor (workers build their own judge/client); boot registry data captured into a frozen snapshot and re-registered into each worker's registry. |
+| unicode_normalize (stdlib) | ✅ patched | `String#unicode_normalize` dies in workers out of the box (`Regexp.compile` leaves the three `REGEXP_*` constants unfrozen, and the `NF_HASH_*` memo Hashes are default-proc-backed Mutables). Regexps + `UNICODE_ENCODINGS` frozen; `normalize`/`normalized?` get worker branches that gsub/scan with blocks feeding per-Ractor memo Hashes (`MAX_HASH_LENGTH` cap preserved, `nfc_one`/`nfd_one` recomputed). Main keeps the upstream memoization hashes untouched. |
+
+Out of scope (not on the production request path): `kamal`/`thruster`
+(deploy/proxy CLIs, `require: false`), `annotate` (dev), and the
+development/test group (`dotenv-rails`, `byebug`, `rubocop*`,
+`shoulda-matchers`, `minitest-reporters`, `mutineer`, `minitest-mock`,
+`simplecov`, `foreman`, `rbs`, `steep`, `web-console`, `listen`, `pry`).
+These load at boot or in dev tooling only; the frozen worker request path
+never touches them. `ruby_llm` is pinned at 2.1.0 in the Gemfile (audited
+2.1.1 — patch applies to both).
+
 The report lists every class ivar / class var holding an unshareable value,
 tagged by kind. Cross-reference each finding against this matrix:
 
