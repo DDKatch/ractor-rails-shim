@@ -187,6 +187,21 @@ class FrameworkPatchDispatchSpec < Minitest::Spec
     _install_thread_mattr_patch
     _install_turbo_patch
     _install_secure_token_patch
+    _install_async_http_patch
+    _install_faraday_patch
+    _install_fast_jsonapi_patch
+    _install_feelings_patch
+    _install_jbuilder_patch
+    _install_json_schema_patch
+    _install_mailgun_patch
+    _install_prawn_patch
+    _install_rack_attack_patch
+    _install_ruby_llm_patch
+    _install_simple_form_patch
+    _install_sprockets_rails_patch
+    _install_telegram_bot_patch
+    _install_translit_patch
+    _install_unicode_normalize_patch
   ].freeze)
 
   it "dispatches exactly the same set of patches as the original hardcoded list" do
