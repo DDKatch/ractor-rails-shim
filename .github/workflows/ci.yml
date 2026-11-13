@@ -59,6 +59,25 @@ jobs:
     runs-on: ubuntu-latest
     env:
       RAILS_SHIM_TEST_APP: /tmp/rails-shim-test-app
+      DATABASE_URL: postgresql://dev@127.0.0.1:5432
+    # Since 4ec9a4c the job builds the REAL test app (cloned from
+    # DDKatch/ractor-rails-shim-test-app), whose database.yml defaults to
+    # PostgreSQL on 127.0.0.1 — make_test_app.sh's db:prepare only WARNs when
+    # it is unreachable, so without a service container the app still boots
+    # and then the worker Ractor's AR connection init dies with
+    # ActiveRecord::DatabaseConnectionError ("issue connecting with your
+    # hostname: 127.0.0.1"). Serve the DB the app expects: postgresql user
+    # `dev` (passwordless via trust auth), same shape as the test app's own
+    # CI workflow.
+    services:
+      postgres:
+        image: postgres
+        env:
+          POSTGRES_USER: dev
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: --health-cmd="pg_isready" --health-interval=10s --health-timeout=5s --health-retries=3
     steps:
       - uses: actions/checkout@v5
 
