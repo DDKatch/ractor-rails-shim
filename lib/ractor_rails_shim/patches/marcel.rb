@@ -65,10 +65,10 @@ module RactorRailsShim
       return unless defined?(::Ractor) && ::Ractor.respond_to?(:make_shareable)
 
       snap = {
-        extensions:   frozen_copy(::Marcel::EXTENSIONS),
-        magic:        frozen_copy(::Marcel::MAGIC),
-        type_exts:    frozen_copy(::Marcel::TYPE_EXTS),
-        type_parents: frozen_copy(::Marcel::TYPE_PARENTS),
+        extensions: frozen_copy(::Marcel::EXTENSIONS),
+        magic: frozen_copy(::Marcel::MAGIC),
+        type_exts: frozen_copy(::Marcel::TYPE_EXTS),
+        type_parents: frozen_copy(::Marcel::TYPE_PARENTS)
       }
       remove_const(:SNAPSHOT) if const_defined?(:SNAPSHOT, false)
       const_set(:SNAPSHOT, snap.freeze)
@@ -95,7 +95,7 @@ module RactorRailsShim
 
     def worker_by_extension(ext)
       ext = ext.to_s.downcase
-      mime = ext[0..0] == "." ? snap[:extensions][ext[1..]] : snap[:extensions][ext]
+      mime = (ext[0..0] == ".") ? snap[:extensions][ext[1..]] : snap[:extensions][ext]
       mime && ::Marcel::Magic.new(mime)
     end
 
