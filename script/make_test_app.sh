@@ -25,10 +25,9 @@
 # there is no path: reference to this machine). By default the script re-pins
 # the shim to the latest origin/main, so the app runs the newest shim.
 # Pass --no-update-shim to keep the locked revision (reproducible setup).
-# Note: the committed Gemfile.lock currently pins an inconsistent
-# rev/version pair, so --no-update-shim fails resolution until that is
-# repaired in the app repo; the default (re-pin) always yields a working
-# bundle.
+# The lockfile is repaired (consistent rev/version pin) as of the app
+# repo's a5724d3, so --no-update-shim resolves cleanly; keep the default
+# (re-pin) if you want the newest shim rather than the locked one.
 #
 # Requirements: git, network (clone + bundle), PostgreSQL for the DB steps
 # (the script warns and continues if the DB is not reachable), `ab` for the
