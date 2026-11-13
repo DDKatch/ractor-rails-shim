@@ -11,6 +11,11 @@
 Gemfile.lock
 .rspec_status
 
+# Upstream gem-suite harness (clones + generated bundle files are local)
+/upstream/checkouts/
+/upstream/gemfiles/*.lock
+/upstream/gemfiles/.bundle/
+
 # Scratch / probe files (not for publication)
 /phase2_probe.rb
 /phase2_probe_results.txt
