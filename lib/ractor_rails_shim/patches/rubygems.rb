@@ -47,9 +47,15 @@ module RactorRailsShim
       RUBY
     end
 
-    # Called from prepare_for_ractors! (post-boot, main Ractor) so the
-    # snapshot reflects Bundler-configured gem paths. Also called from
-    # install as a safety net so the constant is never undefined.
+    # Called from prepare_for_ractors! (pre-worker boot, main Ractor) so the
+    # snapshot reflects Bundler-configured gem paths. There is deliberately
+    # NO install-time snapshot: `install` runs in config/boot.rb and the
+    # `return if defined?` guard would freeze an early (possibly
+    # incomplete) snapshot and prevent the prepare-time refresh. The
+    # invariant is: prepare_for_ractors! runs BEFORE any worker Ractor
+    # exists, so the constant is always defined before a worker can read
+    # it. (make_test_app.sh's printed probe recipe must call
+    # prepare_for_ractors! for the same reason.)
     def snapshot_gem_paths!
       return unless defined?(::Gem)
       return if defined?(::RactorRailsShim::GEM_PATHS_SNAPSHOT)

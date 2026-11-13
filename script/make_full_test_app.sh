@@ -455,6 +455,7 @@ echo "  cd $DEST && RAILS_ENV=production SECRET_KEY_BASE=dummy bundle exec ruby 
 echo "    require File.expand_path(\"config/boot\"); \\"
 echo "    require File.expand_path(\"config/application\"); \\"
 echo "    Bundler.require(*Rails.groups); Rails.application.initialize!; \\"
+echo "    RactorRailsShim.prepare_for_ractors!; \\"
 echo "    app = RactorRailsShim.make_app_shareable!(Rails.application); \\"
 echo "    env = Ractor.make_shareable({\"REQUEST_METHOD\"=>\"GET\",\"PATH_INFO\"=>\"/up\",\"SCRIPT_NAME\"=>\"\",\"QUERY_STRING\"=>\"\",\"SERVER_NAME\"=>\"localhost\",\"SERVER_PORT\"=>\"9293\",\"HTTP_HOST\"=>\"localhost\",\"rack.url_scheme\"=>\"http\"}); \\"
 echo "    r = Ractor.new(app,env){|a,e| re=e.to_h.merge(\"rack.input\"=>StringIO.new(\"\"),\"rack.errors\"=>StringIO.new(\"\"),\"rack.version\"=>[3,0]); begin; s,h,b=a.call(re); [s,h[\"content-type\"],b.each.to_a.join[0,80]]; rescue=>ex; root=ex; root=root.cause while root.cause; [:err,ex.class.name,ex.message[0,150],\"ROOT: #{root.class.name}: #{root.message[0,150]}\"]; end }; \\"
