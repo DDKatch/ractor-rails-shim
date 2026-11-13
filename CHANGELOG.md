@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] — 2026-11-13
+
+### Fixed — worker-Ractor request failures found by a full user-page sweep
+(kino :ractor, Rails 8.1.4.1, Ruby 4.0.7; 0 request errors after the fixes)
+
+- **turbo** (`patches/turbo.rb`) — a late `_write_layout_method` re-emission
+  inside a worker (e.g. a lazily-created controller subclass at first request)
+  wrote into the frozen `PROC_LAYOUT_PROCS` registry and raised `FrozenError`,
+  500-ing the **first request each worker served** (first `GET /up` → 500,
+  second → 200). The write is now guarded: on the frozen registry it is skipped
+  and the emitted `_layout_from_proc` reads nil for the unknown key, falling
+  back to the default layout (the same safe degrade the freeze step uses for
+  unshareable procs).
+- **action_dispatch** (`patches/action_dispatch.rb`) — the `main_app`
+  mounted-helpers patch only redefined the base
+  `ActionDispatch::Routing::RouteSet::MountedHelpers`, but Rails' finisher
+  copies the method object into `Rails::Engine::LazyRouteSet::MountedHelpers`
+  — the module Devise actually resolves `main_app` on. The base-module
+  redefinition never reached those copies, so every Devise URL generation from
+  a worker raised "defined with an un-shareable Proc in a different Ractor":
+  the FailureApp redirect 500-ed instead of 302-ing to sign-in, and
+  `session_path` / `registration_path` in Devise views 500-ed. The patch now
+  targets BOTH modules, and the `@_main_app ||=` memoization is gone (writing
+  an ivar on the frozen module from a worker would raise FrozenError;
+  `RoutesProxy` is rebuilt per call).
+- **active_storage** (`roles/shareability_traversal.rb`) —
+  `ActiveStorage::Blob` overrides `SignedId`'s verifier with a lazy class-ivar
+  reader (`@signed_id_verifier ||= ActiveStorage.verifier`). If nothing
+  touched a Blob signed_id before the graph freeze, a worker calling
+  `blob.signed_id` executed the `||=` and wrote a class ivar outside the main
+  Ractor → `IsolationError: can not set instance variables of classes/modules
+  by non-main Ractors` (observed on `GET /storage_probe`; A/B-confirmed
+  pre-existing, not a Rails 8.1.4.1 / image_processing 2.x regression).
+  `prepare_for_ractors!` now touches the reader in the main Ractor so the
+  frozen graph carries a shareable verifier and the worker's `||=`
+  short-circuits.
+
+### Validated
+
+- Full kino `:ractor` page sweep on the ractor-rails-shim-test-app: root,
+  posts (index/plain/show/new/edit + authenticated write → 302, row
+  persisted), categories, Devise sign-in (CSRF issue + validation),
+  sign-out, auth-gated redirects, `/stats`, downloads, audit engine, Active
+  Storage probes (`/attach_probe`, `/attach_read_probe`, `/storage_probe`,
+  `/encrypted_storage_probe`), `/features/signed_id_probe` — all green, 0
+  worker errors. Unit specs: 859 runs, 0 failures.
+
 ## [0.6.0] — 2026-10-31
 
 ### Added — production-gem coverage for the reference Gemfile (`Gemfile.test_project`)
