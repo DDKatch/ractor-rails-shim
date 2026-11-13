@@ -559,6 +559,25 @@ module RactorRailsShim
       lazy_salts.each do |salt|
         funnel.call("prewarm message verifier codec #{salt}") { coordinator[salt] }
       end
+
+      # ActiveStorage::Blob overrides ActiveRecord::SignedId's verifier with a
+      # LAZY class-ivar reader (activestorage blob.rb, `def signed_id_verifier;
+      # @signed_id_verifier ||= ActiveStorage.verifier; end`). If no request
+      # touches a Blob signed_id before the freeze, the ivar is unset and a
+      # worker calling `blob.signed_id` executes the `||=` — writing a class
+      # ivar outside the main Ractor:
+      #   IsolationError: can not set instance variables of classes/modules by
+      #   non-main Ractors (ActiveStorage::Blob.signed_id_verifier)
+      # Observed on GET /storage_probe (blob.signed_id) in a kino :ractor
+      # worker. Touching the reader HERE, in the main Ractor, sets
+      # @signed_id_verifier to the boot-time verifier (engine.rb sets
+      # ActiveStorage.verifier during initialize!); the app-graph freeze then
+      # makes it shareable and the worker's ||= short-circuits.
+      if defined?(::ActiveStorage::Blob) && ::ActiveStorage::Blob.respond_to?(:signed_id_verifier)
+        funnel.call("prewarm ActiveStorage::Blob signed_id_verifier") do
+          ::ActiveStorage::Blob.signed_id_verifier
+        end
+      end
     end
 
     # Deterministic last-mile freeze for the model class state the app-graph
