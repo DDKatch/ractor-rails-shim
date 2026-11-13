@@ -80,9 +80,10 @@ module RactorRailsShim
         # @@accept_charset is a class VARIABLE, and Ruby forbids reading class
         # variables from non-main Ractors outright — even shareable ones.
         RactorRailsShim.__send__(:_install_cgi_patch)
-        # Patch Marcel's `EXTENSIONS` table BEFORE eager-load so the frozen,
-        # shareable Hash is in place when worker Ractors extract an attachment's
-        # content type (ActiveStorage::Blob#extract_content_type -> Marcel).
+        # Route Marcel's lookup-table reads through a frozen snapshot for
+        # worker Ractors (ActiveStorage::Blob#extract_content_type -> Marcel),
+        # while the main Ractor keeps the upstream mutable tables verbatim —
+        # Magic.add / Magic.remove must keep working after boot.
         RactorRailsShim.__send__(:_install_marcel_patch)
         # Patch ActionView::Base.with_empty_template_cache EARLY (before
         # eager load) so production's DetailsKey.view_context_class uses the

@@ -46,6 +46,37 @@ GEMS = {
     suite: %w[bundle exec rake test TESTOPTS=-v],
     dispatch_when: "I18n::Config",
   },
+  "rack" => {
+    repo: "https://github.com/rack/rack.git",
+    ref: "v3.2.8",
+    suite: %w[bundle exec rake test:regular TESTOPTS=-v],
+    dispatch_when: "Rack",
+  },
+  "marcel" => {
+    repo: "https://github.com/rails/marcel.git",
+    ref: "v1.2.1",
+    suite: %w[bundle exec rake test TESTOPTS=-v],
+    dispatch_when: "Marcel",
+  },
+  # tzinfo's Rakefile cannot load on Ruby 4 (rdoc/task removed from default
+  # gems, gemspec eval fails), so the suite runs the three aggregator
+  # scripts directly. They set conflicting global constants
+  # (TZINFO_TEST_DATA_FORMAT, DataSource), so each needs its own process.
+  # ts_all.rb collects test files via Dir["**/tc_*.rb"], so the injected
+  # dispatch file must match that glob (tc_zz... sorts after the top-level
+  # tc_* files; the format1/ subdir files that sort before it only define
+  # format-specific test classes, no dispatch-relevant constants).
+  "tzinfo" => {
+    repo: "https://github.com/tzinfo/tzinfo.git",
+    ref: "v2.0.6",
+    suite: [
+      %w[bundle exec ruby -Ilib test/ts_all_ruby_format1.rb -v],
+      %w[bundle exec ruby -Ilib test/ts_all_ruby_format2.rb -v],
+      %w[bundle exec ruby -Ilib test/ts_all_zoneinfo.rb -v],
+    ],
+    dispatch_file: "test/tc_zz_upstream_shim_dispatch.rb",
+    dispatch_when: "TZInfo::DataSources",
+  },
 }.freeze
 
 SUITE_TIMEOUT_S = 900
@@ -114,13 +145,38 @@ module Harness
     env
   end
 
+  # The suite may be a single argv (most gems) or a list of argvs (gems that
+  # need several isolated processes, e.g. tzinfo's three aggregators).
+  # Returns [merged_output, status]: status is nil if any run timed out,
+  # else the first non-zero exit status (0 if all ran clean).
+  def run_suite(argvs, env, dir)
+    outputs = []
+    code = 0
+    argvs.each do |argv|
+      out, st = run(argv, env: env, cwd: dir)
+      outputs << out
+      return [outputs.join("\n"), nil] if st.nil?
+      code = st.exitstatus if !st.exitstatus.zero? && code.zero?
+    end
+    [outputs.join("\n"), code == 0 ? 0 : 1]
+  end
+
+  def suite_argv(spec)
+    s = spec[:suite]
+    s.first.is_a?(Array) ? s : [s]
+  end
+
   # The late-dispatch test file: copied into the checkout for the shim run
-  # only. Loads last (sorts after every real test file alphabetically), so
-  # it runs after all test classes are defined but before tests execute.
-  # It force-loads the dispatch targets (const_get resolves autoloads) and
-  # aborts loudly if the shim is missing — a silent no-shim run would
-  # otherwise produce a vacuous PASS.
-  DISPATCH_FILE = "test/zz_upstream_shim_dispatch_test.rb"
+  # only. Its name must match the way the suite collects test files —
+  # rake/minitest suites pick up "test/**/*_test.rb" (default) while suites
+  # that glob "test/**/tc_*.rb" (tzinfo) need a dispatch_file entry that
+  # matches their glob and sorts after the files that define the dispatch
+  # targets. It runs after all test classes are defined but before tests
+  # execute (minitest runs test methods at exit). It force-loads the
+  # dispatch targets (const_get resolves autoloads) and aborts loudly if
+  # the shim is missing — a silent no-shim run would otherwise produce a
+  # vacuous PASS.
+  DEFAULT_DISPATCH_FILE = "test/zz_upstream_shim_dispatch_test.rb"
   DISPATCH_BODY = <<~RUBY
     # Injected by upstream/run.rb — shim run only. Not a test; no test methods.
     abort "upstream harness: ractor_rails_shim NOT loaded" unless defined?(RactorRailsShim)
@@ -128,16 +184,16 @@ module Harness
     RactorRailsShim::Installer.dispatch_all_framework_patches
   RUBY
 
-  def write_dispatch_file(dir, dispatch_when)
+  def write_dispatch_file(dir, dispatch_when, file)
     targets = Array(dispatch_when).compact.join(",")
     body = DISPATCH_BODY.sub("<%= TARGETS %>", targets)
-    path = File.join(dir, DISPATCH_FILE)
+    path = File.join(dir, file)
     File.write(path, body)
     path
   end
 
-  def remove_dispatch_file(dir)
-    path = File.join(dir, DISPATCH_FILE)
+  def remove_dispatch_file(dir, file)
+    path = File.join(dir, file)
     File.delete(path) if File.exist?(path)
   end
 
@@ -147,20 +203,22 @@ module Harness
 
   def verify_one(name, spec)
     gemfile = spec[:bundle_gemfile] || "#{name}.rb"
+    dispatch_file = spec[:dispatch_file] || DEFAULT_DISPATCH_FILE
+    argvs = suite_argv(spec)
     puts "== #{name} @ #{spec[:ref]} =="
     dir = ensure_checkout(name, spec)
-    remove_dispatch_file(dir) # defensive: never let a stale file poison the baseline
+    remove_dispatch_file(dir, dispatch_file) # defensive: never let a stale file poison the baseline
     bundle_install(name, gemfile)
 
-    base_out, base_st = run(spec[:suite], env: bundle_env(gemfile), cwd: dir)
+    base_out, base_st = run_suite(argvs, bundle_env(gemfile), dir)
     base = parse(base_out)
-    puts "  baseline   : #{fmt(base)} (exit #{base_st&.exitstatus.inspect})"
+    puts "  baseline   : #{fmt(base)} (exit #{base_st.inspect})"
 
-    write_dispatch_file(dir, spec[:dispatch_when])
-    shim_out, shim_st = run(spec[:suite], env: shim_env(gemfile, spec[:dispatch_when]), cwd: dir)
-    remove_dispatch_file(dir)
+    write_dispatch_file(dir, spec[:dispatch_when], dispatch_file)
+    shim_out, shim_st = run_suite(argvs, shim_env(gemfile, spec[:dispatch_when]), dir)
+    remove_dispatch_file(dir, dispatch_file)
     shim = parse(shim_out)
-    puts "  with shim  : #{fmt(shim)} (exit #{shim_st&.exitstatus.inspect})"
+    puts "  with shim  : #{fmt(shim)} (exit #{shim_st.inspect})"
 
     if base_st.nil? || shim_st.nil?
       puts "  VERDICT: FAIL — suite timed out (#{base_st.nil? ? "baseline" : "with shim"} run)"

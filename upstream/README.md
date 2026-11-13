@@ -81,6 +81,13 @@ Pin the ref to the version the shim actually runs against in production.
 Use the project's `Gemfile.lock` as the source of truth. `dispatch_when`
 takes full constant paths; the late dispatch file force-loads each one.
 
+`dispatch_file` (optional) overrides the injected file's name — needed when
+the suite collects test files with a glob other than `test/**/*_test.rb`
+(e.g. tzinfo's `Dir["**/tc_*.rb"]`); the name must match that glob and sort
+after the files that define the dispatch targets. `suite` may be a single
+argv or a list of argvs when the gem needs several isolated processes (the
+runner merges run counts and failing-test IDs across them).
+
 ## Findings from the first run (i18n 1.15.2)
 
 The first pilot run found real bugs before going green. Kept here as
@@ -109,6 +116,35 @@ evidence the method works:
 6. The backend `translations` patch lost upstream's default-block
    semantics: reading an unstored locale now returned `nil` instead of an
    empty hash.
+
+## Findings from the expansion run (marcel 1.2.1)
+
+7. `make_constants_shareable!` deep-froze Marcel's global lookup tables at
+   dispatch, but upstream `Magic.add` / `Magic.remove` mutate those same
+   tables — the public "register a custom MIME type" API raised
+   FrozenError after boot. Caught by `test_add_and_remove_type` on the
+   first marcel run. Fix: the same main-verbatim philosophy as i18n —
+   the main Ractor keeps the live, mutable upstream tables and the routed
+   wrappers call the upstream originals; worker Ractors read a deep-copied,
+   frozen `MarcelPatch::SNAPSHOT` (built at dispatch, refreshed after every
+   main-Ractor `add`/`remove`). Worker `add`/`remove` raise a descriptive
+   error (the old code raised a bare FrozenError there anyway). Verified
+   with a worker probe: custom types registered after dispatch are visible
+   to workers, and removal propagates.
+
+## Results
+
+| gem | ref | runs | verdict |
+|-----|-----|------|---------|
+| i18n | v1.15.2 | 1888 | PASS (1 pre-existing failure, identical both sides) |
+| rack | v3.2.8 | 1188 | PASS (clean both sides) |
+| marcel | v1.2.1 | 447 | PASS after fix #7 |
+| tzinfo | v2.0.6 | 1825 | PASS (66 pre-existing failures/skips, identical both sides) |
+
+Not yet registered: concurrent-ruby, warden, kaminari (rspec suites — the
+runner's parser and dispatch injection are minitest-only today), and the
+Rails-embedded patches (rails/activerecord/etc. — their suites need a Rails
+app harness).
 
 ## Known limitations
 
