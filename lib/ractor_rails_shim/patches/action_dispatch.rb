@@ -195,21 +195,40 @@ module RactorRailsShim
       @mounted_helpers_patched = true
       _register_patch :mounted_helpers, "8.1"
       return unless defined?(::ActionDispatch::Routing::RouteSet::MountedHelpers)
-      mh = ::ActionDispatch::Routing::RouteSet::MountedHelpers
-      return unless mh.method_defined?(:main_app)
-      mh.class_eval <<-RUBY, __FILE__, __LINE__ + 1
-        def _main_app
-          ::ActionDispatch::Routing::RoutesProxy.new(
-            RactorRailsShim::SHAREABLE_ROUTES,
-            _routes_context,
-            RactorRailsShim::SHAREABLE_ROUTES.url_helpers,
-            nil
-          )
-        end
-        def main_app
-          @_main_app ||= _main_app
-        end
-      RUBY
+
+      # Rails::Application's routes are a Rails::Engine::LazyRouteSet whose
+      # `mounted_helpers` is Rails::Engine::LazyRouteSet::MountedHelpers — a
+      # SEPARATE module that INCLUDES the base one. finisher.rb's
+      # `define_mounted_helper(:main_app)` runs super on the base module and
+      # then copies `shared.instance_method(:main_app)` into the Lazy module
+      # via `MountedHelpers.define_method(name, ...)`. A later redefinition of
+      # the base module therefore does NOT reach the Lazy copies — the worker
+      # still hits the original un-shareable proc. Patch BOTH modules.
+      targets = [::ActionDispatch::Routing::RouteSet::MountedHelpers]
+      if defined?(::Rails::Engine::LazyRouteSet::MountedHelpers)
+        targets << ::Rails::Engine::LazyRouteSet::MountedHelpers
+      end
+      targets.each do |mh|
+        next unless mh.method_defined?(:main_app)
+        mh.class_eval <<-RUBY, __FILE__, __LINE__ + 1
+          def _main_app
+            ::ActionDispatch::Routing::RoutesProxy.new(
+              RactorRailsShim::SHAREABLE_ROUTES,
+              _routes_context,
+              RactorRailsShim::SHAREABLE_ROUTES.url_helpers,
+              nil
+            )
+          end
+          # NO ivar memoization: `@_main_app ||=` writes an instance variable
+          # on the module itself. The shim deep-freezes the app graph, so a
+          # worker Ractor calling this raises FrozenError ("can't modify
+          # frozen Module"). A RoutesProxy is a cheap plain object — rebuild
+          # per call instead.
+          def main_app
+            _main_app
+          end
+        RUBY
+      end
     end
 
     # Patch ActionDispatch::Routing::RouteSet URL generation. The named route
