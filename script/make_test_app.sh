@@ -1,97 +1,141 @@
 #!/usr/bin/env bash
-# Reproduce the minimal Rails 8.1.3 test app used by the Phase 3 probes.
+# Set up the REAL test app by cloning it from GitHub.
 #
-# The test app is NOT under version control (it lives in the system temp dir
-# and may be wiped by the OS). This script regenerates it from scratch so a
-# fresh session can run the probes without guessing the app's shape.
+# The test app is a maintained repo (benchmarks, isolated engine, Dockerfile,
+# CI, jruby Gemfile) — it cannot be reproduced by generating a Rails app from
+# scratch. Cloning gives a runnable, benchmarkable app from the get go:
+#
+#   https://github.com/DDKatch/ractor-rails-shim-test-app
 #
 # Usage:
-#   cd <this repo>
-#   ./script/make_test_app.sh [dest_dir]
+#   ./script/make_test_app.sh [dest_dir] [--no-update-shim]
 #
-# dest_dir defaults to a temp dir under /var/folders/.../T/opencode/test_app
-# (matching where Phase 3 ran). Override with an absolute path if you want
-# it somewhere stable.
+# dest_dir defaults to a sibling of THIS repo:
+#   <this repo>/../ractor-rails-shim-test-app
+# All paths are computed relative to the script location, so the setup works
+# on any machine layout.
 #
-# After it finishes, it prints the exact probe commands to run.
-set -euo pipefail
+# If dest_dir already holds a clone of the repo, the script updates it
+# (fetch + ff-only pull; local commits and uncommitted changes are kept —
+# a dirty tree only skips the pull, never the bundle steps). It never
+# deletes or force-resets anything.
+#
+# The app depends on the shim through a GitHub git source; Gemfile.lock pins
+# the revision (system-agnostic: CI and Dependabot resolve the same source,
+# there is no path: reference to this machine). By default the script re-pins
+# the shim to the latest origin/main, so the app runs the newest shim.
+# Pass --no-update-shim to keep the locked revision (reproducible setup).
+# Note: the committed Gemfile.lock currently pins an inconsistent
+# rev/version pair, so --no-update-shim fails resolution until that is
+# repaired in the app repo; the default (re-pin) always yields a working
+# bundle.
+#
+# Requirements: git, network (clone + bundle), PostgreSQL for the DB steps
+# (the script warns and continues if the DB is not reachable), `ab` for the
+# benchmark harness.set -euo pipefail
 
+REPO_URL="https://github.com/DDKatch/ractor-rails-shim-test-app.git"
 SHIM_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-DEST="${1:-$(mktemp -d)/test_app}"
 
-echo "Creating minimal Rails app at: $DEST"
-mkdir -p "$(dirname "$DEST")"
+UPDATE_SHIM=1
+POSITIONAL=()
+for arg in "$@"; do
+  case "$arg" in
+    --no-update-shim) UPDATE_SHIM=0 ;;
+    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
+    *) POSITIONAL+=("$arg") ;;
+  esac
+done
+DEST="${POSITIONAL[0]:-$(dirname "$SHIM_DIR")/ractor-rails-shim-test-app}"
 
-# Generate the app (--minimal keeps the dependency surface small, which is
-# what the Phase 3 probes target).
-rails new "$DEST" --minimal --skip-git --skip-bundle --skip-javascript \
-  --skip-active-job --skip-action-mailer --skip-action-mailbox \
-  --skip-action-text --skip-action-cable --skip-active-storage
-
+# --- clone or update -------------------------------------------------------
+if [ -d "$DEST/.git" ]; then
+  echo "== Test app already present at: $DEST"
+  echo "   Updating from origin (ff-only; local work is kept)..."
+  if git -C "$DEST" fetch --quiet origin 2>/dev/null; then
+    git -C "$DEST" pull --ff-only --quiet origin \
+      || echo "   WARN: pull skipped (uncommitted/diverging state) — current checkout kept." >&2
+  else
+    echo "   WARN: origin unreachable — using the current checkout." >&2
+  fi
+else
+  echo "== Cloning test app into: $DEST"
+  git clone --quiet "$REPO_URL" "$DEST"
+fi
 cd "$DEST"
 
-# Gemfile: add the shim (path), propshaft, sqlite3, puma, kino.
-cat > Gemfile <<'RUBY'
-source "https://rubygems.org"
+# --- shim revision ----------------------------------------------------------
+# `bundle lock --update <gem>` re-resolves version constraints but does NOT
+# move a git-source gem's pinned revision — and the app repo's committed
+# lockfile is internally inconsistent (it pins 0.6.1 @ a994c46, where
+# version.rb was still 0.6.0), so fresh clones fail resolution with "that
+# version can no longer be found in that source". `bundle update
+# --conservative <gem>` force-re-resolves just this gem (moving the rev to
+# the current branch head) without touching any other locked gem.
+if [ "$UPDATE_SHIM" = 1 ]; then
+  echo "== Re-pinning ractor-rails-shim to the latest origin/main..."
+  bundle update --conservative ractor-rails-shim
+else
+  echo "== Keeping the locked shim revision (--no-update-shim)."
+fi
+SHIM_REV="$(awk '/^GIT$/{f=1} f && /^ *revision:/{print $2; exit}' Gemfile.lock)"
+echo "   shim pinned at revision: ${SHIM_REV:-<none>}"
 
-gem "ractor-rails-shim", path: "SHIM_PATH_PLACEHOLDER"
-gem "rails", "~> 8.1.3"
-gem "propshaft"
-gem "sqlite3", ">= 2.1"
-gem "puma", ">= 5.0"
-gem "kino"
-gem "tzinfo-data", platforms: %i[ windows jruby ]
+echo "== bundle install..."
+bundle install --quiet
 
-group :development, :test do
-  gem "debug", platforms: %i[ mri windows ], require: "debug/prelude"
-end
-RUBY
-sed "s|SHIM_PATH_PLACEHOLDER|$SHIM_DIR|" Gemfile > Gemfile.tmp && mv Gemfile.tmp Gemfile
+# --- database ---------------------------------------------------------------
+# db:prepare is idempotent (create + migrate). Seeding gives a sign-in user
+# (test@example.com / password123) for manual testing. The benchmark harness
+# seeds its own user and points DATABASE_URL at the test DB itself.
+echo "== rails db:prepare db:seed..."
+if bundle exec rails db:prepare db:seed 2>&1 | tail -3; then
+  :
+else
+  echo "   WARN: DB steps failed — is PostgreSQL running? Start it, then run:" >&2
+  echo "     cd $DEST && bundle exec rails db:prepare db:seed" >&2
+fi
 
-# config/boot.rb: install the shim before Rails.application is accessed.
-cat > config/boot.rb <<'RUBY'
-ENV["BUNDLE_GEMFILE"] ||= File.expand_path("../Gemfile", __dir__)
+# --- assets -------------------------------------------------------------------
+# Production (kino :ractor / puma -e production) serves compiled assets:
+# without this, every page that renders the layout 500s with
+# "The asset 'tailwind.css' was not found in the load path". Same step the
+# app's Dockerfile runs. Idempotent.
+echo "== rails assets:precompile..."
+SECRET_KEY_BASE_DUMMY=1 bundle exec rails assets:precompile \
+  || echo "   WARN: asset precompile failed — pages that render the layout will 500." >&2
 
-require "bundler/setup"
-
-require "ractor_rails_shim"
-RactorRailsShim.install
-RUBY
-
-# config/application.rb: keep the generated --minimal railties (active_model,
-# active_record, action_controller, action_view, test_unit). The generated
-# file already has the right railties for --minimal; just ensure
-# config.generators.system_tests = nil (the generator adds it).
-# We don't overwrite application.rb — the generated one is correct.
-
-# config/routes.rb: the /up health check is generated by default. Confirm it.
-# (rails new already adds `get "up" => "rails/health#show"`.)
-
-# Production needs a secret_key_base. The probes set it via env var, so no
-# credentials file is required.
-
-bundle install
-
+# --- how to use it -----------------------------------------------------------
 echo
-echo "=== Test app ready at: $DEST ==="
+echo "=== Test app ready at: $DEST (shim rev ${SHIM_REV:-?}) ==="
 echo
-echo "To serve GET /up in a worker Ractor (returns HTTP 200):"
+echo "kino :ractor (frozen shared graph, worker Ractors):"
 echo "  cd $DEST"
-echo "  RAILS_ENV=production SECRET_KEY_BASE=dummy \\"
-echo "    bundle exec ruby -e '\\"
-echo "    require File.expand_path(\"config/boot\"); \\"
-echo "    require File.expand_path(\"config/application\"); \\"
-echo "    Bundler.require(*Rails.groups); Rails.application.initialize!; \\"
-echo "    RactorRailsShim.prepare_for_ractors!; \\"
-echo "    app = RactorRailsShim.make_app_shareable!(Rails.application); \\"
-echo "    env = Ractor.make_shareable({\"REQUEST_METHOD\"=>\"GET\",\"PATH_INFO\"=>\"/up\",\"SCRIPT_NAME\"=>\"\",\"QUERY_STRING\"=>\"\",\"SERVER_NAME\"=>\"localhost\",\"SERVER_PORT\"=>\"9293\",\"HTTP_HOST\"=>\"localhost\",\"rack.url_scheme\"=>\"http\"}); \\"
-echo "    r = Ractor.new(app,env){|a,e| re=e.to_h.merge(\"rack.input\"=>StringIO.new(\"\"),\"rack.errors\"=>StringIO.new(\"\"),\"rack.version\"=>[3,0]); begin; s,h,b=a.call(re); [s,h[\"content-type\"],b.each.to_a.join]; rescue=>ex; [:err,ex.class.name,ex.message[0,120]]; end }; \\"
-echo "    puts r.value.inspect'"
+echo "  RAILS_ENV=production SECRET_KEY_BASE=dummy KINO_MODE=ractor \\"
+echo "    kino -m ractor -p 9293 -w5 -t1 -C kino.rb config_ractor.ru"
 echo
-echo "To run the shim's unit specs (no Rails needed):"
-echo "  cd $SHIM_DIR && bundle exec rake spec"
+echo "kino :threaded (dev, live reload):"
+echo "  KINO_MODE=threaded kino -m threaded -p 9293 config_ractor.ru"
 echo
-echo "To run the integration spec (needs the test app + its bundle):"
+echo "Puma clustered (macOS needs the fork-safety env):"
+echo "  SERVER=puma OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES \\"
+echo "    bundle exec puma config.ru -p 3000 -e production -w5"
+echo
+echo "Smoke checks:"
+echo "  curl -s -o /dev/null -w \"%{http_code}\\n\" -H \"Accept: text/html\" http://localhost:9293/up"
+echo "  curl -s -o /dev/null -w \"%{http_code}\\n\" -H \"Accept: text/html\" http://localhost:9293/posts"
+echo "  curl -s -o /dev/null -w \"%{http_code}\\n\" -H \"Accept: text/html\" http://localhost:9293/users/sign_in"
+echo
+echo "Benchmarks (seeds its own user; needs PostgreSQL + ab):"
 echo "  cd $DEST"
-echo "  bundle exec ruby -I$SHIM_DIR/lib -I$SHIM_DIR/spec \\"
-echo "    -e'require \"minitest/autorun\"; require \"$SHIM_DIR/spec/integration_spec.rb\"'"
+echo "  ruby bench/bench.rb                      # full matrix"
+echo "  BENCH_DURATION=20 BENCH_CONCURRENCY=64 BENCH_RUNS=3 ruby bench/bench.rb"
+echo
+echo "Shim integration spec (run from the app's bundle):"
+echo "  cd $DEST"
+echo "  RAILS_SHIM_TEST_APP=$DEST RAILS_ENV=production SECRET_KEY_BASE=dummy \\"
+echo "    bundle exec ruby -I$SHIM_DIR/lib -I$SHIM_DIR/spec \\"
+echo "    -e 'require \"minitest/autorun\"; require \"$SHIM_DIR/spec/integration_spec.rb\"'"
+echo
+echo "Shim development on the local working copy (optional override):"
+echo "  bundle config set --local local.ractor-rails-shim $SHIM_DIR && bundle install"
