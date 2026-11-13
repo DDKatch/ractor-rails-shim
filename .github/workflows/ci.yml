@@ -92,6 +92,17 @@ jobs:
       - name: Build the test app
         run: ./script/make_test_app.sh "$RAILS_SHIM_TEST_APP"
 
+      # make_test_app.sh runs db:prepare WITHOUT RAILS_ENV (development), and
+      # only WARNS when the DB is unreachable. The spec + audit steps boot the
+      # app in production, which resolves ractor_rails_shim_test_app_prod —
+      # without this step CI dies with ActiveRecord::NoDatabaseError.
+      - name: Prepare the production database
+        working-directory: ${{ env.RAILS_SHIM_TEST_APP }}
+        env:
+          RAILS_ENV: production
+          SECRET_KEY_BASE: dummy
+        run: bin/rails db:prepare
+
       - name: Run integration spec (GET /up → 200 in a worker Ractor)
         working-directory: ${{ env.RAILS_SHIM_TEST_APP }}
         env:
