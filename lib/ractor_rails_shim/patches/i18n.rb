@@ -29,118 +29,150 @@ module RactorRailsShim
       av_key_str = av_key.inspect
       avs_key_str = avs_key.inspect
       cfg.module_eval <<-RUBY, __FILE__, __LINE__ + 1
-        def default_locale
-          v = RactorRailsShim.storage[#{dl_key_str}]
-          return v unless v.nil?
-          return nil if RactorRailsShim.storage.key?(#{dl_key_str})
-          if Ractor.main? && defined?(@@default_locale)
-            cv = @@default_locale
-            RactorRailsShim.storage[#{dl_key_str}] = cv
-            return cv
-          end
-          RactorRailsShim.storage[#{dl_key_str}] = :en
-          :en
-        end
-        def default_locale=(locale)
-          v = locale && locale.to_sym
-          RactorRailsShim.storage[#{dl_key_str}] = v
-          @@default_locale = v if Ractor.main?
-          v
-        end
+        # --- Config accessors rewritten to be Ractor-safe -------------------
+        # In the MAIN Ractor the upstream i18n implementation runs VERBATIM
+        # (class variables and the per-fiber config instance are both
+        # main-local, so Ractor::IsolationError cannot occur). In worker
+        # Ractors the class-variable reads/writes are replaced by
+        # per-Ractor IsolatedExecutionState storage with the documented
+        # defaults. Main fidelity = upstream fidelity: readers use ||= /
+        # delegation semantics exactly like i18n's own config.rb, so no
+        # explicit-nil or stale-cache divergence is possible.
         def locale
-          v = RactorRailsShim.storage[#{l_key_str}]
-          return v unless v.nil?
-          return nil if RactorRailsShim.storage.key?(#{l_key_str})
-          default_locale
+          if Ractor.main?
+            defined?(@locale) && !@locale.nil? ? @locale : default_locale
+          else
+            v = RactorRailsShim.storage[#{l_key_str}]
+            v.nil? ? default_locale : v
+          end
         end
         def locale=(locale)
+          # Upstream setters enforce available locales. Skip in workers:
+          # worker-local backends may not know every locale yet and raising
+          # here would break worker boot paths.
+          I18n.enforce_available_locales!(locale) if Ractor.main?
           v = locale && locale.to_sym
-          RactorRailsShim.storage[#{l_key_str}] = v
+          if Ractor.main?
+            @locale = v
+          else
+            RactorRailsShim.storage[#{l_key_str}] = v
+          end
+          v
+        end
+        def default_locale
+          if Ractor.main?
+            @@default_locale ||= :en
+          else
+            v = RactorRailsShim.storage[#{dl_key_str}]
+            v.nil? ? :en : v
+          end
+        end
+        def default_locale=(locale)
+          I18n.enforce_available_locales!(locale) if Ractor.main?
+          v = locale && locale.to_sym
+          if Ractor.main?
+            @@default_locale = v
+          else
+            RactorRailsShim.storage[#{dl_key_str}] = v
+          end
           v
         end
         # available_locales is read per-request during view template lookup
-        # (ActionView::Resolver::PathParser#build_path_regex). The original
-        # reads the @@available_locales class variable, which a worker Ractor
-        # cannot access (Ractor::IsolationError). Route it through IES. In
-        # main we mirror the class var; in a worker we default to [:en] WITHOUT
-        # delegating to backend.available_locales (that path reads the @@backend
-        # / @@load_path class vars, which are also unreadable from a worker).
-        # The template-regex path only needs the list of locale symbols, and
-        # [:en] is the documented I18n default — correct for apps that don't
-        # set config.i18n.available_locales explicitly.
+        # (ActionView::Resolver::PathParser#build_path_regex). Upstream
+        # delegates to the backend whenever not explicitly set (never
+        # caches the delegated value). Workers cannot read the class var,
+        # so they default to [:en] WITHOUT delegating (that path reads the
+        # @@backend / @@load_path class vars, which are unreadable from a
+        # worker). The template-regex path only needs the locale list.
         def available_locales
-          v = RactorRailsShim.storage[#{av_key_str}]
-          return v unless v.nil?
-          return nil if RactorRailsShim.storage.key?(#{av_key_str})
           if Ractor.main?
-            if defined?(@@available_locales) && (cv = @@available_locales)
-              RactorRailsShim.storage[#{av_key_str}] = cv
-              return cv
-            end
-            al = backend.available_locales
-            al = al.freeze if al.respond_to?(:freeze) && !al.frozen?
-            RactorRailsShim.storage[#{av_key_str}] = al
-            return al
+            @@available_locales ||= nil
+            @@available_locales || backend.available_locales
+          else
+            v = RactorRailsShim.storage[#{av_key_str}]
+            v.nil? ? [:en].freeze : v
           end
-          al = [:en].freeze
-          RactorRailsShim.storage[#{av_key_str}] = al
-          al
         end
         def available_locales=(locales)
-          v = Array(locales).map { |l| l.to_sym }
-          v = nil if v.empty?
-          RactorRailsShim.storage[#{av_key_str}] = v
-          @@available_locales = v if Ractor.main?
-          v
+          if Ractor.main?
+            @@available_locales = Array(locales).map { |locale| locale.to_sym }
+            @@available_locales = nil if @@available_locales.empty?
+            @@available_locales_set = nil
+            @@available_locales
+          else
+            v = Array(locales).map { |l| l.to_sym }
+            v = nil if v.empty?
+            RactorRailsShim.storage[#{av_key_str}] = v
+            RactorRailsShim.storage[#{avs_key_str}] = nil
+            v
+          end
         end
+        # Caches the available locales list as strings and symbols in a Set
+        # for fast availability checks (upstream verbatim in main).
         def available_locales_set
-          v = RactorRailsShim.storage[#{avs_key_str}]
-          return v unless v.nil?
-          return nil if RactorRailsShim.storage.key?(#{avs_key_str})
-          if Ractor.main? && defined?(@@available_locales_set) && (cv = @@available_locales_set)
-            RactorRailsShim.storage[#{avs_key_str}] = cv
-            return cv
+          if Ractor.main?
+            @@available_locales_set ||= available_locales.inject(Set.new) do |set, locale|
+              set << locale.to_s << locale.to_sym
+            end
+          else
+            v = RactorRailsShim.storage[#{avs_key_str}]
+            unless v
+              v = available_locales.inject(Set.new) do |set, locale|
+                set << locale.to_s << locale.to_sym
+              end
+              RactorRailsShim.storage[#{avs_key_str}] = v
+            end
+            v
           end
-          s = available_locales.inject(Set.new) { |set, locale| set << locale.to_s << locale.to_sym }
-          RactorRailsShim.storage[#{avs_key_str}] = s
-          s
         end
+        # Clears the set so it can be recomputed after I18n reloads
+        # (upstream verbatim in main).
+        def clear_available_locales_set
+          if Ractor.main?
+            @@available_locales_set = nil
+          else
+            RactorRailsShim.storage[#{avs_key_str}] = nil
+          end
+          nil
+        end
+        # Returns true if the available_locales have been initialized
+        # (upstream verbatim in main).
         def available_locales_initialized?
-          !!(RactorRailsShim.storage[#{av_key_str}])
-        end
-        # enforce_available_locales is read during every I18n.translate (the
-        # Label/tag translation path in views). The original reads the
-        # @@enforce_available_locales class variable, which a worker Ractor
-        # cannot access (Ractor::IsolationError). Route it through IES; in main
-        # we mirror the class var, in a worker we default to `true` (the
-        # documented I18n default).
-        def enforce_available_locales
-          v = RactorRailsShim.storage[:ractor_rails_shim_i18n_enforce]
-          return v unless v.nil?
-          return nil if RactorRailsShim.storage.key?(:ractor_rails_shim_i18n_enforce)
-          if Ractor.main? && defined?(@@enforce_available_locales)
-            cv = @@enforce_available_locales
-            RactorRailsShim.storage[:ractor_rails_shim_i18n_enforce] = cv
-            return cv
+          if Ractor.main?
+            !!defined?(@@available_locales) && !!@@available_locales
+          else
+            !!(RactorRailsShim.storage[#{av_key_str}])
           end
-          RactorRailsShim.storage[:ractor_rails_shim_i18n_enforce] = true
-          true
+        end
+        # enforce_available_locales is read during every I18n.translate. The
+        # @@ class var exists from the moment the gem loads (upstream
+        # initializes it to true at class level), so the main read is safe.
+        def enforce_available_locales
+          if Ractor.main?
+            @@enforce_available_locales
+          else
+            v = RactorRailsShim.storage[:ractor_rails_shim_i18n_enforce]
+            v.nil? ? true : v
+          end
         end
         def enforce_available_locales=(val)
-          v = !!val
-          RactorRailsShim.storage[:ractor_rails_shim_i18n_enforce] = v
-          @@enforce_available_locales = v if Ractor.main?
-          v
+          if Ractor.main?
+            @@enforce_available_locales = val
+          else
+            RactorRailsShim.storage[:ractor_rails_shim_i18n_enforce] = val
+          end
+          val
         end
         # backend reads the @@backend class variable (which a worker Ractor
-        # cannot access). The backend holds the loaded translations. Because the
-        # translation data can contain Procs (e.g. `number.nth.ordinals` in
-        # ActiveSupport's en locale), the whole backend cannot be deep-frozen
-        # and shared. Instead, each worker builds its OWN backend instance (of
-        # the same class as the main backend, so fallbacks etc. are preserved)
-        # and lazy-loads translations from the shareable +load_path+ (see the
-        # patched `load_path`/`load_path=`). The worker-local backend is mutable
-        # (its @interpolations Proc is created in the worker, so it's fine).
+        # cannot access). The backend holds the loaded translations. Because
+        # the translation data can contain Procs (e.g. `number.nth.ordinals`
+        # in ActiveSupport's en locale), the whole backend cannot be
+        # deep-frozen and shared. Instead, each worker builds its OWN backend
+        # instance (of the same class as the main backend, so fallbacks etc.
+        # are preserved) and lazy-loads translations from the shareable
+        # +load_path+ (see the patched `load_path`/`load_path=`). The
+        # worker-local backend is mutable (its @interpolations Proc is
+        # created in the worker, so it's fine).
         def backend
           if Ractor.main?
             @@backend ||= ::I18n::Backend::Simple.new
@@ -155,106 +187,108 @@ module RactorRailsShim
           end
         end
         def backend=(value)
-          @@backend = value
+          if Ractor.main?
+            @@backend = value
+          else
+            RactorRailsShim.storage[:ractor_rails_shim_i18n_backend] = value
+          end
+          value
         end
         # load_path reads the @@load_path class variable (unreadable from a
         # worker). Capture the (shareable) list of translation file paths in
         # main; workers reload translations from disk via these paths.
         def load_path
-          v = RactorRailsShim.storage[:ractor_rails_shim_i18n_load_path]
-          return v unless v.nil?
-          return nil if RactorRailsShim.storage.key?(:ractor_rails_shim_i18n_load_path)
           if Ractor.main?
-            lp = (defined?(@@load_path) && @@load_path) || []
-            lp = lp.dup.freeze if lp.respond_to?(:freeze) && !lp.frozen?
-            RactorRailsShim.storage[:ractor_rails_shim_i18n_load_path] = lp
-            lp
+            @@load_path ||= []
           else
-            RactorRailsShim.const_defined?(:I18N_LOAD_PATH) ? RactorRailsShim::I18N_LOAD_PATH : []
+            v = RactorRailsShim.storage[:ractor_rails_shim_i18n_load_path]
+            v.nil? ? (RactorRailsShim.const_defined?(:I18N_LOAD_PATH) ? RactorRailsShim::I18N_LOAD_PATH : []) : v
           end
         end
-        def load_path=(lp)
-          lp = Array(lp)
-          RactorRailsShim.storage[:ractor_rails_shim_i18n_load_path] = lp
-          @@load_path = lp if Ractor.main?
-          lp
+        # Upstream load_path= also clears the available_locales set (the
+        # backend's locale list may change after reload) and reloads the
+        # backend. Workers only rearm their shareable path list.
+        def load_path=(load_path)
+          if Ractor.main?
+            @@load_path = load_path
+            @@available_locales_set = nil
+            backend.reload!
+          else
+            RactorRailsShim.storage[:ractor_rails_shim_i18n_load_path] = Array(load_path)
+          end
+          load_path
         end
-        # default_separator / exception_handler / missing_interpolation_argument_handler
-        # / interpolation_patterns each read a @@ class variable unreadable from a
-        # worker. Route them through IES; main mirrors the class var, workers use
-        # the documented default (each default is worker-local and shareable-safe:
-        # a String, a fresh ExceptionHandler, a fresh lambda, or the frozen
-        # DEFAULT_INTERPOLATION_PATTERNS constant).
+        # default_separator / exception_handler / interpolation_patterns /
+        # missing_interpolation_argument_handler each read a @@ class
+        # variable unreadable from a worker. Main runs upstream verbatim;
+        # workers use the documented default (each default is worker-local
+        # and shareable-safe: a String, a fresh ExceptionHandler, a fresh
+        # lambda, or the frozen DEFAULT_INTERPOLATION_PATTERNS constant).
         def default_separator
-          v = RactorRailsShim.storage[:ractor_rails_shim_i18n_sep]
-          return v unless v.nil?
-          return nil if RactorRailsShim.storage.key?(:ractor_rails_shim_i18n_sep)
-          if Ractor.main?
-            cv = defined?(@@default_separator) ? @@default_separator : "."
-            RactorRailsShim.storage[:ractor_rails_shim_i18n_sep] = cv
-            cv
-          else
-            "."
-          end
+          Ractor.main? ? (@@default_separator ||= ".") : (RactorRailsShim.storage[:ractor_rails_shim_i18n_sep] || ".")
         end
         def default_separator=(separator)
-          RactorRailsShim.storage[:ractor_rails_shim_i18n_sep] = separator
-          @@default_separator = separator if Ractor.main?
+          if Ractor.main?
+            @@default_separator = separator
+          else
+            RactorRailsShim.storage[:ractor_rails_shim_i18n_sep] = separator
+          end
           separator
         end
         def exception_handler
-          v = RactorRailsShim.storage[:ractor_rails_shim_i18n_exc]
-          return v unless v.nil?
-          return nil if RactorRailsShim.storage.key?(:ractor_rails_shim_i18n_exc)
           if Ractor.main?
-            cv = defined?(@@exception_handler) ? @@exception_handler : ::I18n::ExceptionHandler.new
-            RactorRailsShim.storage[:ractor_rails_shim_i18n_exc] = cv
-            cv
+            @@exception_handler ||= ::I18n::ExceptionHandler.new
           else
-            ::I18n::ExceptionHandler.new
+            v = RactorRailsShim.storage[:ractor_rails_shim_i18n_exc]
+            v.nil? ? ::I18n::ExceptionHandler.new : v
           end
         end
         def exception_handler=(handler)
-          RactorRailsShim.storage[:ractor_rails_shim_i18n_exc] = handler
-          @@exception_handler = handler if Ractor.main?
+          if Ractor.main?
+            @@exception_handler = handler
+          else
+            RactorRailsShim.storage[:ractor_rails_shim_i18n_exc] = handler
+          end
           handler
         end
         def missing_interpolation_argument_handler
-          v = RactorRailsShim.storage[:ractor_rails_shim_i18n_miss]
-          return v unless v.nil?
-          return nil if RactorRailsShim.storage.key?(:ractor_rails_shim_i18n_miss)
           if Ractor.main?
-            cv = defined?(@@missing_interpolation_argument_handler) ? @@missing_interpolation_argument_handler : lambda do |missing_key, provided_hash, string|
-                raise ::I18n::MissingInterpolationArgument.new(missing_key, provided_hash, string)
-              end
-            RactorRailsShim.storage[:ractor_rails_shim_i18n_miss] = cv
-            cv
+            @@missing_interpolation_argument_handler ||= lambda do |missing_key, provided_hash, string|
+              raise ::I18n::MissingInterpolationArgument.new(missing_key, provided_hash, string)
+            end
           else
-            lambda do |missing_key, provided_hash, string|
+            v = RactorRailsShim.storage[:ractor_rails_shim_i18n_miss]
+            if v.nil?
+              lambda do |missing_key, provided_hash, string|
                 raise ::I18n::MissingInterpolationArgument.new(missing_key, provided_hash, string)
               end
+            else
+              v
+            end
           end
         end
         def missing_interpolation_argument_handler=(handler)
-          RactorRailsShim.storage[:ractor_rails_shim_i18n_miss] = handler
-          @@missing_interpolation_argument_handler = handler if Ractor.main?
+          if Ractor.main?
+            @@missing_interpolation_argument_handler = handler
+          else
+            RactorRailsShim.storage[:ractor_rails_shim_i18n_miss] = handler
+          end
           handler
         end
         def interpolation_patterns
-          v = RactorRailsShim.storage[:ractor_rails_shim_i18n_ip]
-          return v unless v.nil?
-          return nil if RactorRailsShim.storage.key?(:ractor_rails_shim_i18n_ip)
           if Ractor.main?
-            cv = defined?(@@interpolation_patterns) ? @@interpolation_patterns : ::I18n::DEFAULT_INTERPOLATION_PATTERNS.dup
-            RactorRailsShim.storage[:ractor_rails_shim_i18n_ip] = cv
-            cv
+            @@interpolation_patterns ||= ::I18n::DEFAULT_INTERPOLATION_PATTERNS.dup
           else
-            ::I18n::DEFAULT_INTERPOLATION_PATTERNS
+            v = RactorRailsShim.storage[:ractor_rails_shim_i18n_ip]
+            v.nil? ? ::I18n::DEFAULT_INTERPOLATION_PATTERNS : v
           end
         end
         def interpolation_patterns=(patterns)
-          RactorRailsShim.storage[:ractor_rails_shim_i18n_ip] = patterns
-          @@interpolation_patterns = patterns if Ractor.main?
+          if Ractor.main?
+            @@interpolation_patterns = patterns
+          else
+            RactorRailsShim.storage[:ractor_rails_shim_i18n_ip] = patterns
+          end
           patterns
         end
       RUBY
@@ -285,30 +319,30 @@ module RactorRailsShim
         end
       end
 
-      # Patch I18n.fallbacks (a singleton method on the I18n module) to not
-      # read the @@fallbacks class variable from a worker Ractor. It already
-      # uses Fiber/Thread-local storage with @@fallbacks as the fallback;
-      # route the @@fallbacks read through IES so workers build their own
-      # I18n::Locale::Fallbacks. Called per-request via LookupContext details.
+      # Patch I18n.fallbacks (a singleton method on the I18n module). Upstream
+      # reads `@@fallbacks ||= I18n::Locale::Fallbacks.new` then
+      # `Fiber[:i18n_fallbacks] || @@fallbacks`. In main run upstream
+      # VERBATIM — the setter (upstream, unpatched) writes @@fallbacks and
+      # the fiber local, so caching in IES would go stale. Workers cannot
+      # read the class var, so they use per-worker IES storage and build
+      # their own I18n::Locale::Fallbacks lazily. Called per-request via
+      # LookupContext details.
       if defined?(::I18n)
         i18n = ::I18n
         fb_key = :ractor_rails_shim_i18n_fallbacks
         fb_key_str = fb_key.inspect
         i18n.singleton_class.module_eval <<-RUBY, __FILE__, __LINE__ + 1
           def fallbacks
-            v = RactorRailsShim.storage[#{fb_key_str}]
-            return v unless v.nil?
-            return nil if RactorRailsShim.storage.key?(#{fb_key_str})
-            if Ractor.main? && defined?(@@fallbacks)
-              cv = @@fallbacks
-              if cv
-                RactorRailsShim.storage[#{fb_key_str}] = cv
-                return cv
-              end
+            if Ractor.main?
+              @@fallbacks ||= ::I18n::Locale::Fallbacks.new
+              Fiber[:i18n_fallbacks] || @@fallbacks
+            else
+              v = RactorRailsShim.storage[#{fb_key_str}]
+              return v unless v.nil?
+              built = ::I18n::Locale::Fallbacks.new
+              RactorRailsShim.storage[#{fb_key_str}] = built
+              built
             end
-            built = I18n::Locale::Fallbacks.new
-            RactorRailsShim.storage[#{fb_key_str}] = built
-            built
           end
         RUBY
 
@@ -342,6 +376,13 @@ module RactorRailsShim
         if defined?(::I18n::Base)
           nk_key = :ractor_rails_shim_i18n_normalized_key_cache
           nk_key_str = nk_key.inspect
+          # The integer-key regex is built OUTSIDE the heredoc: in an
+          # interpolated heredoc, Ruby strips unrecognized escapes (\A, \d,
+          # \z) from the body text, which silently turns the compiled regex
+          # into /A[-+]?([1-9]d*|0)z/ (never matches — integer key segments
+          # came out as Symbols). Interpolating a pre-built literal keeps
+          # the escapes intact in the generated code.
+          nk_int_re = /\A[-+]?([1-9]\d*|0)\z/
           ::I18n::Base.module_eval <<-RUBY, __FILE__, __LINE__ + 1
             def normalize_key(key, separator)
               cache = RactorRailsShim.storage[#{nk_key_str}]
@@ -355,7 +396,7 @@ module RactorRailsShim
                   keys.delete('')
                   keys.map! do |k|
                     case k
-                    when /\A[-+]?([1-9]\d*|0)\z/ # integer
+                    when #{nk_int_re.inspect} # integer
                       k.to_i
                     when 'true'
                       true
@@ -391,14 +432,17 @@ module RactorRailsShim
     end
 
     # Patch I18n::Backend::Simple::Implementation#translations and
-    # #store_translations. The original uses a MUTEX-backed Concurrent::Hash
-    # default block (`MUTEX` is a non-shareable constant on the module), so a
-    # worker Ractor that builds its own (per the patched I18n::Config#backend)
+    # #store_translations. The original's `translations` default block takes
+    # the MUTEX constant (`MUTEX` is a non-shareable Mutex on the module), so
+    # a worker Ractor that builds its own (per the patched I18n::Config#backend)
     # backend and lazy-loads translations hits "can not access non-shareable
     # objects in constant ...MUTEX". Worker-local backends are single-threaded
-    # (a Ractor serializes its requests), so drop the mutex and use a plain
-    # Hash. Applied at prepare_for_ractors! time (after the i18n backend class
-    # is loaded).
+    # (a Ractor serializes its requests), so the lazy subhash creation drops
+    # the mutex — but keeps upstream's Concurrent::Hash default-block
+    # semantics exactly: reading translations[locale] for an unstored locale
+    # must return an empty Concurrent::Hash (tests assert translations[:xx]
+    # == {} after a rejected store), not nil. Applied at prepare_for_ractors!
+    # time (after the i18n backend class is loaded).
     def _install_i18n_backend_patch
       return if @i18n_backend_patched
       @i18n_backend_patched = true
@@ -408,16 +452,18 @@ module RactorRailsShim
       impl.module_eval <<-RUBY, __FILE__, __LINE__ + 1
         def translations(do_init: false)
           init_translations if do_init && !initialized?
-          @translations ||= {}
+          @translations ||= Concurrent::Hash.new do |h, k|
+            h[k] = Concurrent::Hash.new
+          end
         end
-        def store_translations(locale, data, options = {})
+        def store_translations(locale, data, options = ::I18n::EMPTY_HASH)
           if ::I18n.enforce_available_locales &&
              ::I18n.available_locales_initialized? &&
              !::I18n.locale_available?(locale)
             return data
           end
           locale = locale.to_sym
-          translations[locale] ||= {}
+          translations[locale] ||= Concurrent::Hash.new
           data = ::I18n::Utils.deep_symbolize_keys(data) unless options.fetch(:skip_symbolize_keys, false)
           ::I18n::Utils.deep_merge!(translations[locale], data)
         end
@@ -455,7 +501,7 @@ module RactorRailsShim
                         config.missing_interpolation_argument_handler.call(key, values, string)
                       end
               value = value.call(values) if value.respond_to?(:call)
-              $3 ? sprintf("%#{$3}", value) : value
+              $3 ? sprintf("%\#{$3}", value) : value
             end
           end
 
