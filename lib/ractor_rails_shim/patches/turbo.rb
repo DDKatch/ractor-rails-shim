@@ -91,7 +91,16 @@ module RactorRailsShim
             p = _layout
             return unless p.is_a?(::Proc)
             key = "rrs_layout_proc_" + (name || "anonymous_" + object_id.to_s)
-            ::RactorRailsShim::PROC_LAYOUT_PROCS[key] = p
+            registry = ::RactorRailsShim::PROC_LAYOUT_PROCS
+            # The registry is frozen into a shareable constant before worker
+            # Ractors start. A late re-emission inside a worker (e.g. a
+            # lazily-created controller subclass at first request) must not
+            # mutate it: writing into the frozen Hash raises FrozenError and
+            # 500s the request. When frozen, skip the write — the emitted
+            # `_layout_from_proc` then reads nil for an unknown key and Rails
+            # falls back to the default layout (the same safe degrade the
+            # freeze step uses for unshareable procs).
+            registry[key] = p if !registry.frozen? && !registry[key].equal?(p)
             silence_redefinition_of_method(:_layout_from_proc)
             class_eval(<<-EOS, __FILE__, __LINE__ + 1)
               def _layout_from_proc(*args)
